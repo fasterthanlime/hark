@@ -81,11 +81,9 @@ Hotkey/
 
 ## Dependencies
 
-| Package | Purpose |
-|---------|---------|
-| [mlx-audio-swift](https://github.com/jkrukowski/mlx-audio-swift) | MLX-based audio STT inference (MLXAudioSTT, MLXAudioCore) |
-| [MLX](https://github.com/ml-explore/mlx-swift) | Apple's ML array framework |
-| [HuggingFace Swift client](https://github.com/huggingface/swift-transformers) | Model downloading and hub integration |
+| Package | Requirement | Products used | Purpose |
+|---------|-------------|---------------|---------|
+| [mlx-audio-swift](https://github.com/Blaizzy/mlx-audio-swift) | `revision: cc3b3880be05caf908970729e15ec209d018f06d` | `MLXAudioSTT`, `MLXAudioCore` | On-device speech-to-text and audio ML pipeline |
 
 ## License
 
