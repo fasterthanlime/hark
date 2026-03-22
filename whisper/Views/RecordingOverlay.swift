@@ -18,25 +18,21 @@ struct RecordingOverlayView: View {
 
     var body: some View {
         ZStack {
-            // Main content
+            // Main content (recording/transcribing)
             if result == .none {
                 mainContent
                     .scaleEffect(isAppearing ? 1.0 : 0.8)
                     .opacity(isAppearing ? 1.0 : 0.0)
             }
 
-            // Success overlay
-            if result == .success {
-                resultOverlay(success: true)
-            }
-
-            // Cancelled overlay
-            if result == .cancelled {
-                resultOverlay(success: false)
+            // Result overlay (success/cancelled)
+            if result != .none {
+                resultContent
+                    .transition(.opacity)
             }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isAppearing)
-        .animation(.easeInOut(duration: 0.2), value: result)
+        .animation(.easeInOut(duration: 0.15), value: result)
         .onAppear {
             withAnimation {
                 isAppearing = true
@@ -70,25 +66,39 @@ struct RecordingOverlayView: View {
         )
     }
 
-    private func resultOverlay(success: Bool) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: success ? "checkmark.circle.fill" : "xmark.circle.fill")
-                .font(.system(size: 28, weight: .medium))
-                .foregroundColor(success ? .green : .red)
-                .symbolEffect(.bounce, value: result)
+    private var resultContent: some View {
+        let isSuccess = result == .success
 
-            Text(success ? "Pasted" : "Cancelled")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundColor(.white)
+        return VStack(spacing: 8) {
+            // Result icon centered at top
+            HStack {
+                Spacer()
+                Image(systemName: isSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .font(.system(size: 32, weight: .medium))
+                    .foregroundColor(isSuccess ? .green : .red)
+                    .symbolEffect(.bounce, value: result)
+                Spacer()
+            }
+
+            // Faded transcript text below
+            if !displayedText.isEmpty {
+                Text(displayedText)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundColor(.gray)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .lineLimit(2)
+            }
         }
         .padding(.vertical, 12)
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 14)
+        .frame(width: 500, alignment: .top)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.black.opacity(0.8))
                 .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
         )
-        .transition(.scale.combined(with: .opacity))
     }
 
     private var displayedTextValue: String {
@@ -119,7 +129,7 @@ struct RecordingOverlayView: View {
             for char in newPart {
                 guard !Task.isCancelled else { return }
                 displayedText.append(char)
-                try? await Task.sleep(for: .milliseconds(15))
+                try? await Task.sleep(for: .milliseconds(5))
             }
         }
     }

@@ -9,6 +9,7 @@ import SwiftUI
 
 extension Notification.Name {
     static let cancelRecording = Notification.Name("cancelRecording")
+    static let submitRecording = Notification.Name("submitRecording")
 }
 
 @main
@@ -445,7 +446,7 @@ struct WhisperApp: App {
     }
 
     @MainActor
-    private func stopRecordingAndTranscribe(cancelTimeoutTask: Bool = true, skipPaste: Bool = false) async {
+    private func stopRecordingAndTranscribe(cancelTimeoutTask: Bool = true, skipPaste: Bool = false, forceSubmit: Bool = false) async {
         guard appState.phase == .recording else { return }
 
         if cancelTimeoutTask {
@@ -477,26 +478,20 @@ struct WhisperApp: App {
             return
         }
 
-        // Skip transcription if no voice activity was detected
-        guard hadSpeechActivity else {
-            overlayManager.hide()
-            appState.partialTranscript = ""
-            _ = appState.transition(to: .idle)
-            return
-        }
-
         // Get any remaining audio from VAD buffer
-        let (remainingAudio, wasSpeaking) = await vadService.flush()
+        let (remainingAudio, _) = await vadService.flush()
 
         // Start with accumulated transcript from completed segments
         var text = accumulatedTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // Only transcribe remaining audio if speech was in progress when we stopped
-        if wasSpeaking, let remaining = remainingAudio, !remaining.isEmpty {
+        // Always transcribe remaining audio to avoid losing the last segment
+        // Use remaining VAD buffer if available, otherwise fall back to full recording
+        let audioToTranscribe = remainingAudio ?? (text.isEmpty ? samples : nil)
+        if let audio = audioToTranscribe, !audio.isEmpty {
             _ = appState.transition(to: .transcribing)
             overlayManager.show(appState: appState)
 
-            if let result = await transcriptionService.transcribeLive(audio: remaining) {
+            if let result = await transcriptionService.transcribeLive(audio: audio) {
                 let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
                     if !text.isEmpty {
@@ -526,8 +521,8 @@ struct WhisperApp: App {
             return
         }
 
-        // Check if Return is held - if so, submit after pasting
-        let shouldSubmit = PasteController.isReturnKeyPressed()
+        // Check if Return is held or forceSubmit was requested
+        let shouldSubmit = forceSubmit || PasteController.isReturnKeyPressed()
 
         _ = appState.transition(to: .pasting)
         do {
@@ -549,28 +544,45 @@ struct WhisperApp: App {
         let currentAppState = appState
         let currentHotkeyMonitor = hotkeyMonitor
         escapeMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [self] event in
-            guard event.keyCode == UInt16(kVK_Escape) else { return }
             guard currentAppState.phase == .recording else { return }
 
-            // In toggle mode, require hotkey + Escape to cancel
-            // In hold mode, Escape alone cancels
+            let isEscape = event.keyCode == UInt16(kVK_Escape)
+            let isReturn = event.keyCode == UInt16(kVK_Return)
+
+            guard isEscape || isReturn else { return }
+
+            // In toggle mode, require hotkey to be held for both Escape and Enter
+            // In hold mode, Escape/Enter alone works (since hotkey is already held)
             if isToggleMode {
-                // Check if hotkey is currently held
                 guard currentHotkeyMonitor.isHeld else { return }
             }
 
-            // Post notification to cancel recording
-            NotificationCenter.default.post(name: .cancelRecording, object: nil)
+            if isEscape {
+                NotificationCenter.default.post(name: .cancelRecording, object: nil)
+            } else if isReturn {
+                NotificationCenter.default.post(name: .submitRecording, object: nil)
+            }
         }
 
-        // Observe the notification
+        // Observe cancel notification
         notificationObserver = NotificationCenter.default.addObserver(
             forName: .cancelRecording,
             object: nil,
             queue: .main
         ) { [self] _ in
             Task { @MainActor in
-                await self.stopRecordingAndTranscribe(skipPaste: true)
+                await self.stopRecordingAndTranscribe(skipPaste: true, forceSubmit: false)
+            }
+        }
+
+        // Observe submit notification
+        NotificationCenter.default.addObserver(
+            forName: .submitRecording,
+            object: nil,
+            queue: .main
+        ) { [self] _ in
+            Task { @MainActor in
+                await self.stopRecordingAndTranscribe(skipPaste: false, forceSubmit: true)
             }
         }
     }
