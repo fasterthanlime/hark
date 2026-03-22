@@ -1,369 +1,185 @@
 import Foundation
-import MLX
-import MLXAudioSTT
-import MLXAudioCore
-import HuggingFace
+import os
 
-/// Wraps Qwen3ASRModel for loading and transcribing audio.
+/// Wraps the Rust qwen3-asr-ffi library for streaming transcription.
 ///
-/// The actor isolates model ownership and serializes operations.
-/// Inference itself runs on a dedicated queue so long synchronous
-/// `model.generate(...)` work does not execute on Swift's cooperative executor.
-actor TranscriptionService {
-    private var model: Qwen3ASRModel?
-    private var currentRepoID: String?
-
-    /// Guards stale completions for actor-owned model state.
-    /// Kept separate from `WhisperApp.modelLoadGeneration`, which protects UI updates.
-    private var loadGeneration: UInt64 = 0
-
-    private var hasActiveOperation = false
-    private var waitingOperations: [CheckedContinuation<Void, Never>] = []
-    private static let cacheInspectionQueue = DispatchQueue(
-        label: "shoki.whisper.transcription.cache-inspection",
-        qos: .utility
-    )
-    private let inferenceQueue = DispatchQueue(
-        label: "shoki.whisper.transcription.inference",
-        qos: .userInitiated
+/// Thread-safe: the engine uses an internal mutex. However, a single session
+/// must not be used from multiple threads concurrently.
+final class TranscriptionService: @unchecked Sendable {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "whisper",
+        category: "TranscriptionService"
     )
 
-    // Safe: immutable payload; model access is serialized by acquireOperationTurn.
-    private struct InferenceRequest: @unchecked Sendable {
-        let model: Qwen3ASRModel
-        let audio: [Float]
-    }
+    private var engine: OpaquePointer?  // *mut AsrEngine
+    private let lock = NSLock()
 
     /// Whether a model is currently loaded and ready.
-    var isLoaded: Bool { model != nil }
-
-    /// Returns repo IDs that have a complete local snapshot.
-    func downloadedModelRepoIDs(for repoIDs: [String]) async -> Set<String> {
-        var downloaded: Set<String> = []
-        for repoID in repoIDs {
-            let modelDir = Self.modelDirectory(for: repoID)
-            if await Self.hasCompleteModelSnapshot(at: modelDir) {
-                downloaded.insert(repoID)
-            }
-        }
-        return downloaded
+    var isLoaded: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return engine != nil
     }
 
-    /// Deletes a specific local model snapshot.
-    func deleteLocalModel(repoID: String) async throws {
-        try Task.checkCancellation()
-        await acquireOperationTurn()
-        defer { releaseOperationTurn() }
-        try Task.checkCancellation()
-
-        if currentRepoID == repoID {
-            invalidateLoadedModel()
-        }
-
-        let modelDir = Self.modelDirectory(for: repoID)
-        guard FileManager.default.fileExists(atPath: modelDir.path) else {
-            return
-        }
-
-        try FileManager.default.removeItem(at: modelDir)
-    }
-
-    /// Load a Qwen3 ASR model from a HuggingFace repo.
-    /// Downloads on first use, cached locally for subsequent launches.
+    /// Load a model, downloading from HuggingFace if not cached.
     func loadModel(
         repoID: String,
+        cacheDir: String,
         updateHandler: (@MainActor @Sendable (ModelLoadUpdate) -> Void)? = nil
     ) async throws {
-        try Task.checkCancellation()
-        await acquireOperationTurn()
-        defer { releaseOperationTurn() }
-        try Task.checkCancellation()
-
-        // Skip if already loaded with same model
-        if currentRepoID == repoID && model != nil {
-            return
-        }
-
         // Unload previous model
-        invalidateLoadedModel()
-        let generation = loadGeneration
-
-        try Task.checkCancellation()
-
-        try await Self.ensureModelSnapshot(repoID: repoID, updateHandler: updateHandler)
-
-        try Task.checkCancellation()
-
-        await updateHandler?(.initializing)
-
-        let loaded = try await Qwen3ASRModel.fromPretrained(repoID)
-
-        try Task.checkCancellation()
-        guard generation == loadGeneration else {
-            throw CancellationError()
-        }
-
-        model = loaded
-        currentRepoID = repoID
-    }
-
-    /// Ensures required model files exist in the model cache directory.
-    /// This emits explicit download progress so UI can distinguish download
-    /// from later model initialization.
-    private static func ensureModelSnapshot(
-        repoID: String,
-        updateHandler: (@MainActor @Sendable (ModelLoadUpdate) -> Void)? = nil
-    ) async throws {
-        let modelDir = modelDirectory(for: repoID)
-        guard !(await hasCompleteModelSnapshot(at: modelDir)) else { return }
-
-        guard let hfRepoID = Repo.ID(rawValue: repoID) else {
-            throw TranscriptionError.invalidRepositoryID(repoID)
-        }
+        unloadModel()
 
         await updateHandler?(.downloading(progress: 0))
 
-        // Create directory if needed (first-time download case)
-        try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
+        // The Rust FFI handles download + cache. This is a blocking call,
+        // so run it off the main thread.
+        let loadedEngine: OpaquePointer = try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                var err: UnsafeMutablePointer<CChar>?
+                let ptr = asr_engine_from_pretrained(repoID, cacheDir, &err)
 
-        let client = HubClient.default
-        _ = try await client.downloadSnapshot(
-            of: hfRepoID,
-            kind: .model,
-            to: modelDir,
-            revision: "main",
-            matching: ["*.safetensors", "*.json", "merges.txt"],
-            progressHandler: { progress in
-                let fraction = progress.fractionCompleted
-                let normalized =
-                    fraction.isFinite ? min(max(fraction, 0), 1) : 0
-                if let updateHandler {
-                    Task { @MainActor in
-                        updateHandler(.downloading(progress: normalized))
-                    }
+                if let ptr {
+                    continuation.resume(returning: ptr)
+                } else {
+                    let message = err.flatMap { String(cString: $0, encoding: .utf8) } ?? "unknown error"
+                    err.flatMap { asr_string_free($0) }
+                    continuation.resume(throwing: TranscriptionError.loadFailed(message))
                 }
             }
+        }
+
+        await updateHandler?(.initializing)
+
+        lock.withLock { engine = loadedEngine }
+
+        Self.logger.info("Model loaded: \(repoID, privacy: .public)")
+    }
+
+    /// Load a model from a local directory (no download).
+    func loadModelFromDirectory(_ path: String) throws {
+        unloadModel()
+
+        var err: UnsafeMutablePointer<CChar>?
+        guard let ptr = asr_engine_load(path, &err) else {
+            let message = err.flatMap { String(cString: $0, encoding: .utf8) } ?? "unknown error"
+            err.flatMap { asr_string_free($0) }
+            throw TranscriptionError.loadFailed(message)
+        }
+
+        lock.lock()
+        engine = ptr
+        lock.unlock()
+    }
+
+    func unloadModel() {
+        lock.lock()
+        let e = engine
+        engine = nil
+        lock.unlock()
+
+        if let e {
+            asr_engine_free(e)
+        }
+    }
+
+    deinit {
+        if let engine {
+            asr_engine_free(engine)
+        }
+    }
+
+    // MARK: - Streaming Session
+
+    /// Create a new streaming session.
+    /// Returns nil if no model is loaded.
+    func createSession(chunkSizeSec: Float = 0.5, sessionDurationSec: Float = 10.0) -> StreamingSession? {
+        lock.lock()
+        guard let engine else {
+            lock.unlock()
+            return nil
+        }
+        lock.unlock()
+
+        let opts = AsrSessionOptions(
+            chunk_size_sec: chunkSizeSec,
+            session_duration_sec: sessionDurationSec
         )
-
-        // Keep going even if our local snapshot predicate fails so upstream
-        // fromPretrained() can resolve/download via its own cache strategy.
-        _ = await hasCompleteModelSnapshot(at: modelDir)
-
-        await updateHandler?(.downloading(progress: 1))
+        guard let session = asr_session_create(engine, opts) else {
+            return nil
+        }
+        return StreamingSession(ptr: session)
     }
 
-    private static func modelDirectory(for repoID: String) -> URL {
-        // Keep this convention aligned with MLXAudioCore.ModelUtils.
-        // If upstream cache layout changes, ensureModelSnapshot falls back to
-        // fromPretrained()'s resolver instead of failing hard.
-        let modelSubdir = repoID.replacingOccurrences(of: "/", with: "_")
-        return URL.cachesDirectory
-            .appendingPathComponent("mlx-audio")
-            .appendingPathComponent(modelSubdir)
-    }
-
-    private static func hasCompleteModelSnapshot(at modelDir: URL) async -> Bool {
-        await withCheckedContinuation { continuation in
-            cacheInspectionQueue.async {
-                continuation.resume(returning: hasCompleteModelSnapshotSync(at: modelDir))
-            }
-        }
-    }
-
-    private static func hasCompleteModelSnapshotSync(at modelDir: URL) -> Bool {
-        guard FileManager.default.fileExists(atPath: modelDir.path) else {
-            return false
+    /// Feed 16kHz mono f32 audio into a streaming session.
+    /// Returns the current transcript if a chunk boundary was crossed, nil otherwise.
+    func feed(session: StreamingSession, samples: [Float]) -> String? {
+        var err: UnsafeMutablePointer<CChar>?
+        let result = samples.withUnsafeBufferPointer { buf in
+            asr_session_feed(session.ptr, buf.baseAddress, buf.count, &err)
         }
 
-        let files = (try? FileManager.default.contentsOfDirectory(
-            at: modelDir,
-            includingPropertiesForKeys: nil
-        )) ?? []
-
-        let hasWeights = files.contains { $0.pathExtension == "safetensors" }
-        let hasMerges = FileManager.default.fileExists(
-            atPath: modelDir.appendingPathComponent("merges.txt").path
-        )
-        let configPath = modelDir.appendingPathComponent("config.json")
-        let hasValidConfig =
-            FileManager.default.fileExists(atPath: configPath.path)
-            && {
-                guard let data = try? Data(contentsOf: configPath) else {
-                    return false
-                }
-                return (try? JSONSerialization.jsonObject(with: data)) != nil
-            }()
-
-        return hasWeights && hasMerges && hasValidConfig
-    }
-
-    /// Transcribe raw audio samples to text.
-    /// - Parameter audio: Float32 samples at 16kHz, mono.
-    /// - Returns: Transcribed text string.
-    func transcribe(audio: [Float]) async throws -> String {
-        try Task.checkCancellation()
-        await acquireOperationTurn()
-        defer { releaseOperationTurn() }
-        try Task.checkCancellation()
-
-        guard let model else {
-            throw TranscriptionError.modelNotLoaded
+        if let err {
+            let msg = String(cString: err, encoding: .utf8) ?? "unknown"
+            asr_string_free(err)
+            Self.logger.error("feed error: \(msg, privacy: .public)")
+            return nil
         }
 
-        guard !audio.isEmpty else {
-            throw TranscriptionError.emptyAudio
-        }
-
-        try Task.checkCancellation()
-
-        let text = await runInference(model: model, audio: audio)
-
-        try Task.checkCancellation()
-
-        guard !text.isEmpty else {
-            throw TranscriptionError.emptyResult
-        }
-
+        guard let result else { return nil }
+        let text = String(cString: result)
+        asr_string_free(result)
         return text
     }
 
-    /// Transcribe with streaming - yields partial text as tokens arrive.
-    /// - Parameters:
-    ///   - audio: Float32 samples at 16kHz, mono.
-    ///   - onToken: Called on main actor with each new token and cumulative text so far.
-    /// - Returns: Final transcribed text string.
-    func transcribeStreaming(
-        audio: [Float],
-        onToken: @escaping @MainActor @Sendable (String, String) -> Void
-    ) async throws -> String {
-        try Task.checkCancellation()
-        await acquireOperationTurn()
-        defer { releaseOperationTurn() }
-        try Task.checkCancellation()
+    /// Finalize a streaming session and return the complete transcript.
+    func finish(session: StreamingSession) -> String? {
+        var err: UnsafeMutablePointer<CChar>?
+        let result = asr_session_finish(session.ptr, &err)
 
-        guard let model else {
-            throw TranscriptionError.modelNotLoaded
+        if let err {
+            let msg = String(cString: err, encoding: .utf8) ?? "unknown"
+            asr_string_free(err)
+            Self.logger.error("finish error: \(msg, privacy: .public)")
+            return nil
         }
 
-        guard !audio.isEmpty else {
-            throw TranscriptionError.emptyAudio
-        }
-
-        try Task.checkCancellation()
-
-        let text = await runStreamingInference(model: model, audio: audio, onToken: onToken)
-
-        try Task.checkCancellation()
-
-        guard !text.isEmpty else {
-            throw TranscriptionError.emptyResult
-        }
-
+        guard let result else { return nil }
+        let text = String(cString: result)
+        asr_string_free(result)
         return text
     }
+}
 
-    /// Quick transcription for live preview during recording.
-    /// Does not use operation lock - meant for rapid fire updates.
-    /// Returns nil if model not loaded or audio too short.
-    func transcribeLive(audio: [Float]) async -> String? {
-        guard let model else { return nil }
-        guard audio.count >= 1600 else { return nil } // At least 0.1s at 16kHz
+/// Opaque streaming session handle wrapping the Rust AsrSession.
+final class StreamingSession: @unchecked Sendable {
+    let ptr: OpaquePointer  // *mut AsrSession
 
-        let text = await runInference(model: model, audio: audio)
-        return text.isEmpty ? nil : text
+    init(ptr: OpaquePointer) {
+        self.ptr = ptr
     }
 
-    private func invalidateLoadedModel() {
-        loadGeneration &+= 1
-        model = nil
-        currentRepoID = nil
-        Memory.clearCache()
-    }
-
-    private func acquireOperationTurn() async {
-        if !hasActiveOperation {
-            hasActiveOperation = true
-            return
-        }
-
-        await withCheckedContinuation { continuation in
-            waitingOperations.append(continuation)
-        }
-    }
-
-    private func releaseOperationTurn() {
-        if waitingOperations.isEmpty {
-            hasActiveOperation = false
-            return
-        }
-
-        let next = waitingOperations.removeFirst()
-        next.resume()
-    }
-
-    private func runInference(model: Qwen3ASRModel, audio: [Float]) async -> String {
-        let request = InferenceRequest(model: model, audio: audio)
-
-        return await withCheckedContinuation { continuation in
-            inferenceQueue.async {
-                let mlxAudio = MLXArray(request.audio)
-                let output = request.model.generate(
-                    audio: mlxAudio,
-                    language: "English"
-                )
-                let text = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                continuation.resume(returning: text)
-            }
-        }
-    }
-
-    private func runStreamingInference(
-        model: Qwen3ASRModel,
-        audio: [Float],
-        onToken: @escaping @MainActor @Sendable (String, String) -> Void
-    ) async -> String {
-        let mlxAudio = MLXArray(audio)
-        var accumulated = ""
-        var finalText = ""
-
-        let stream = model.generateStream(audio: mlxAudio, language: "English")
-
-        do {
-            for try await event in stream {
-                switch event {
-                case .token(let token):
-                    accumulated += token
-                    await onToken(token, accumulated)
-                case .result(let result):
-                    finalText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                case .info:
-                    break
-                }
-            }
-        } catch {
-            finalText = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
-        return finalText.isEmpty ? accumulated.trimmingCharacters(in: .whitespacesAndNewlines) : finalText
+    deinit {
+        asr_session_free(ptr)
     }
 }
 
 enum TranscriptionError: LocalizedError {
     case modelNotLoaded
+    case loadFailed(String)
     case emptyAudio
     case emptyResult
-    case invalidRepositoryID(String)
 
     var errorDescription: String? {
         switch self {
         case .modelNotLoaded:
             return "STT model not loaded"
+        case .loadFailed(let message):
+            return "Model load failed: \(message)"
         case .emptyAudio:
             return "No audio recorded"
         case .emptyResult:
             return "No speech detected"
-        case .invalidRepositoryID(let repoID):
-            return "Invalid model repository ID: \(repoID)"
         }
     }
 }

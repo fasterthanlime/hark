@@ -50,8 +50,10 @@ struct PasteController {
 
         // If submitting, simulate Enter after paste
         if submit {
-            try? await Task.sleep(for: .milliseconds(50))
+            try? await Task.sleep(for: .milliseconds(500))
+            print("[whisper] simulating Return key")
             try await simulateReturn()
+            print("[whisper] Return key simulated")
         }
 
         // Restore original pasteboard after paste completes
@@ -241,6 +243,7 @@ struct PasteController {
         ) else {
             throw PasteError.keyEventCreationFailed
         }
+        keyDown.flags = []  // Clear all modifiers — bare Return only.
         keyDown.post(tap: .cghidEventTap)
 
         try? await Task.sleep(for: .milliseconds(10))
@@ -252,6 +255,7 @@ struct PasteController {
         ) else {
             throw PasteError.keyEventCreationFailed
         }
+        keyUp.flags = []
         keyUp.post(tap: .cghidEventTap)
     }
 

@@ -60,10 +60,13 @@ final class AppState {
     var audioLevel: Float = 0
 
     /// Real-time spectrum bands (0–1 each), updated from FFT.
-    var spectrumBands: [Float] = Array(repeating: 0, count: 8)
+    var spectrumBands: [Float] = Array(repeating: 0, count: 6)
 
     /// Partial transcript during streaming transcription.
     var partialTranscript: String = ""
+
+    /// Overlay dismiss animation state (driven by OverlayManager, observed by the view).
+    var overlayDismiss: OverlayResult = .none
 
     /// Recent transcription history (newest first), max 20 items.
     var transcriptionHistory: [TranscriptionHistoryItem] = []

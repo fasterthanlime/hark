@@ -7,7 +7,7 @@ import Foundation
 final class AudioRecorder: @unchecked Sendable {
     static let defaultMaximumDuration: TimeInterval = 90
     static let defaultPreBufferDuration: TimeInterval = 0.2  // 200ms pre-buffer
-    static let spectrumBandCount = 8
+    static let spectrumBandCount = 6
 
     private var engine: AVAudioEngine?
     private var nativeSampleRate: Double = 0
@@ -27,6 +27,7 @@ final class AudioRecorder: @unchecked Sendable {
     private var onSpectrum: (@Sendable ([Float]) -> Void)?
 
     // FFT setup
+    private var smoothedBands = [Float](repeating: 0, count: spectrumBandCount)
     private let fftSize = 512
     private var fftSetup: vDSP_DFT_Setup?
     private var fftWindow: [Float] = []
@@ -97,7 +98,7 @@ final class AudioRecorder: @unchecked Sendable {
         isWarm = true
         lock.unlock()
 
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: nativeFormat) { [weak self] buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: nativeFormat) { [weak self] buffer, _ in
             self?.handleAudioBuffer(buffer)
         }
 
@@ -283,7 +284,7 @@ final class AudioRecorder: @unchecked Sendable {
         // Calculate bin indices for voice frequency range
         // Each bin represents nativeSampleRate/fftSize Hz
         let binHz = nativeSampleRate / Double(fftSize)
-        let voiceMinHz = 100.0
+        let voiceMinHz = 200.0
         let voiceMaxHz = 4000.0
         let voiceMinBin = max(1, Int(voiceMinHz / binHz))
         let voiceMaxBin = min(halfSize - 1, Int(voiceMaxHz / binHz))
@@ -302,14 +303,25 @@ final class AudioRecorder: @unchecked Sendable {
             bands[band] = sum / Float(binCount)
         }
 
-        // Scale to 0-1 range - use adaptive scaling with decay
-        let maxMag = bands.max() ?? 1.0
-        let referenceLevel = max(maxMag, 0.5)  // Minimum reference to avoid division issues
+        // Convert to dB and normalize to 0..1 range.
+        // This handles the wide dynamic range of audio naturally.
         for i in 0..<bandCount {
-            bands[i] = min(bands[i] / referenceLevel, 1.0)
+            let db = 20.0 * log10f(max(bands[i], 1e-10))
+            bands[i] = max(0, min(1, (db + 50) / 40)) // map -50dB...-10dB → 0...1
         }
 
-        return bands
+        // Temporal smoothing: fast attack, slow decay
+        let attackRate: Float = 0.7
+        let decayRate: Float = 0.12
+        for i in 0..<bandCount {
+            if bands[i] > smoothedBands[i] {
+                smoothedBands[i] += (bands[i] - smoothedBands[i]) * attackRate
+            } else {
+                smoothedBands[i] += (bands[i] - smoothedBands[i]) * decayRate
+            }
+        }
+
+        return smoothedBands
     }
 
     private func resample(_ samples: [Float], from srcRate: Double, to dstRate: Double) -> [Float] {

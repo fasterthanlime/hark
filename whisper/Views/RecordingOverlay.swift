@@ -1,60 +1,60 @@
 import SwiftUI
 
-/// Result state for overlay dismissal animation
+/// Result state for overlay dismissal animation.
 enum OverlayResult {
     case none
     case success
     case cancelled
 }
 
-/// Floating overlay showing transcript with spectrum bar below.
+/// Floating overlay showing transcript with spectrum bars above.
 struct RecordingOverlayView: View {
     let appState: AppState
-    let result: OverlayResult
 
     @State private var isAppearing = false
     @State private var displayedText = ""
     @State private var textAnimationTask: Task<Void, Never>?
 
-    var body: some View {
-        ZStack {
-            // Main content (recording/transcribing)
-            if result == .none {
-                mainContent
-                    .scaleEffect(isAppearing ? 1.0 : 0.8)
-                    .opacity(isAppearing ? 1.0 : 0.0)
-            }
+    private var dismissResult: OverlayResult { appState.overlayDismiss }
 
-            // Result overlay (success/cancelled)
-            if result != .none {
-                resultContent
-                    .transition(.opacity)
+    private var scale: CGFloat {
+        if dismissResult == .success { return 1.3 }
+        if dismissResult == .cancelled { return 0.7 }
+        return isAppearing ? 1.0 : 0.8
+    }
+
+    private var opacity: Double {
+        if dismissResult != .none { return 0 }
+        return isAppearing ? 1.0 : 0.0
+    }
+
+    var body: some View {
+        mainContent
+            .scaleEffect(scale)
+            .opacity(opacity)
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isAppearing)
+            .animation(.easeIn(duration: 0.25), value: dismissResult)
+            .onAppear {
+                withAnimation {
+                    isAppearing = true
+                }
             }
-        }
-        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isAppearing)
-        .animation(.easeInOut(duration: 0.15), value: result)
-        .onAppear {
-            withAnimation {
-                isAppearing = true
+            .onChange(of: appState.partialTranscript) { _, newValue in
+                animateTextChange(to: newValue)
             }
-        }
-        .onChange(of: appState.partialTranscript) { _, newValue in
-            animateTextChange(to: newValue)
-        }
     }
 
     private var mainContent: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Transcript text with typewriter effect
+        VStack(alignment: .leading, spacing: 8) {
+            SpectrumBarsView(bands: appState.spectrumBands)
+                .frame(maxWidth: .infinity)
+
             Text(displayedTextValue)
                 .font(.system(size: 15, weight: .medium))
                 .foregroundColor(.white)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-
-            // Spectrum bar below text
-            SpectrumBarView(bands: appState.spectrumBands, isActive: appState.phase == .recording)
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 14)
@@ -66,62 +66,26 @@ struct RecordingOverlayView: View {
         )
     }
 
-    private var resultContent: some View {
-        let isSuccess = result == .success
-
-        return VStack(spacing: 8) {
-            // Result icon centered at top
-            HStack {
-                Spacer()
-                Image(systemName: isSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
-                    .font(.system(size: 32, weight: .medium))
-                    .foregroundColor(isSuccess ? .green : .red)
-                    .symbolEffect(.bounce, value: result)
-                Spacer()
-            }
-
-            // Faded transcript text below
-            if !displayedText.isEmpty {
-                Text(displayedText)
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundColor(.gray)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .lineLimit(2)
-            }
-        }
-        .padding(.vertical, 12)
-        .padding(.horizontal, 14)
-        .frame(width: 500, alignment: .top)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.black.opacity(0.8))
-                .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
-        )
-    }
-
     private var displayedTextValue: String {
-        if displayedText.isEmpty && appState.partialTranscript.isEmpty {
-            return appState.phase == .recording ? "Listening..." : "Transcribing..."
-        }
-        return displayedText.isEmpty ? appState.partialTranscript : displayedText
+        if !displayedText.isEmpty { return displayedText }
+        if !appState.partialTranscript.isEmpty { return appState.partialTranscript }
+        return "Listening..."
     }
 
     private func animateTextChange(to newText: String) {
+        // Don't clear displayed text — keep showing the last transcript during dismiss.
+        guard !newText.isEmpty else { return }
+
         textAnimationTask?.cancel()
 
-        // Find the common prefix - only animate new characters
         let currentText = displayedText
         let commonPrefixLength = currentText.commonPrefix(with: newText).count
 
         if commonPrefixLength == newText.count {
-            // New text is shorter or same - just set it
             displayedText = newText
             return
         }
 
-        // Animate new characters appearing
         let newPart = String(newText.dropFirst(commonPrefixLength))
         displayedText = String(newText.prefix(commonPrefixLength))
 
@@ -135,29 +99,29 @@ struct RecordingOverlayView: View {
     }
 }
 
-/// Thin spectrum bar showing audio activity.
-struct SpectrumBarView: View {
+/// Six vertical capsule bars that grow with audio energy.
+struct SpectrumBarsView: View {
     let bands: [Float]
-    let isActive: Bool
 
-    private let barCount = 32
-    private let barHeight: CGFloat = 4
+    private let barCount = 6
+    private let barWidth: CGFloat = 3
+    private let minHeight: CGFloat = 4
+    private let maxHeight: CGFloat = 40
+    private let spacing: CGFloat = 3
 
     var body: some View {
-        GeometryReader { geo in
-            HStack(spacing: 1) {
-                ForEach(0..<barCount, id: \.self) { index in
-                    let bandIndex = index * bands.count / barCount
-                    let level = bandIndex < bands.count ? CGFloat(bands[bandIndex]) : 0
+        HStack(alignment: .center, spacing: spacing) {
+            ForEach(0..<barCount, id: \.self) { index in
+                let level = index < bands.count ? CGFloat(bands[index]) : 0
+                let height = minHeight + (maxHeight - minHeight) * level
+                let opacity = 0.4 + 0.6 * level
 
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(Color.white.opacity(isActive ? 0.3 + 0.7 * level : 0.2))
-                        .frame(height: barHeight)
-                }
+                Capsule()
+                    .fill(Color.white.opacity(opacity))
+                    .frame(width: barWidth, height: height)
             }
-            .frame(width: geo.size.width, height: barHeight)
         }
-        .frame(height: barHeight)
-        .animation(.easeOut(duration: 0.05), value: bands)
+        .animation(.easeOut(duration: 0.07), value: bands)
+        .frame(height: maxHeight)
     }
 }

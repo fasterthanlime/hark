@@ -20,6 +20,8 @@ struct MenuBarView: View {
     @State private var hoveredDeleteModelID: String?
     @State private var hoveredDownloadModelID: String?
     @State private var isHoveringRunOnStartup = false
+    @State private var isHoveringPauseMedia = false
+    @State private var pauseMediaEnabled = MediaController.isEnabled
     @State private var isHoveringQuit = false
     @State private var isCapturingHotkey = false
     @State private var capturePressedKeyCodes: Set<UInt16> = []
@@ -260,32 +262,12 @@ struct MenuBarView: View {
     @ViewBuilder
     private var startupSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Button {
-                onRunOnStartupToggle()
-            } label: {
-                HStack(spacing: 6) {
-                    if runOnStartupEnabled {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(.caption, weight: .semibold))
-                            .foregroundStyle(.green)
-                    }
-                    Text("Run on Startup")
-                        .font(.system(.body))
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 4)
-                .background {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(isHoveringRunOnStartup ? Color.primary.opacity(0.1) : .clear)
-                }
-                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .onHover { isHovering in
-                isHoveringRunOnStartup = isHovering
-            }
+            toggleRow(
+                label: "Run on Startup",
+                isOn: runOnStartupEnabled,
+                isHovering: $isHoveringRunOnStartup,
+                action: onRunOnStartupToggle
+            )
 
             if let error = appState.runOnStartupError {
                 Text(error)
@@ -293,6 +275,43 @@ struct MenuBarView: View {
                     .foregroundStyle(.red)
                     .padding(.horizontal, 6)
             }
+
+            toggleRow(
+                label: "Pause Media While Dictating",
+                isOn: pauseMediaEnabled,
+                isHovering: $isHoveringPauseMedia,
+                action: { pauseMediaEnabled.toggle(); MediaController.isEnabled = pauseMediaEnabled }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func toggleRow(label: String, isOn: Bool, isHovering: Binding<Bool>, action: @escaping () -> Void) -> some View {
+        Button {
+            action()
+        } label: {
+            HStack(spacing: 6) {
+                if isOn {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(.caption, weight: .semibold))
+                        .foregroundStyle(.green)
+                }
+                Text(label)
+                    .font(.system(.body))
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isHovering.wrappedValue ? Color.primary.opacity(0.1) : .clear)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { h in
+            isHovering.wrappedValue = h
         }
     }
 

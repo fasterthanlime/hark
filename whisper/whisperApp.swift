@@ -12,10 +12,21 @@ extension Notification.Name {
     static let submitRecording = Notification.Name("submitRecording")
 }
 
+private enum StreamingSignal {
+    case none              // normal exit (phase changed, key released)
+    case over              // ". Over." — submit + keep recording
+    case overAndOut        // ". Over and out." — submit + stop
+}
+
+private struct StreamingResult {
+    let text: String
+    let signal: StreamingSignal
+    let processedSampleCount: Int
+}
+
 @main
 struct WhisperApp: App {
     private static let sharedTranscriptionService = TranscriptionService()
-    private static let sharedVADService = VADService()
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "whisper",
         category: "startup"
@@ -25,17 +36,13 @@ struct WhisperApp: App {
     @State private var overlayManager = OverlayManager()
     @State private var audioRecorder = AudioRecorder()
     private let transcriptionService = sharedTranscriptionService
-    private let vadService = sharedVADService
     @State private var hotkeyMonitor = HotkeyMonitor()
     @State private var modelLoadTask: Task<Void, Never>?
-    // UI stale-completion guard. Kept separate from TranscriptionService.loadGeneration,
-    // which guards actor-owned model state.
     @State private var modelLoadGeneration: UInt64 = 0
     @State private var hasLaunched = false
     @State private var recordingTimeoutTask: Task<Void, Never>?
-    @State private var vadProcessingTask: Task<Void, Never>?
-    @State private var accumulatedTranscript: String = ""
-    @State private var hadSpeechActivity: Bool = false
+    @State private var streamingTask: Task<StreamingResult, Never>?
+    @State private var streamingSession: StreamingSession?
     @State private var inputDeviceMonitor = InputDeviceMonitor()
     @State private var keyDownTime: Date?
     @State private var isToggleMode: Bool = false
@@ -56,7 +63,7 @@ struct WhisperApp: App {
                 },
                 onDeleteLocalModel: { model in
                     Task { @MainActor in
-                        await deleteLocalModel(model)
+                        deleteLocalModel(model)
                     }
                 },
                 onHotkeyBindingSave: { binding in
@@ -96,8 +103,6 @@ struct WhisperApp: App {
         .menuBarExtraStyle(.window)
     }
 
-    /// Create an NSImage from an SF Symbol at an exact pixel size, marked as template
-    /// so macOS handles light/dark menu bar correctly.
     private func menuBarNSImage(symbolName: String, size: CGFloat) -> NSImage {
         let config = NSImage.SymbolConfiguration(pointSize: size, weight: .regular)
         let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
@@ -110,31 +115,21 @@ struct WhisperApp: App {
 
     @MainActor
     private func onLaunch() async {
-        let defaultRepoID = UserDefaults.standard.string(forKey: "selectedModelID")
+        let savedRepoID = UserDefaults.standard.string(forKey: "selectedModelID")
+        let validIDs = Set(STTModelDefinition.allModels.map(\.repoID))
+        let defaultRepoID = savedRepoID.flatMap { validIDs.contains($0) ? $0 : nil }
             ?? STTModelDefinition.default.repoID
 
         appState.selectedModelID = defaultRepoID
         syncRunOnStartupState()
         configureHotkeyFromDefaults()
 
-        // Request permissions
         await requestPermissions()
 
-        // Discover locally cached models
-        await refreshDownloadedModels()
+        await loadModel(repoID: defaultRepoID)
 
-        // Load STT and VAD models in parallel
-        async let sttLoad: () = loadModel(repoID: defaultRepoID)
-        async let vadLoad: () = loadVADModel()
-        _ = await (sttLoad, vadLoad)
-
-        // Start listening for hotkey events
         setupHotkey()
-
-        // Start monitoring input device changes
         startInputDeviceMonitoring()
-
-        // Warm up audio device (keeps mic ready with pre-buffer)
         warmUpAudio()
     }
 
@@ -147,12 +142,10 @@ struct WhisperApp: App {
                 let previousDevice = appState.activeInputDeviceName
                 appState.activeInputDeviceName = deviceName
 
-                // If device changed and we're warmed up, reinitialize audio
                 if previousDevice != nil, previousDevice != deviceName, audioRecorder.isWarmedUp {
                     Self.logger.info("Input device changed, reinitializing audio")
                     audioRecorder.coolDown()
 
-                    // Small delay to let the system settle
                     try? await Task.sleep(for: .milliseconds(100))
 
                     do {
@@ -194,16 +187,6 @@ struct WhisperApp: App {
             )
         } catch {
             Self.logger.error("Failed to warm up audio: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    @MainActor
-    private func loadVADModel() async {
-        do {
-            try await vadService.loadModel()
-            Self.logger.info("VAD model loaded successfully")
-        } catch {
-            Self.logger.error("Failed to load VAD model: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -290,6 +273,13 @@ struct WhisperApp: App {
             return
         }
 
+        // Allow starting a new recording even if the previous one is still wrapping up
+        // (e.g. pasting or showing the success animation).
+        if appState.phase == .transcribing || appState.phase == .pasting {
+            overlayManager.hide()
+            _ = appState.transition(to: .idle)
+        }
+
         guard appState.phase == .idle else { return }
         guard appState.modelStatus == .loaded else { return }
 
@@ -303,20 +293,25 @@ struct WhisperApp: App {
 
         _ = appState.transition(to: .recording)
         appState.partialTranscript = ""
-        accumulatedTranscript = ""
-        hadSpeechActivity = false
         keyDownTime = Date()
         isToggleMode = false
+
+        // Pause media if setting is enabled.
+        if MediaController.isEnabled {
+            MediaController.pauseIfPlaying()
+        }
         overlayManager.show(appState: appState)
         startRecordingTimeout()
         installEscapeMonitor()
         playStartSound()
 
-        // Reset VAD state for new recording
-        await vadService.reset()
+        // Create streaming session
+        streamingSession = transcriptionService.createSession(
+            chunkSizeSec: 0.5,
+            sessionDurationSec: 10.0
+        )
 
         // If audio is warm, just start capturing (instant).
-        // Otherwise, start from cold (may have latency).
         if audioRecorder.isWarmedUp {
             audioRecorder.startCapture()
         } else {
@@ -335,74 +330,150 @@ struct WhisperApp: App {
             }
         }
 
-        // Start VAD-driven transcription
-        startVADProcessing()
+        // Start streaming transcription
+        startStreamingTranscription()
     }
 
     @MainActor
-    private func startVADProcessing() {
-        vadProcessingTask?.cancel()
-        vadProcessingTask = Task { @MainActor in
-            // Process audio chunks as they come in
-            // We'll poll for new audio and feed it to VAD
-            let chunkSize = 1600  // 100ms at 16kHz
-            var lastProcessedCount = 0
+    private func startStreamingTranscription() {
+        startStreamingLoop()
+    }
 
-            while !Task.isCancelled && appState.phase == .recording {
+    /// Start (or restart) the streaming loop. On "over", this pastes + submits
+    /// then calls itself to keep recording. On "over and out", it stops entirely.
+    @MainActor
+    private func startStreamingLoop() {
+        let transcriptionService = self.transcriptionService
+        streamingTask = Task { @MainActor () -> StreamingResult in
+            var processedCount = 0
+            var lastText = ""
+            var signal: StreamingSignal = .none
+
+            while appState.phase == .recording {
                 let allSamples = audioRecorder.peekCapture()
 
-                // Check if we have new audio to process
-                guard allSamples.count > lastProcessedCount + chunkSize else {
-                    try? await Task.sleep(for: .milliseconds(50))
+                guard allSamples.count > processedCount + 800 else {
+                    try? await Task.sleep(for: .milliseconds(30))
                     continue
                 }
 
-                // Extract new chunk
-                let newChunk = Array(allSamples[lastProcessedCount...])
-                lastProcessedCount = allSamples.count
+                let newChunk = Array(allSamples[processedCount...])
+                processedCount = allSamples.count
 
-                // Feed to VAD
-                do {
-                    let events = try await vadService.processAudio(newChunk)
+                guard let session = streamingSession else { break }
 
-                    for event in events {
-                        guard !Task.isCancelled && appState.phase == .recording else { break }
+                // Run inference off the main thread so UI stays responsive.
+                let text: String? = await Task.detached {
+                    transcriptionService.feed(session: session, samples: newChunk)
+                }.value
 
-                        switch event {
-                        case .speechStarted:
-                            Self.logger.debug("VAD: speech started")
-                            hadSpeechActivity = true
+                if let text {
+                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty {
+                        lastText = trimmed
+                        appState.partialTranscript = trimmed
 
-                        case .speechSegment(let audio):
-                            // Speech segment detected - transcribe it
-                            Self.logger.error("VAD: segment detected, \(audio.count) samples")
-                            print("VAD SEGMENT: \(audio.count) samples")
-                            if audio.count < 1600 {
-                                print("VAD SEGMENT: too short, skipping")
-                                continue
-                            }
-                            let text = await transcriptionService.transcribeLive(audio: audio)
-                            print("VAD TRANSCRIPTION: '\(text ?? "nil")'")
-                            if let text, !text.isEmpty {
-                                guard !Task.isCancelled && appState.phase == .recording else { break }
-                                if !accumulatedTranscript.isEmpty {
-                                    accumulatedTranscript += " "
-                                }
-                                accumulatedTranscript += text
-                                appState.partialTranscript = accumulatedTranscript
-                                print("VAD PARTIAL: '\(accumulatedTranscript)'")
-                            }
-
-                        case .speechEnded:
-                            Self.logger.debug("VAD: speech ended")
+                        // Check "over and out" first (higher priority).
+                        if trimmed.range(of: #"(?i)[.!?,]\s+over\s+and\s+out\.?\s*$"#, options: .regularExpression) != nil {
+                            signal = .overAndOut
+                            break
+                        }
+                        // Then check "over".
+                        if trimmed.range(of: #"(?i)[.!?,]\s+over\.?\s*$"#, options: .regularExpression) != nil {
+                            signal = .over
+                            break
                         }
                     }
-                } catch {
-                    Self.logger.error("VAD processing error: \(error.localizedDescription, privacy: .public)")
-                    print("VAD ERROR: \(error)")
                 }
             }
+
+            // Strip the trigger phrase from the text.
+            lastText = Self.stripTrigger(lastText, signal: signal)
+
+            return StreamingResult(text: lastText, signal: signal, processedSampleCount: processedCount)
         }
+
+        // Watcher: handles "over" and "over and out" when they fire mid-recording.
+        Task { @MainActor in
+            guard let result = await streamingTask?.value else { return }
+            guard result.signal != .none && appState.phase == .recording else { return }
+
+            print("[whisper] signal: \(result.signal) text='\(result.text)'")
+            appState.partialTranscript = ""
+
+            if !result.text.isEmpty {
+                // Paste + Enter for the current sentence.
+                // Temporarily leave recording to paste, then come back if "over" (not "over and out").
+                _ = appState.transition(to: .transcribing)
+                _ = appState.transition(to: .pasting)
+                do {
+                    try await PasteController.paste(result.text, submit: true)
+                } catch {
+                    print("[whisper] paste error: \(error)")
+                }
+                appState.addToHistory(result.text)
+            }
+
+            if result.signal == .over {
+                // Keep recording — reset audio buffer and start a fresh streaming session.
+                if audioRecorder.isWarmedUp {
+                    _ = audioRecorder.stopCapture()
+                    audioRecorder.startCapture()
+                }
+                _ = appState.transition(to: .idle)
+                _ = appState.transition(to: .recording)
+                appState.partialTranscript = ""
+                streamingSession = transcriptionService.createSession(
+                    chunkSizeSec: 0.5,
+                    sessionDurationSec: 10.0
+                )
+                startStreamingLoop()
+            } else {
+                // "Over and out" — stop recording entirely.
+                cancelRecordingTimeout()
+                removeEscapeMonitor()
+                isToggleMode = false
+                keyDownTime = nil
+                streamingTask = nil
+                streamingSession = nil
+
+                if audioRecorder.isWarmedUp {
+                    _ = audioRecorder.stopCapture()
+                } else {
+                    _ = audioRecorder.stop()
+                }
+                appState.audioLevel = 0
+                if MediaController.isEnabled { MediaController.resumeIfPaused() }
+                _ = appState.transition(to: .idle)
+                overlayManager.hideWithResult(.success)
+            }
+        }
+    }
+
+    /// Strip "over" or "over and out" from the end of the text.
+    private static func stripTrigger(_ text: String, signal: StreamingSignal) -> String {
+        guard signal != .none else { return text }
+        var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = s.lowercased()
+
+        let suffix: String
+        switch signal {
+        case .overAndOut:
+            suffix = "over and out"
+        case .over:
+            suffix = "over"
+        case .none:
+            return s
+        }
+
+        // Strip trailing period/comma, then the trigger word(s).
+        if s.hasSuffix(".") || s.hasSuffix(",") { s = String(s.dropLast()) }
+        s = s.trimmingCharacters(in: .whitespaces)
+        if s.lowercased().hasSuffix(suffix) {
+            s = String(s.dropLast(suffix.count))
+            s = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return s
     }
 
     @MainActor
@@ -413,13 +484,11 @@ struct WhisperApp: App {
         if let downTime = keyDownTime {
             let pressDuration = Date().timeIntervalSince(downTime)
             if pressDuration < Self.toggleModeThresholdSeconds {
-                // Enter toggle mode - don't stop recording
                 isToggleMode = true
                 return
             }
         }
 
-        // Hold mode - stop recording
         await stopRecordingAndTranscribe()
     }
 
@@ -449,6 +518,8 @@ struct WhisperApp: App {
     private func stopRecordingAndTranscribe(cancelTimeoutTask: Bool = true, skipPaste: Bool = false, forceSubmit: Bool = false) async {
         guard appState.phase == .recording else { return }
 
+        _ = appState.transition(to: .transcribing)
+
         if cancelTimeoutTask {
             cancelRecordingTimeout()
         }
@@ -456,83 +527,78 @@ struct WhisperApp: App {
         isToggleMode = false
         keyDownTime = nil
 
-        // Stop VAD processing
-        vadProcessingTask?.cancel()
-        vadProcessingTask = nil
+        // Stop the streaming loop.
+        let stask = streamingTask
+        streamingTask = nil
 
-        // Get final audio from recorder
-        let samples: [Float]
+        // Grab all remaining audio before stopping capture.
+        let allSamples = audioRecorder.peekCapture()
+
         if audioRecorder.isWarmedUp {
-            samples = audioRecorder.stopCapture()
+            _ = audioRecorder.stopCapture()
         } else {
-            samples = audioRecorder.stop()
+            _ = audioRecorder.stop()
         }
         appState.audioLevel = 0
 
-        let minimumSamples = Int(Self.minimumSpeechDurationSeconds * Self.transcriptionSampleRate)
-        guard samples.count >= minimumSamples else {
-            overlayManager.hide()
-            appState.partialTranscript = ""
-            _ = appState.transition(to: .error("Recording too short. Hold the hotkey briefly and try again."))
-            resetAfterDelay(seconds: 2)
-            return
-        }
+        // Feed any remaining samples and finalize the session to get the complete transcript.
+        var text = appState.partialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let session = streamingSession {
+            // Wait for the streaming loop to exit so we don't race on the session.
+            let result = await stask?.value
+            let processedCount = result?.processedSampleCount ?? allSamples.count
 
-        // Get any remaining audio from VAD buffer
-        let (remainingAudio, _) = await vadService.flush()
-
-        // Start with accumulated transcript from completed segments
-        var text = accumulatedTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // Always transcribe remaining audio to avoid losing the last segment
-        // Use remaining VAD buffer if available, otherwise fall back to full recording
-        let audioToTranscribe = remainingAudio ?? (text.isEmpty ? samples : nil)
-        if let audio = audioToTranscribe, !audio.isEmpty {
-            _ = appState.transition(to: .transcribing)
-            overlayManager.show(appState: appState)
-
-            if let result = await transcriptionService.transcribeLive(audio: audio) {
-                let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Feed remaining unprocessed audio and finalize — off main thread.
+            let transcriptionService = self.transcriptionService
+            let remaining = processedCount < allSamples.count ? Array(allSamples[processedCount...]) : nil
+            let finalText: String? = await Task.detached {
+                if let remaining {
+                    _ = transcriptionService.feed(session: session, samples: remaining)
+                }
+                return transcriptionService.finish(session: session)
+            }.value
+            if let finalText {
+                let trimmed = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
-                    if !text.isEmpty {
-                        text += " "
-                    }
-                    text += trimmed
+                    text = trimmed
                 }
             }
         }
+        streamingSession = nil
 
+        await finishAndPaste(text: text, skipPaste: skipPaste, forceSubmit: forceSubmit)
+    }
+
+    @MainActor
+    private func finishAndPaste(text: String, skipPaste: Bool = false, forceSubmit: Bool = false) async {
         appState.partialTranscript = ""
+        if MediaController.isEnabled { MediaController.resumeIfPaused() }
 
         guard !text.isEmpty else {
-            _ = appState.transition(to: .error("No speech detected"))
+            _ = appState.transition(to: .idle)
             overlayManager.hide()
-            resetAfterDelay()
             return
         }
 
-        // Add to history (even if we're skipping paste)
         appState.addToHistory(text)
 
-        // If escape was pressed, skip pasting but show cancelled animation
         if skipPaste {
             _ = appState.transition(to: .idle)
-            await overlayManager.hideWithResult(.cancelled)
+            overlayManager.hideWithResult(.cancelled)
             return
         }
 
-        // Check if Return is held or forceSubmit was requested
-        let shouldSubmit = forceSubmit || PasteController.isReturnKeyPressed()
+        let shouldSubmit = forceSubmit || PasteController.isReturnKeyPressed() || Self.isAutoSubmitApp()
 
         _ = appState.transition(to: .pasting)
         do {
             try await PasteController.paste(text, submit: shouldSubmit)
             _ = appState.transition(to: .idle)
-            await overlayManager.hideWithResult(.success)
+            overlayManager.hideWithResult(.success)
         } catch {
             _ = appState.transition(to: .error(error.localizedDescription))
             overlayManager.hide()
-            resetAfterDelay()
+            resetAfterDelay(seconds: 1)
         }
     }
 
@@ -540,7 +606,6 @@ struct WhisperApp: App {
     private func installEscapeMonitor() {
         removeEscapeMonitor()
 
-        // Use global monitor to catch escape key even when other apps are focused
         let currentAppState = appState
         let currentHotkeyMonitor = hotkeyMonitor
         escapeMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [self] event in
@@ -551,8 +616,6 @@ struct WhisperApp: App {
 
             guard isEscape || isReturn else { return }
 
-            // In toggle mode, require hotkey to be held for both Escape and Enter
-            // In hold mode, Escape/Enter alone works (since hotkey is already held)
             if isToggleMode {
                 guard currentHotkeyMonitor.isHeld else { return }
             }
@@ -564,7 +627,6 @@ struct WhisperApp: App {
             }
         }
 
-        // Observe cancel notification
         notificationObserver = NotificationCenter.default.addObserver(
             forName: .cancelRecording,
             object: nil,
@@ -575,7 +637,6 @@ struct WhisperApp: App {
             }
         }
 
-        // Observe submit notification
         NotificationCenter.default.addObserver(
             forName: .submitRecording,
             object: nil,
@@ -623,21 +684,21 @@ struct WhisperApp: App {
     }
 
     @MainActor
-    private func refreshDownloadedModels() async {
-        let repoIDs = STTModelDefinition.allModels.map(\.repoID)
-        appState.downloadedModelRepoIDs = await transcriptionService.downloadedModelRepoIDs(for: repoIDs)
-    }
-
-    @MainActor
-    private func deleteLocalModel(_ model: STTModelDefinition) async {
+    private func deleteLocalModel(_ model: STTModelDefinition) {
         let repoID = model.repoID
+        let cacheDir = STTModelDefinition.cacheDirectory
+        let sanitized = repoID.replacingOccurrences(of: "/", with: "--")
+        let modelDir = URL(fileURLWithPath: cacheDir).appendingPathComponent(sanitized)
 
         if appState.selectedModelID == repoID {
             modelLoadTask?.cancel()
+            transcriptionService.unloadModel()
         }
 
         do {
-            try await transcriptionService.deleteLocalModel(repoID: repoID)
+            if FileManager.default.fileExists(atPath: modelDir.path) {
+                try FileManager.default.removeItem(at: modelDir)
+            }
             appState.downloadedModelRepoIDs.remove(repoID)
 
             if appState.selectedModelID == repoID {
@@ -664,7 +725,10 @@ struct WhisperApp: App {
 
         let task = Task(priority: .userInitiated) {
             do {
-                try await transcriptionService.loadModel(repoID: repoID) { update in
+                try await transcriptionService.loadModel(
+                    repoID: repoID,
+                    cacheDir: STTModelDefinition.cacheDirectory
+                ) { update in
                     guard generation == modelLoadGeneration else { return }
                     guard appState.selectedModelID == repoID else { return }
 
@@ -692,8 +756,6 @@ struct WhisperApp: App {
                     guard generation == modelLoadGeneration else { return }
                     modelLoadTask = nil
 
-                    // Today, cancellation usually means a newer load has already started.
-                    // If this task is cancelled without a replacement load, clear loading UI.
                     switch appState.modelStatus {
                     case .loading, .downloading:
                         appState.modelStatus = .notLoaded
@@ -728,7 +790,6 @@ struct WhisperApp: App {
         let microphoneGranted = await AudioRecorder.requestPermission()
         appState.microphonePermission = microphoneGranted ? .granted : .denied
 
-        // Accessibility (prompts user if not trusted)
         if !PasteController.hasAccessibilityPermission {
             PasteController.requestAccessibilityPermission()
         }
@@ -798,9 +859,21 @@ struct WhisperApp: App {
         }
     }
 
+    // MARK: - Auto-Submit
+
+    /// Apps where dictated text should automatically be followed by Enter.
+    private static let autoSubmitBundleIDs: Set<String> = [
+        "com.googlecode.iterm2",
+        "com.mitchellh.ghostty",
+    ]
+
+    private static func isAutoSubmitApp() -> Bool {
+        guard let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return false }
+        return autoSubmitBundleIDs.contains(bundleID)
+    }
+
     // MARK: - Sound Effects
 
-    /// Get system output volume (0.0 to 1.0)
     private func getSystemOutputVolume() -> Float {
         var defaultOutputDeviceID = AudioDeviceID(0)
         var defaultOutputDeviceIDSize = UInt32(MemoryLayout.size(ofValue: defaultOutputDeviceID))
@@ -844,15 +917,8 @@ struct WhisperApp: App {
         return volume
     }
 
-    /// Calculate sound effect volume (inverse of system volume, capped at 20% of system)
     private func calculateSoundVolume() -> Float {
         let systemVolume = getSystemOutputVolume()
-        // At 20% system volume -> 100% sound volume
-        // At 100% system volume -> 20% sound volume
-        // Linear interpolation: soundVol = 1.0 - 0.8 * (systemVol - 0.2) / 0.8
-        // Simplified: soundVol = 1.0 - (systemVol - 0.2) = 1.2 - systemVol (clamped)
-        // Actually: we want sound to be at most 20% of system's max perceived loudness
-        // So: soundVol = 0.2 / max(systemVol, 0.2)
         let effectiveSystemVol = max(systemVolume, 0.2)
         return min(0.2 / effectiveSystemVol, 1.0)
     }
