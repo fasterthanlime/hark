@@ -266,10 +266,17 @@ struct WhisperApp: App {
         overlayManager.show(appState: appState)
 
         do {
-            let text = try await transcriptionService.transcribe(audio: samples)
+            let rawText = try await transcriptionService.transcribe(audio: samples)
+            let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            // Add to history
+            appState.addToHistory(text)
+
+            // Check if Return is held - if so, submit after pasting
+            let shouldSubmit = PasteController.isReturnKeyPressed()
 
             _ = appState.transition(to: .pasting)
-            try await PasteController.paste(text)
+            try await PasteController.paste(text, submit: shouldSubmit)
 
             overlayManager.hide()
             _ = appState.transition(to: .idle)

@@ -8,7 +8,10 @@ struct PasteController {
 
     /// Paste text into the active application.
     /// Saves and restores the original clipboard contents.
-    static func paste(_ text: String) async throws {
+    /// - Parameters:
+    ///   - text: The text to paste
+    ///   - submit: If true, simulate Enter after pasting (for submitting). If false, append a trailing space.
+    static func paste(_ text: String, submit: Bool = false) async throws {
         guard hasAccessibilityPermission else {
             throw PasteError.accessibilityPermissionRequired
         }
@@ -19,7 +22,11 @@ struct PasteController {
         let snapshot = capturePasteboardSnapshot(from: pasteboard)
 
         // Prepend a space if the cursor sits right after non-whitespace text
-        let finalText = shouldPrependSpace() ? " \(text)" : text
+        // Append a trailing space unless we're submitting
+        var finalText = shouldPrependSpace() ? " \(text)" : text
+        if !submit {
+            finalText += " "
+        }
 
         guard writeText(finalText, to: pasteboard) else {
             throw PasteError.pasteboardWriteFailed
@@ -42,6 +49,12 @@ struct PasteController {
             throw error
         }
 
+        // If submitting, simulate Enter after paste
+        if submit {
+            try? await Task.sleep(for: .milliseconds(50))
+            try await simulateReturn()
+        }
+
         // Restore original pasteboard after paste completes
         try? await Task.sleep(for: .milliseconds(300))
         restorePasteboard(
@@ -49,6 +62,14 @@ struct PasteController {
             to: pasteboard,
             expectedChangeCount: stagedChangeCount
         )
+    }
+
+    /// Check if the Return/Enter key is currently pressed.
+    static func isReturnKeyPressed() -> Bool {
+        guard let source = CGEventSource(stateID: .hidSystemState) else {
+            return false
+        }
+        return CGEventSource.keyState(.hidSystemState, key: CGKeyCode(kVK_Return))
     }
 
     /// Check if the app has Accessibility permission (required for CGEvent posting).
@@ -208,6 +229,30 @@ struct PasteController {
             throw PasteError.keyEventCreationFailed
         }
         keyUp.flags = .maskCommand
+        keyUp.post(tap: .cghidEventTap)
+    }
+
+    private static func simulateReturn() async throws {
+        let returnKeyCode: CGKeyCode = CGKeyCode(kVK_Return)
+
+        guard let keyDown = CGEvent(
+            keyboardEventSource: nil,
+            virtualKey: returnKeyCode,
+            keyDown: true
+        ) else {
+            throw PasteError.keyEventCreationFailed
+        }
+        keyDown.post(tap: .cghidEventTap)
+
+        try? await Task.sleep(for: .milliseconds(10))
+
+        guard let keyUp = CGEvent(
+            keyboardEventSource: nil,
+            virtualKey: returnKeyCode,
+            keyDown: false
+        ) else {
+            throw PasteError.keyEventCreationFailed
+        }
         keyUp.post(tap: .cghidEventTap)
     }
 

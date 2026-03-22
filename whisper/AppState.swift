@@ -57,6 +57,18 @@ final class AppState {
     /// Real-time microphone audio level (0–1), updated from the audio tap.
     var audioLevel: Float = 0
 
+    /// Recent transcription history (newest first), max 20 items.
+    var transcriptionHistory: [TranscriptionHistoryItem] = []
+
+    /// Add a transcription to history, keeping max 20 items.
+    func addToHistory(_ text: String) {
+        let item = TranscriptionHistoryItem(text: text, timestamp: Date())
+        transcriptionHistory.insert(item, at: 0)
+        if transcriptionHistory.count > 20 {
+            transcriptionHistory.removeLast()
+        }
+    }
+
     /// Brief status text shown in the menu bar dropdown.
     var statusText: String {
         switch phase {
@@ -249,4 +261,18 @@ enum PermissionStatus: Equatable {
     case unknown
     case granted
     case denied
+}
+
+struct TranscriptionHistoryItem: Identifiable {
+    let id = UUID()
+    let text: String
+    let timestamp: Date
+
+    /// Truncated display text for menu (max 50 chars).
+    var displayText: String {
+        if text.count <= 50 {
+            return text
+        }
+        return String(text.prefix(47)) + "..."
+    }
 }

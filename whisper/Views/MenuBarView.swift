@@ -43,6 +43,11 @@ struct MenuBarView: View {
             Divider().padding(.horizontal, 2)
             infoSection
 
+            if !appState.transcriptionHistory.isEmpty {
+                Divider().padding(.horizontal, 2)
+                historySection
+            }
+
             Divider().padding(.horizontal, 2)
             startupSection
             quitSection
@@ -274,6 +279,36 @@ struct MenuBarView: View {
     }
 
     @ViewBuilder
+    private var historySection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Recent")
+                .font(.system(.caption, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+
+            ForEach(appState.transcriptionHistory.prefix(10)) { item in
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(item.text, forType: .string)
+                } label: {
+                    Text(item.displayText)
+                        .font(.system(.caption))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background {
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(Color.primary.opacity(0.05))
+                        }
+                        .contentShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .help(item.text)
+            }
+        }
+    }
+
+    @ViewBuilder
     private var quitSection: some View {
         Button {
             onQuit()
@@ -461,7 +496,7 @@ struct MenuBarView: View {
 
     private func maybeCommitCapturedHotkeyIfComplete() {
         guard capturePressedKeyCodes.isEmpty else { return }
-        guard latestCapturedKeyCodes.count >= 2 else { return }
+        guard !latestCapturedKeyCodes.isEmpty else { return }
 
         let binding = HotkeyBinding(keyCodes: latestCapturedKeyCodes)
         onHotkeyBindingSave(binding)
