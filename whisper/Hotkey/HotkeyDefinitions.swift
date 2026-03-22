@@ -45,7 +45,7 @@ enum HotkeyKeyCode {
 
 struct HotkeyBinding: Codable, Hashable, Sendable {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "whisper",
+        subsystem: "shoki.whisper",
         category: "HotkeyBinding"
     )
     private static let userDefaultsKey = "hotkeyBinding"
@@ -89,6 +89,7 @@ struct HotkeyBinding: Codable, Hashable, Sendable {
         self.init(keyCodes: Array(keyCodes))
     }
 
+    @MainActor
     static func load(defaults: UserDefaults = .standard) -> (binding: Self, fallbackMessage: String?) {
         if let encoded = defaults.data(forKey: userDefaultsKey) {
             do {
@@ -120,6 +121,7 @@ struct HotkeyBinding: Codable, Hashable, Sendable {
         return (defaultBinding, nil)
     }
 
+    @MainActor
     func save(defaults: UserDefaults = .standard) {
         do {
             let encoded = try JSONEncoder().encode(self)
@@ -338,12 +340,14 @@ struct HotkeyBinding: Codable, Hashable, Sendable {
 /// Monitors for a configurable global key combo using a CGEvent tap.
 /// Fires `onKeyDown` when the combo becomes fully held, `onKeyUp` when released.
 ///
-/// Thread safety: All access is confined to the main thread. The CGEvent tap callback runs
+/// Thread safety: All access MUST be confined to the main thread. The CGEvent tap callback runs
 /// on the main run loop, and callers access this class via `@State` (which is MainActor-isolated).
-final class HotkeyMonitor {
-    var onKeyDown: (() -> Void)?
-    var onKeyUp: (() -> Void)?
-    var binding: HotkeyBinding = .defaultBinding {
+/// Marked @unchecked Sendable because we guarantee main-thread-only access but need the C callback
+/// (which runs on main run loop) to be able to call methods without actor isolation overhead.
+final class HotkeyMonitor: @unchecked Sendable {
+    nonisolated(unsafe) var onKeyDown: (() -> Void)?
+    nonisolated(unsafe) var onKeyUp: (() -> Void)?
+    nonisolated(unsafe) var binding: HotkeyBinding = .defaultBinding {
         didSet {
             guard binding != oldValue else { return }
 
@@ -359,12 +363,12 @@ final class HotkeyMonitor {
         }
     }
 
-    fileprivate var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
-    fileprivate var pressedKeyCodes: Set<UInt16> = []
-    private(set) var isHeld = false
+    nonisolated(unsafe) var eventTap: CFMachPort?
+    nonisolated(unsafe) private var runLoopSource: CFRunLoopSource?
+    nonisolated(unsafe) var pressedKeyCodes: Set<UInt16> = []
+    nonisolated(unsafe) private(set) var isHeld = false
 
-    func start() {
+    nonisolated func start() {
         guard eventTap == nil else { return }
 
         // Only intercept keyDown/keyUp when the binding includes non-modifier keys.
@@ -416,10 +420,8 @@ final class HotkeyMonitor {
         stop()
     }
 
-    /// Called from the C callback on the main run loop.
-    fileprivate func handleKeyboardEvent(type: CGEventType, event: CGEvent) {
-        let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-
+    /// Called from the C callback on the main run loop with pre-extracted values.
+    fileprivate func handleKeyboardEventExtracted(type: CGEventType, keyCode: UInt16, flagsRaw: UInt64) {
         switch type {
         case .keyDown:
             pressedKeyCodes.insert(keyCode)
@@ -432,7 +434,7 @@ final class HotkeyMonitor {
 
             let isPressed = HotkeyBinding.isModifierPressed(
                 keyCode: keyCode,
-                flagsRaw: event.flags.rawValue
+                flagsRaw: flagsRaw
             )
 
             if isPressed {
@@ -462,12 +464,8 @@ final class HotkeyMonitor {
 
 /// C function callback for the CGEvent tap.
 /// Runs on the main run loop (same thread as all HotkeyMonitor access).
-private func hotkeyCallback(
-    proxy: CGEventTapProxy,
-    type: CGEventType,
-    event: CGEvent,
-    refcon: UnsafeMutableRawPointer?
-) -> Unmanaged<CGEvent>? {
+/// Marked nonisolated(unsafe) to work as a C function pointer - we know it runs on main thread.
+nonisolated(unsafe) private let hotkeyCallback: CGEventTapCallBack = { proxy, type, event, refcon in
     _ = proxy
 
     // Handle tap being disabled by the system (e.g. timeout).
@@ -492,7 +490,9 @@ private func hotkeyCallback(
     }
 
     let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(refcon).takeUnretainedValue()
-    monitor.handleKeyboardEvent(type: type, event: event)
+    let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+    let flagsRaw = event.flags.rawValue
+    monitor.handleKeyboardEventExtracted(type: type, keyCode: keyCode, flagsRaw: flagsRaw)
 
     return Unmanaged.passUnretained(event)
 }

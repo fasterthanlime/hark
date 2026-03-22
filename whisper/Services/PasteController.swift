@@ -58,7 +58,8 @@ struct PasteController {
 
     /// Prompt the user to grant Accessibility permission.
     static func requestAccessibilityPermission() {
-        let options = [kAXTrustedCheckOptionPrompt.takeRetainedValue() as String: true] as CFDictionary
+        // Use string literal to avoid Swift 6 concurrency warning on global kAXTrustedCheckOptionPrompt
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         AXIsProcessTrustedWithOptions(options)
     }
 
