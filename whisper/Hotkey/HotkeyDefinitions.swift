@@ -367,6 +367,12 @@ final class HotkeyMonitor: @unchecked Sendable {
     nonisolated(unsafe) private var runLoopSource: CFRunLoopSource?
     nonisolated(unsafe) var pressedKeyCodes: Set<UInt16> = []
     nonisolated(unsafe) private(set) var isHeld = false
+    /// When true, the hotkey stays "held" as long as the binding keys are a
+    /// subset of pressedKeyCodes (allows extra modifier keys without triggering keyUp).
+    nonisolated(unsafe) var allowExtraModifiers = false
+    /// Called when a modifier key is pressed while the hotkey is held.
+    /// The keyCode of the newly pressed modifier is passed.
+    nonisolated(unsafe) var onModifierWhileHeld: ((UInt16) -> Void)?
 
     nonisolated func start() {
         guard eventTap == nil else { return }
@@ -439,6 +445,10 @@ final class HotkeyMonitor: @unchecked Sendable {
 
             if isPressed {
                 pressedKeyCodes.insert(keyCode)
+                // Notify if a new modifier was pressed while the hotkey is held.
+                if isHeld && !binding.keyCodeSet.contains(keyCode) {
+                    onModifierWhileHeld?(keyCode)
+                }
             } else {
                 pressedKeyCodes.remove(keyCode)
             }
@@ -450,7 +460,13 @@ final class HotkeyMonitor: @unchecked Sendable {
     }
 
     fileprivate func updateHeldStateAndCallbacks() {
-        let shouldBeHeld = !binding.isEmpty && pressedKeyCodes == binding.keyCodeSet
+        let shouldBeHeld: Bool
+        if allowExtraModifiers {
+            // During recording: hotkey keys must still be pressed, but extra keys are OK.
+            shouldBeHeld = !binding.isEmpty && binding.keyCodeSet.isSubset(of: pressedKeyCodes)
+        } else {
+            shouldBeHeld = !binding.isEmpty && pressedKeyCodes == binding.keyCodeSet
+        }
 
         if shouldBeHeld && !isHeld {
             isHeld = true

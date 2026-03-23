@@ -45,7 +45,8 @@ struct WhisperApp: App {
     @State private var streamingSession: StreamingSession?
     @State private var inputDeviceMonitor = InputDeviceMonitor()
     @State private var keyDownTime: Date?
-    @State private var isToggleMode: Bool = false
+    /// Skip the next keyUp after locking (so releasing the hotkey after ⌘-lock doesn't submit).
+    @State private var skipNextKeyUp = false
     @State private var escapeMonitor: Any?
     @State private var notificationObserver: NSObjectProtocol?
 
@@ -117,18 +118,26 @@ struct WhisperApp: App {
     private func onLaunch() async {
         registerBundledFonts()
 
-        let savedRepoID = UserDefaults.standard.string(forKey: "selectedModelID")
-        let validIDs = Set(STTModelDefinition.allModels.map(\.repoID))
-        let defaultRepoID = savedRepoID.flatMap { validIDs.contains($0) ? $0 : nil }
-            ?? STTModelDefinition.default.repoID
+        let savedID = UserDefaults.standard.string(forKey: "selectedModelID")
+        let validIDs = Set(STTModelDefinition.allModels.map(\.id))
+        let defaultID = savedID.flatMap { validIDs.contains($0) ? $0 : nil }
+            ?? STTModelDefinition.default.id
 
-        appState.selectedModelID = defaultRepoID
+        appState.selectedModelID = defaultID
+        if let saved = UserDefaults.standard.dictionary(forKey: "appLanguages") as? [String: String] {
+            appState.appLanguages = saved
+        }
+        if let saved = UserDefaults.standard.dictionary(forKey: "appVocabPrompts") as? [String: String] {
+            appState.appVocabPrompts = saved
+        }
         syncRunOnStartupState()
         configureHotkeyFromDefaults()
 
         await requestPermissions()
 
-        await loadModel(repoID: defaultRepoID)
+        let model = STTModelDefinition.allModels.first { $0.id == defaultID }
+            ?? STTModelDefinition.default
+        await loadModel(model)
 
         setupHotkey()
         startInputDeviceMonitoring()
@@ -245,6 +254,16 @@ struct WhisperApp: App {
                 await handleKeyUp()
             }
         }
+        hotkeyMonitor.onModifierWhileHeld = { keyCode in
+            Task { @MainActor in
+                // Command pressed while hotkey is held → lock into toggle mode
+                if keyCode == 55 || keyCode == 54 { // left/right Command
+                    guard appState.phase == .recording, !appState.isLockedMode else { return }
+                    appState.isLockedMode = true
+                    skipNextKeyUp = true
+                }
+            }
+        }
         hotkeyMonitor.start()
     }
 
@@ -271,7 +290,7 @@ struct WhisperApp: App {
 
         // In toggle mode, stop on keyUp (not keyDown) so the user can
         // hold hotkey + press ESC to cancel before releasing.
-        if appState.phase == .recording && isToggleMode {
+        if appState.phase == .recording && appState.isLockedMode {
             return
         }
 
@@ -296,7 +315,8 @@ struct WhisperApp: App {
         _ = appState.transition(to: .recording)
         appState.partialTranscript = ""
         keyDownTime = Date()
-        isToggleMode = false
+        appState.isLockedMode = false
+        hotkeyMonitor.allowExtraModifiers = true
 
         // Pause media if setting is enabled.
         if MediaController.isEnabled {
@@ -307,10 +327,10 @@ struct WhisperApp: App {
         installEscapeMonitor()
         playStartSound()
 
-        // Create streaming session
+        // Create streaming session with per-app language preference
         streamingSession = transcriptionService.createSession(
-            chunkSizeSec: 0.5,
-            sessionDurationSec: 10.0
+            language: appState.currentLanguage,
+            prompt: appState.vocabPrompt
         )
 
         // If audio is warm, just start capturing (instant).
@@ -426,15 +446,14 @@ struct WhisperApp: App {
                 _ = appState.transition(to: .recording)
                 appState.partialTranscript = ""
                 streamingSession = transcriptionService.createSession(
-                    chunkSizeSec: 0.5,
-                    sessionDurationSec: 10.0
+                    language: appState.currentLanguage
                 )
                 startStreamingLoop()
             } else {
                 // "Over and out" — stop recording entirely.
                 cancelRecordingTimeout()
                 removeEscapeMonitor()
-                isToggleMode = false
+                appState.isLockedMode = false
                 keyDownTime = nil
                 streamingTask = nil
                 streamingSession = nil
@@ -482,8 +501,14 @@ struct WhisperApp: App {
     private func handleKeyUp() async {
         guard appState.phase == .recording else { return }
 
-        // In toggle mode, this keyUp is the "stop and submit" action.
-        if isToggleMode {
+        // After ⌘-lock, skip the keyUp from releasing the original hotkey hold.
+        if skipNextKeyUp {
+            skipNextKeyUp = false
+            return
+        }
+
+        // In locked mode, this keyUp is the "stop and submit" action.
+        if appState.isLockedMode {
             await stopRecordingAndTranscribe()
             return
         }
@@ -492,7 +517,7 @@ struct WhisperApp: App {
         if let downTime = keyDownTime {
             let pressDuration = Date().timeIntervalSince(downTime)
             if pressDuration < Self.toggleModeThresholdSeconds {
-                isToggleMode = true
+                appState.isLockedMode = true
                 return
             }
         }
@@ -532,8 +557,9 @@ struct WhisperApp: App {
             cancelRecordingTimeout()
         }
         removeEscapeMonitor()
-        isToggleMode = false
+        appState.isLockedMode = false
         keyDownTime = nil
+        hotkeyMonitor.allowExtraModifiers = false
 
         // Stop the streaming loop.
         let stask = streamingTask
@@ -552,6 +578,8 @@ struct WhisperApp: App {
         // Feed any remaining samples and finalize the session to get the complete transcript.
         var text = appState.partialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         if let session = streamingSession {
+            appState.isFinishing = true
+
             // Wait for the streaming loop to exit so we don't race on the session.
             let result = await stask?.value
             let processedCount = result?.processedSampleCount ?? allSamples.count
@@ -571,6 +599,10 @@ struct WhisperApp: App {
                     text = trimmed
                 }
             }
+
+            // Show the final transcript in the overlay (no animation).
+            appState.partialTranscript = text
+            appState.isFinishing = false
         }
         streamingSession = nil
 
@@ -621,7 +653,7 @@ struct WhisperApp: App {
 
             guard isEscape || isReturn else { return }
 
-            if isToggleMode {
+            if appState.isLockedMode {
                 // Check if the hotkey's keys are still pressed (not exact isHeld,
                 // because the ESC/Return key itself gets added to pressedKeyCodes
                 // before this monitor fires, breaking the exact match).
@@ -679,26 +711,24 @@ struct WhisperApp: App {
             break
         }
 
-        appState.selectedModelID = model.repoID
-        UserDefaults.standard.set(model.repoID, forKey: "selectedModelID")
+        appState.selectedModelID = model.id
+        UserDefaults.standard.set(model.id, forKey: "selectedModelID")
 
-        _ = startModelLoad(repoID: model.repoID)
+        _ = startModelLoad(model)
     }
 
     @MainActor
-    private func loadModel(repoID: String) async {
-        let task = startModelLoad(repoID: repoID)
+    private func loadModel(_ model: STTModelDefinition) async {
+        let task = startModelLoad(model)
         await task.value
     }
 
     @MainActor
     private func deleteLocalModel(_ model: STTModelDefinition) {
-        let repoID = model.repoID
         let cacheDir = STTModelDefinition.cacheDirectory
-        let sanitized = repoID.replacingOccurrences(of: "/", with: "--")
-        let modelDir = URL(fileURLWithPath: cacheDir).appendingPathComponent(sanitized)
+        let modelDir = URL(fileURLWithPath: cacheDir).appendingPathComponent(model.cacheDirName)
 
-        if appState.selectedModelID == repoID {
+        if appState.selectedModelID == model.id {
             modelLoadTask?.cancel()
             transcriptionService.unloadModel()
         }
@@ -707,9 +737,9 @@ struct WhisperApp: App {
             if FileManager.default.fileExists(atPath: modelDir.path) {
                 try FileManager.default.removeItem(at: modelDir)
             }
-            appState.downloadedModelRepoIDs.remove(repoID)
+            appState.downloadedModelIDs.remove(model.id)
 
-            if appState.selectedModelID == repoID {
+            if appState.selectedModelID == model.id {
                 appState.modelStatus = .notLoaded
                 if case .loading = appState.phase {
                     _ = appState.transition(to: .idle)
@@ -723,10 +753,11 @@ struct WhisperApp: App {
 
     @discardableResult
     @MainActor
-    private func startModelLoad(repoID: String) -> Task<Void, Never> {
+    private func startModelLoad(_ model: STTModelDefinition) -> Task<Void, Never> {
         modelLoadTask?.cancel()
         modelLoadGeneration &+= 1
         let generation = modelLoadGeneration
+        let modelID = model.id
 
         appState.modelStatus = .loading
         _ = appState.transition(to: .loading("Checking model files..."))
@@ -734,11 +765,11 @@ struct WhisperApp: App {
         let task = Task(priority: .userInitiated) {
             do {
                 try await transcriptionService.loadModel(
-                    repoID: repoID,
+                    model: model,
                     cacheDir: STTModelDefinition.cacheDirectory
                 ) { update in
                     guard generation == modelLoadGeneration else { return }
-                    guard appState.selectedModelID == repoID else { return }
+                    guard appState.selectedModelID == modelID else { return }
 
                     switch update {
                     case .downloading(let progress):
@@ -752,10 +783,10 @@ struct WhisperApp: App {
 
                 await MainActor.run {
                     guard generation == modelLoadGeneration else { return }
-                    guard appState.selectedModelID == repoID else { return }
+                    guard appState.selectedModelID == modelID else { return }
 
                     appState.modelStatus = .loaded
-                    appState.downloadedModelRepoIDs.insert(repoID)
+                    appState.downloadedModelIDs.insert(modelID)
                     _ = appState.transition(to: .idle)
                     modelLoadTask = nil
                 }
@@ -777,7 +808,7 @@ struct WhisperApp: App {
             } catch {
                 await MainActor.run {
                     guard generation == modelLoadGeneration else { return }
-                    guard appState.selectedModelID == repoID else { return }
+                    guard appState.selectedModelID == modelID else { return }
 
                     appState.modelStatus = .error(error.localizedDescription)
                     _ = appState.transition(to: .error("Model load failed: \(error.localizedDescription)"))

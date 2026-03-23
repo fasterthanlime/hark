@@ -44,18 +44,98 @@ private extension AppPhase {
 @MainActor
 final class AppState {
     var phase: AppPhase = .idle
-    var selectedModelID: String = STTModelDefinition.default.repoID
+    var selectedModelID: String = STTModelDefinition.default.id
     var hotkeyBinding: HotkeyBinding = .defaultBinding
     var hotkeySettingsMessage: String?
     var isEditingHotkey = false
     var modelStatus: ModelStatus = .notLoaded
-    var downloadedModelRepoIDs: Set<String> = []
+    var downloadedModelIDs: Set<String> = []
     var microphonePermission: PermissionStatus = .unknown
     var accessibilityPermission: PermissionStatus = .unknown
     var runOnStartupEnabled = false
     var runOnStartupError: String?
     /// Name of the currently active input device.
     var activeInputDeviceName: String?
+    // MARK: - Per-app language
+
+    /// Language forced per bundle ID. Missing key = auto-detect.
+    /// Values are Qwen3 language names: "english", "french", etc.
+    var appLanguages: [String: String] = [:] {
+        didSet {
+            UserDefaults.standard.set(appLanguages, forKey: "appLanguages")
+        }
+    }
+
+    /// The language that will be used for the current frontmost app.
+    /// `nil` means auto-detect.
+    var currentLanguage: String? {
+        guard let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else {
+            return nil
+        }
+        return appLanguages[bundleID]
+    }
+
+    /// Short display label for the current language ("EN", "FR", "Auto").
+    var currentLanguageLabel: String {
+        guard let lang = currentLanguage else { return "Auto" }
+        return Self.languageShortLabel(lang)
+    }
+
+    /// Set the language for the frontmost app's bundle ID.
+    func setLanguageForFrontmostApp(_ language: String?) {
+        guard let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return }
+        if let language {
+            appLanguages[bundleID] = language
+        } else {
+            appLanguages.removeValue(forKey: bundleID)
+        }
+    }
+
+    /// Supported languages with their Qwen3 names and short labels.
+    static let supportedLanguages: [(name: String, label: String)] = [
+        ("english", "EN"),
+        ("french", "FR"),
+        ("spanish", "ES"),
+        ("german", "DE"),
+        ("polish", "PL"),
+    ]
+
+    static func languageShortLabel(_ name: String) -> String {
+        supportedLanguages.first { $0.name == name }?.label ?? name.prefix(2).uppercased()
+    }
+
+    // MARK: - Vocabulary prompt (per-app)
+
+    /// Vocab prompts per bundle ID. Missing key = no prompt.
+    var appVocabPrompts: [String: String] = [:] {
+        didSet {
+            UserDefaults.standard.set(appVocabPrompts, forKey: "appVocabPrompts")
+        }
+    }
+
+    /// The vocab prompt for the current frontmost app, or nil.
+    var currentVocabPrompt: String? {
+        guard let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else {
+            return nil
+        }
+        let text = appVocabPrompts[bundleID] ?? ""
+        return text.isEmpty ? nil : text
+    }
+
+    /// Set the vocab prompt for the frontmost app's bundle ID.
+    func setVocabPromptForFrontmostApp(_ prompt: String) {
+        guard let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return }
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            appVocabPrompts.removeValue(forKey: bundleID)
+        } else {
+            appVocabPrompts[bundleID] = trimmed
+        }
+    }
+
+    /// Compat shim — returns currentVocabPrompt for session creation.
+    var vocabPrompt: String? { currentVocabPrompt }
+
     /// Real-time microphone audio level (0–1), updated from the audio tap.
     var audioLevel: Float = 0
 
@@ -64,6 +144,12 @@ final class AppState {
 
     /// Partial transcript during streaming transcription.
     var partialTranscript: String = ""
+
+    /// Whether recording is in toggle/locked mode (hands-free).
+    var isLockedMode = false
+
+    /// Whether final inference is running (spinner in overlay).
+    var isFinishing = false
 
     /// Overlay dismiss animation state (driven by OverlayManager, observed by the view).
     var overlayDismiss: OverlayResult = .none
@@ -107,7 +193,7 @@ final class AppState {
             case .error(let message):
                 return "Model error: \(message)"
             case .notLoaded:
-                return downloadedModelRepoIDs.isEmpty ? "No local models available." : "Model not loaded."
+                return downloadedModelIDs.isEmpty ? "No local models available." : "Model not loaded."
             }
         }
     }
@@ -139,7 +225,7 @@ final class AppState {
                 return "Whisper Needs Permission"
             case .error:
                 return "Model Error"
-            case .notLoaded where downloadedModelRepoIDs.isEmpty:
+            case .notLoaded where downloadedModelIDs.isEmpty:
                 return "No Local Models"
             default:
                 return "Whisper Loading"

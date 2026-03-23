@@ -7,7 +7,7 @@ enum OverlayResult {
     case cancelled
 }
 
-/// Floating overlay showing transcript with spectrum bars inset at top.
+/// Floating overlay showing transcript with spectrum bars and contextual hints.
 struct RecordingOverlayView: View {
     let appState: AppState
 
@@ -28,13 +28,15 @@ struct RecordingOverlayView: View {
         return isAppearing ? 1.0 : 0.0
     }
 
+    private let maxTextHeight: CGFloat = 120 // ~6 lines at 17pt
+
     var body: some View {
         mainContent
             .scaleEffect(scale)
             .opacity(opacity)
             .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isAppearing)
             .animation(.easeIn(duration: 0.25), value: dismissResult)
-            .frame(width: 700, height: 300)
+            .frame(width: 700, height: 300, alignment: .top)
             .onAppear {
                 withAnimation {
                     isAppearing = true
@@ -46,27 +48,119 @@ struct RecordingOverlayView: View {
     }
 
     private var mainContent: some View {
-        VStack(spacing: 8) {
-            // Spectrum bars in a floating circle
-            SpectrumBarsView(bands: appState.spectrumBands)
+        VStack(spacing: 0) {
+            // Text area with scroll
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    Text(displayedTextValue)
+                        .font(.custom("Jost-Medium", size: 17))
+                        .foregroundColor(.white)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .id("transcript")
+                }
+                .frame(maxHeight: maxTextHeight, alignment: .top)
+                .mask(textScrollMask)
+                .onChange(of: displayedText) { _, _ in
+                    withAnimation(.easeOut(duration: 0.1)) {
+                        proxy.scrollTo("transcript", anchor: .bottom)
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .padding(.bottom, 10)
 
-            // Transcript text panel
-            Text(displayedTextValue)
-                .font(.custom("Jost-Medium", size: 17))
-                .foregroundColor(.white)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 16)
-                .frame(width: 500, alignment: .topLeading)
-                .background(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(Color.black.opacity(0.8))
-                        .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
-                )
+            // Bottom bar: indicator on left, hints on right — closer to edges
+            HStack(alignment: .center) {
+                if appState.isFinishing {
+                    ThinkingBarsView()
+                } else {
+                    SpectrumBarsView(bands: appState.spectrumBands)
+                }
+
+                Spacer()
+
+                hintView
+                    .animation(.easeInOut(duration: 0.15), value: appState.isLockedMode)
+                    .animation(.easeInOut(duration: 0.15), value: appState.isFinishing)
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 12)
+        }
+        .frame(width: 500, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.black.opacity(0.8))
+                .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
+        )
+    }
+
+    // Gradient mask that fades the top when content is scrollable
+    private var textScrollMask: some View {
+        VStack(spacing: 0) {
+            Color.white.frame(height: 10)
+            LinearGradient(
+                colors: [.clear, .white],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 16)
+            Color.white
         }
     }
+
+    // MARK: - Hints
+
+    @ViewBuilder
+    private var hintView: some View {
+        if appState.isFinishing {
+            hintLabel("Finalizing...")
+        } else if appState.isLockedMode {
+            let key = appState.hotkeyBinding.displayLabel
+            HStack(spacing: 4) {
+                keyCap(key)
+                hintLabel("to submit ·")
+                keyCap(key)
+                hintLabel("+")
+                keyCap("Esc")
+                hintLabel("to cancel")
+            }
+        } else {
+            HStack(spacing: 4) {
+                hintLabel("Release to submit ·")
+                keyCap("⌘")
+                hintLabel("to lock ·")
+                keyCap("Esc")
+                hintLabel("to cancel")
+            }
+        }
+    }
+
+    private func keyCap(_ label: String) -> some View {
+        Text(label)
+            .font(.system(.caption2, weight: .medium).monospaced())
+            .foregroundColor(.white.opacity(0.7))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color.white.opacity(0.12))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.2), lineWidth: 0.5)
+            )
+    }
+
+    private func hintLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(.caption2, weight: .medium))
+            .foregroundColor(.white.opacity(0.45))
+    }
+
+    // MARK: - Text
 
     private var displayedTextValue: String {
         if !displayedText.isEmpty { return displayedText }
@@ -78,6 +172,12 @@ struct RecordingOverlayView: View {
         guard !newText.isEmpty else { return }
 
         textAnimationTask?.cancel()
+
+        // After final inference, show complete text instantly.
+        if appState.phase == .transcribing {
+            displayedText = newText
+            return
+        }
 
         let currentText = displayedText
         let commonPrefixLength = currentText.commonPrefix(with: newText).count
@@ -91,45 +191,75 @@ struct RecordingOverlayView: View {
         displayedText = String(newText.prefix(commonPrefixLength))
 
         textAnimationTask = Task { @MainActor in
+            let charCount = newPart.count
+            let delayMs = max(5, min(50, 800 / max(charCount, 1)))
             for char in newPart {
                 guard !Task.isCancelled else { return }
                 displayedText.append(char)
-                try? await Task.sleep(for: .milliseconds(5))
+                try? await Task.sleep(for: .milliseconds(delayMs))
             }
         }
     }
 }
 
-/// Six vertical capsule bars inside a circle, tapered at the edges.
+// MARK: - Spectrum Bars (no background circle)
+
+/// Six vertical capsule bars, tapered at the edges.
 struct SpectrumBarsView: View {
     let bands: [Float]
 
     private let barCount = 6
-    private let barWidth: CGFloat = 3
-    private let spacing: CGFloat = 2.5
-    private let circleSize: CGFloat = 44
-    // Taper: outer bars scale down to fit the circle silhouette
+    private let barWidth: CGFloat = 2.5
+    private let spacing: CGFloat = 2
+    private let maxBarHeight: CGFloat = 18
     private let taperFactors: [CGFloat] = [0.45, 0.75, 1.0, 1.0, 0.75, 0.45]
 
     var body: some View {
-        ZStack {
-            HStack(alignment: .center, spacing: spacing) {
-                ForEach(0..<barCount, id: \.self) { index in
-                    let level = index < bands.count ? CGFloat(bands[index]) : 0
-                    let taper = taperFactors[index]
-                    let maxH = (circleSize - 12) * taper
-                    let minH: CGFloat = 3
-                    let height = minH + (maxH - minH) * level
-                    let opacity = 0.5 + 0.5 * level
+        HStack(alignment: .center, spacing: spacing) {
+            ForEach(0..<barCount, id: \.self) { index in
+                let level = index < bands.count ? CGFloat(bands[index]) : 0
+                let taper = taperFactors[index]
+                let maxH = maxBarHeight * taper
+                let minH: CGFloat = 3
+                let height = minH + (maxH - minH) * level
 
-                    Capsule()
-                        .fill(Color.white.opacity(opacity))
-                        .frame(width: barWidth, height: height)
-                }
+                Capsule()
+                    .fill(Color.white.opacity(0.4 + 0.5 * level))
+                    .frame(width: barWidth, height: height)
             }
-            .animation(.easeOut(duration: 0.07), value: bands)
         }
-        .frame(width: circleSize, height: circleSize)
-        .background(Circle().fill(Color.black.opacity(0.8)))
+        .animation(.easeOut(duration: 0.07), value: bands)
+        .frame(height: maxBarHeight)
+    }
+}
+
+// MARK: - Thinking Bars (animated wave for finalizing)
+
+/// Animated wave bars that pulse to indicate processing.
+struct ThinkingBarsView: View {
+    @State private var phase: CGFloat = 0
+
+    private let barCount = 6
+    private let barWidth: CGFloat = 2.5
+    private let spacing: CGFloat = 2
+    private let maxBarHeight: CGFloat = 18
+
+    var body: some View {
+        HStack(alignment: .center, spacing: spacing) {
+            ForEach(0..<barCount, id: \.self) { index in
+                let offset = Double(index) / Double(barCount) * .pi * 2
+                let level = (sin(phase + offset) + 1) / 2
+
+                Capsule()
+                    .fill(Color.white.opacity(0.3 + 0.4 * level))
+                    .frame(width: barWidth, height: 3 + (maxBarHeight - 3) * level)
+            }
+        }
+        .frame(height: maxBarHeight)
+        .onAppear {
+            withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) {
+                phase = .pi * 2
+            }
+        }
     }
 }

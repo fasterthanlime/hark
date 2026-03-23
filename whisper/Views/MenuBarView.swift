@@ -16,6 +16,7 @@ struct MenuBarView: View {
     var onRecheckPermissions: () -> Void
     var onQuit: () -> Void
 
+    @State private var showSettings = false
     @State private var hoveredModelID: String?
     @State private var hoveredDeleteModelID: String?
     @State private var hoveredDownloadModelID: String?
@@ -23,6 +24,8 @@ struct MenuBarView: View {
     @State private var isHoveringPauseMedia = false
     @State private var pauseMediaEnabled = MediaController.isEnabled
     @State private var isHoveringQuit = false
+    @State private var isHoveringSettings = false
+    @State private var vocabPromptText: String = ""
     @State private var isCapturingHotkey = false
     @State private var capturePressedKeyCodes: Set<UInt16> = []
     @State private var latestCapturedKeyCodes: Set<UInt16> = []
@@ -35,15 +38,12 @@ struct MenuBarView: View {
             statusSection
             Divider().padding(.horizontal, 2)
 
-            modelSection
+            languageSection
 
             if case .downloading(let progress) = appState.modelStatus {
                 ProgressView(value: progress)
                     .padding(.horizontal, 2)
             }
-
-            Divider().padding(.horizontal, 2)
-            infoSection
 
             if !appState.transcriptionHistory.isEmpty {
                 Divider().padding(.horizontal, 2)
@@ -51,15 +51,28 @@ struct MenuBarView: View {
             }
 
             Divider().padding(.horizontal, 2)
-            startupSection
+            settingsDisclosure
+
+            if showSettings {
+                settingsContent
+            }
+
             quitSection
         }
         .padding(10)
         .frame(width: 300)
+        .onAppear {
+            // Load per-app vocab prompt for the current frontmost app
+            if let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier {
+                vocabPromptText = appState.appVocabPrompts[bundleID] ?? ""
+            }
+        }
         .onDisappear {
             stopHotkeyCapture(notifyState: true)
         }
     }
+
+    // MARK: - Status
 
     @ViewBuilder
     private var statusSection: some View {
@@ -82,6 +95,150 @@ struct MenuBarView: View {
         .padding(.horizontal, 6)
     }
 
+    // MARK: - Language & Vocab (per-app, always visible)
+
+    @ViewBuilder
+    private var languageSection: some View {
+        let frontmostApp = NSWorkspace.shared.frontmostApplication
+        let appName = frontmostApp?.localizedName ?? "Current App"
+
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Language — \(appName)")
+                .font(.system(.caption))
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 4) {
+                languageButton(label: "Auto", language: nil)
+                ForEach(AppState.supportedLanguages, id: \.name) { lang in
+                    languageButton(label: lang.label, language: lang.name)
+                }
+            }
+            .padding(.horizontal, 2)
+
+            Text("Vocab Prompt — \(appName)")
+                .font(.system(.caption))
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+
+            TextField("e.g. Working with serde, candle, GGUF...", text: $vocabPromptText, axis: .vertical)
+                .font(.system(.caption2))
+                .textFieldStyle(.plain)
+                .padding(6)
+                .lineLimit(2...4)
+                .background {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.primary.opacity(0.05))
+                }
+                .onChange(of: vocabPromptText) { _, newValue in
+                    appState.setVocabPromptForFrontmostApp(newValue)
+                }
+        }
+    }
+
+    @ViewBuilder
+    private func languageButton(label: String, language: String?) -> some View {
+        let isSelected = appState.currentLanguage == language
+        Button {
+            appState.setLanguageForFrontmostApp(language)
+        } label: {
+            Text(label)
+                .font(.system(.caption2, weight: isSelected ? .bold : .medium))
+                .foregroundStyle(isSelected ? .white : .primary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? Color.accentColor : Color.primary.opacity(0.08))
+                }
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Recent transcriptions
+
+    @ViewBuilder
+    private var historySection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Recent")
+                .font(.system(.caption, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+
+            ForEach(appState.transcriptionHistory.prefix(10)) { item in
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(item.text, forType: .string)
+                } label: {
+                    Text(item.displayText)
+                        .font(.system(.caption))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background {
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(Color.primary.opacity(0.05))
+                        }
+                        .contentShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .help(item.text)
+            }
+        }
+    }
+
+    // MARK: - Collapsible settings
+
+    @ViewBuilder
+    private var settingsDisclosure: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                showSettings.toggle()
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "gearshape")
+                    .font(.system(.caption))
+                Text("Settings")
+                    .font(.system(.body))
+                Spacer()
+                Image(systemName: showSettings ? "chevron.up" : "chevron.down")
+                    .font(.system(.caption2, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isHoveringSettings ? Color.primary.opacity(0.1) : .clear)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { isHoveringSettings = $0 }
+    }
+
+    @ViewBuilder
+    private var settingsContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Model picker
+            modelSection
+
+            Divider().padding(.horizontal, 2)
+
+            // Hotkey
+            infoSection
+
+            Divider().padding(.horizontal, 2)
+
+            // Toggles
+            startupSection
+        }
+        .padding(.leading, 8)
+    }
+
+    // MARK: - Model (inside settings)
+
     @ViewBuilder
     private var modelSection: some View {
         Text("Model")
@@ -89,11 +246,11 @@ struct MenuBarView: View {
             .foregroundStyle(.secondary)
 
         ForEach(STTModelDefinition.allModels) { model in
-            let isDownloaded = appState.downloadedModelRepoIDs.contains(model.repoID)
+            let isDownloaded = appState.downloadedModelIDs.contains(model.id)
             let isSelectedDownloadedModel =
-                appState.selectedModelID == model.repoID && isDownloaded
-            let isHoveringDelete = hoveredDeleteModelID == model.repoID
-            let isHoveringDownload = hoveredDownloadModelID == model.repoID
+                appState.selectedModelID == model.id && isDownloaded
+            let isHoveringDelete = hoveredDeleteModelID == model.id
+            let isHoveringDownload = hoveredDownloadModelID == model.id
 
             HStack(spacing: 6) {
                 Button {
@@ -105,26 +262,25 @@ struct MenuBarView: View {
                             .font(.system(.caption, weight: .semibold))
                             .opacity(isSelectedDownloadedModel ? 1 : 0)
                         Text(model.displayName)
-                            .font(.system(.body))
+                            .font(.system(.caption))
 
                         Spacer()
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 3)
                     .background {
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(hoveredModelID == model.repoID ? Color.primary.opacity(0.1) : .clear)
+                            .fill(hoveredModelID == model.id ? Color.primary.opacity(0.1) : .clear)
                     }
                     .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
                 .buttonStyle(.plain)
-                .padding(.vertical, 1)
                 .disabled(isModelInteractionDisabled)
                 .onHover { isHovering in
                     if isHovering {
-                        hoveredModelID = model.repoID
-                    } else if hoveredModelID == model.repoID {
+                        hoveredModelID = model.id
+                    } else if hoveredModelID == model.id {
                         hoveredModelID = nil
                     }
                 }
@@ -134,9 +290,9 @@ struct MenuBarView: View {
                         onDeleteLocalModel(model)
                     } label: {
                         Image(systemName: "trash")
-                            .font(.system(.caption, weight: .semibold))
+                            .font(.system(.caption2, weight: .semibold))
                             .foregroundStyle(isHoveringDelete ? .red : .secondary)
-                            .frame(width: 18, height: 18)
+                            .frame(width: 16, height: 16)
                             .background {
                                 RoundedRectangle(cornerRadius: 4, style: .continuous)
                                     .fill(isHoveringDelete ? Color.red.opacity(0.14) : .clear)
@@ -147,8 +303,8 @@ struct MenuBarView: View {
                     .help("Delete local model files")
                     .onHover { isHovering in
                         if isHovering {
-                            hoveredDeleteModelID = model.repoID
-                        } else if hoveredDeleteModelID == model.repoID {
+                            hoveredDeleteModelID = model.id
+                        } else if hoveredDeleteModelID == model.id {
                             hoveredDeleteModelID = nil
                         }
                     }
@@ -157,9 +313,9 @@ struct MenuBarView: View {
                         onModelSelect(model)
                     } label: {
                         Image(systemName: "arrow.down")
-                            .font(.system(.caption, weight: .semibold))
+                            .font(.system(.caption2, weight: .semibold))
                             .foregroundStyle(isHoveringDownload ? .blue : .secondary)
-                            .frame(width: 18, height: 18)
+                            .frame(width: 16, height: 16)
                             .background {
                                 RoundedRectangle(cornerRadius: 4, style: .continuous)
                                     .fill(isHoveringDownload ? Color.blue.opacity(0.16) : .clear)
@@ -170,8 +326,8 @@ struct MenuBarView: View {
                     .help("Download model")
                     .onHover { isHovering in
                         if isHovering {
-                            hoveredDownloadModelID = model.repoID
-                        } else if hoveredDownloadModelID == model.repoID {
+                            hoveredDownloadModelID = model.id
+                        } else if hoveredDownloadModelID == model.id {
                             hoveredDownloadModelID = nil
                         }
                     }
@@ -179,6 +335,8 @@ struct MenuBarView: View {
             }
         }
     }
+
+    // MARK: - Info (hotkey, permissions, input — inside settings)
 
     @ViewBuilder
     private var infoSection: some View {
@@ -259,6 +417,8 @@ struct MenuBarView: View {
         .padding(.top, 2)
     }
 
+    // MARK: - Toggles (inside settings)
+
     @ViewBuilder
     private var startupSection: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -297,12 +457,12 @@ struct MenuBarView: View {
                         .foregroundStyle(.green)
                 }
                 Text(label)
-                    .font(.system(.body))
+                    .font(.system(.caption))
                 Spacer()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 6)
-            .padding(.vertical, 4)
+            .padding(.vertical, 3)
             .background {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(isHovering.wrappedValue ? Color.primary.opacity(0.1) : .clear)
@@ -315,35 +475,7 @@ struct MenuBarView: View {
         }
     }
 
-    @ViewBuilder
-    private var historySection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Recent")
-                .font(.system(.caption, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 6)
-
-            ForEach(appState.transcriptionHistory.prefix(10)) { item in
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(item.text, forType: .string)
-                } label: {
-                    Text(item.displayText)
-                        .font(.system(.caption))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background {
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .fill(Color.primary.opacity(0.05))
-                        }
-                        .contentShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .help(item.text)
-            }
-        }
-    }
+    // MARK: - Quit
 
     @ViewBuilder
     private var quitSection: some View {
@@ -367,10 +499,10 @@ struct MenuBarView: View {
         }
         .buttonStyle(.plain)
         .keyboardShortcut("q")
-        .onHover { isHovering in
-            isHoveringQuit = isHovering
-        }
+        .onHover { isHoveringQuit = $0 }
     }
+
+    // MARK: - Helpers
 
     @ViewBuilder
     private func infoRow<Content: View>(label: String, @ViewBuilder trailing: () -> Content) -> some View {
@@ -465,7 +597,6 @@ struct MenuBarView: View {
     private func installHotkeyCaptureMonitorIfNeeded() {
         guard hotkeyCaptureLocalMonitor == nil else { return }
 
-        // Local monitor: captures events delivered to this app's windows (can swallow them).
         hotkeyCaptureLocalMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.flagsChanged, .keyDown, .keyUp]
         ) { event in
@@ -473,7 +604,6 @@ struct MenuBarView: View {
             return nil
         }
 
-        // Global monitor: captures events when the popover loses focus but is still visible.
         hotkeyCaptureGlobalMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.flagsChanged, .keyDown, .keyUp]
         ) { event in

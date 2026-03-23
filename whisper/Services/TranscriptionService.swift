@@ -23,7 +23,7 @@ final class TranscriptionService: @unchecked Sendable {
 
     /// Load a model, downloading from HuggingFace if not cached.
     func loadModel(
-        repoID: String,
+        model: STTModelDefinition,
         cacheDir: String,
         updateHandler: (@MainActor @Sendable (ModelLoadUpdate) -> Void)? = nil
     ) async throws {
@@ -32,12 +32,22 @@ final class TranscriptionService: @unchecked Sendable {
 
         await updateHandler?(.downloading(progress: 0))
 
+        let format = model.format
+
         // The Rust FFI handles download + cache. This is a blocking call,
         // so run it off the main thread.
         let loadedEngine: OpaquePointer = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 var err: UnsafeMutablePointer<CChar>?
-                let ptr = asr_engine_from_pretrained(repoID, cacheDir, &err)
+                let ptr: OpaquePointer?
+
+                switch format {
+                case .safetensors:
+                    ptr = asr_engine_from_pretrained(model.repoID, cacheDir, &err)
+
+                case .gguf(let ggufRepoID, let ggufFilename, let baseRepoID):
+                    ptr = asr_engine_from_gguf(baseRepoID, ggufRepoID, ggufFilename, cacheDir, &err)
+                }
 
                 if let ptr {
                     continuation.resume(returning: ptr)
@@ -53,7 +63,7 @@ final class TranscriptionService: @unchecked Sendable {
 
         lock.withLock { engine = loadedEngine }
 
-        Self.logger.info("Model loaded: \(repoID, privacy: .public)")
+        Self.logger.info("Model loaded: \(model.displayName, privacy: .public)")
     }
 
     /// Load a model from a local directory (no download).
@@ -93,7 +103,9 @@ final class TranscriptionService: @unchecked Sendable {
 
     /// Create a new streaming session.
     /// Returns nil if no model is loaded.
-    func createSession(chunkSizeSec: Float = 0.5, sessionDurationSec: Float = 10.0) -> StreamingSession? {
+    /// `language`: Qwen3 language name (e.g. "english", "french") or nil for auto-detect.
+    /// `prompt`: Vocabulary hint text for prefix conditioning, or nil.
+    func createSession(chunkSizeSec: Float = 1.0, sessionDurationSec: Float = 120.0, language: String? = nil, prompt: String? = nil) -> StreamingSession? {
         lock.lock()
         guard let engine else {
             lock.unlock()
@@ -101,14 +113,29 @@ final class TranscriptionService: @unchecked Sendable {
         }
         lock.unlock()
 
-        let opts = AsrSessionOptions(
-            chunk_size_sec: chunkSizeSec,
-            session_duration_sec: sessionDurationSec
-        )
-        guard let session = asr_session_create(engine, opts) else {
-            return nil
+        // Helper to create session with resolved C string pointers.
+        func makeSession(langPtr: UnsafePointer<CChar>?, promptPtr: UnsafePointer<CChar>?) -> StreamingSession? {
+            let opts = AsrSessionOptions(
+                chunk_size_sec: chunkSizeSec,
+                session_duration_sec: sessionDurationSec,
+                language: langPtr,
+                prompt: promptPtr
+            )
+            guard let session = asr_session_create(engine, opts) else { return nil }
+            return StreamingSession(ptr: session)
         }
-        return StreamingSession(ptr: session)
+
+        // Nest withCString calls so pointers stay valid.
+        switch (language, prompt) {
+        case let (lang?, prompt?):
+            return lang.withCString { lp in prompt.withCString { pp in makeSession(langPtr: lp, promptPtr: pp) } }
+        case let (lang?, nil):
+            return lang.withCString { lp in makeSession(langPtr: lp, promptPtr: nil) }
+        case let (nil, prompt?):
+            return prompt.withCString { pp in makeSession(langPtr: nil, promptPtr: pp) }
+        case (nil, nil):
+            return makeSession(langPtr: nil, promptPtr: nil)
+        }
     }
 
     /// Feed 16kHz mono f32 audio into a streaming session.
