@@ -3305,8 +3305,15 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "hound",
+ "parakeet-rs",
+ "pocket-tts",
+ "qwen3-asr",
+ "rubato 0.15.0",
  "serde",
  "serde_json",
+ "shellexpand",
+ "synth-textgen",
 ]
 
 [[package]]
@@ -3324,9 +3331,11 @@ name = "synth-textgen"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "rand 0.9.2",
  "serde",
  "serde_json",
+ "shellexpand",
 ]
 
 [[package]]
