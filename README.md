@@ -4,9 +4,15 @@ A macOS menu bar app for on-device speech-to-text. Hold a hotkey, speak, release
 
 All processing runs locally using [Qwen3 ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) models via a vendored Rust inference engine ([qwen3-asr-rs](qwen3-asr-rs/)) with Metal GPU acceleration. No audio leaves your machine.
 
-<img width="1284" height="644" alt="Streaming overlay showing real-time transcription" src="https://github.com/user-attachments/assets/63039c9b-6de2-4947-adf8-5d3671b11e73" />
+<p>
+<em>Streaming overlay — partial transcription appears in real time as you speak</em><br>
+<img width="600" alt="Streaming overlay showing real-time transcription" src="https://github.com/user-attachments/assets/63039c9b-6de2-4947-adf8-5d3671b11e73" />
+</p>
 
-<img width="880" height="1118" alt="Menu bar dropdown with settings" src="https://github.com/user-attachments/assets/c70eaf96-96bd-4bc3-85e3-78c036f81909" />
+<p>
+<em>Menu bar dropdown — model picker, per-app language & vocab, permissions, settings</em><br>
+<img width="400" alt="Menu bar dropdown with settings" src="https://github.com/user-attachments/assets/c70eaf96-96bd-4bc3-85e3-78c036f81909" />
+</p>
 
 ## Features
 
