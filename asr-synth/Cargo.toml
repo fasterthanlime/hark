@@ -9,6 +9,7 @@ members = [
     "crates/synth-recorder",
     "crates/synth-reviewer",
     "crates/synth-corrupt",
+    "crates/synth-train",
 ]
 
 [workspace.dependencies]
