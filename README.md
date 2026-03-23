@@ -2,88 +2,120 @@
 
 A macOS menu bar app for on-device speech-to-text. Hold a hotkey, speak, release — transcribed text is pasted into the active application automatically.
 
-All processing runs locally using [Qwen3 ASR](https://huggingface.co/collections/mlx-community/qwen3-audio-6848a88a82aeef3874bf1543) models via Apple's MLX framework. No audio leaves your machine.
+All processing runs locally using [Qwen3 ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) models via a vendored Rust inference engine ([qwen3-asr-rs](qwen3-asr-rs/)) with Metal GPU acceleration. No audio leaves your machine.
+
+<img width="1284" height="644" alt="Streaming overlay showing real-time transcription" src="https://github.com/user-attachments/assets/63039c9b-6de2-4947-adf8-5d3671b11e73" />
+
+<img width="880" height="1118" alt="Menu bar dropdown with settings" src="https://github.com/user-attachments/assets/c70eaf96-96bd-4bc3-85e3-78c036f81909" />
 
 ## Features
 
-- **Push-to-talk hotkey** — configurable custom key combinations (including left/right modifiers) with global detection via a CGEvent tap
-- **Multiple model options** — Qwen3 ASR 0.6B (8-bit), 1.7B (8-bit), and 1.7B (4-bit) with on-demand downloading and per-model cache management
-- **Smart paste** — transcribed text is written to the pasteboard, Cmd+V is simulated via Accessibility, and the original clipboard contents are restored afterward; a space is prepended when the cursor follows non-whitespace
-- **Visual feedback** — animated floating overlay with a MeshGradient whose speed responds to real-time audio level
-- **Menu bar UI** — model selector with download/delete controls, permission status indicators, inline hotkey capture, and run-on-startup toggle
-- **Privacy-first** — fully offline inference, no network calls after model download
+### Push-to-talk with streaming transcription
+
+Hold your hotkey and speak — partial results appear in the overlay in real time as you talk. When you release the key, the final transcript is pasted into whatever app you're using.
+
+### Toggle mode
+
+Quick-press the hotkey (< 300ms) to lock recording on hands-free. Press again to stop and paste. You can also hold the hotkey and press Command to lock without releasing.
+
+### Voice commands
+
+- Say **"over"** to paste the current sentence and keep recording
+- Say **"over and out"** to paste and stop recording entirely
+
+### Per-app language and vocabulary
+
+Set a different language per application — Auto, English, French, Spanish, German, or Polish. Each app also gets its own vocabulary prompt to help the model with domain-specific terms (e.g. "serde, candle, GGUF" for your code editor).
+
+### Multiple models
+
+Choose between Qwen3 ASR 0.6B and 1.7B in full-precision or Q4_K quantized formats. Models are downloaded on demand from HuggingFace and cached locally.
+
+| Model | Format | Download |
+|-------|--------|----------|
+| Qwen3 ASR 0.6B | safetensors | ~1.2 GB |
+| Qwen3 ASR 0.6B | Q4_K GGUF | ~605 MB |
+| Qwen3 ASR 1.7B | safetensors | ~3.4 GB |
+| Qwen3 ASR 1.7B | Q4_K GGUF | ~1.3 GB |
+
+### Smart paste
+
+Transcribed text is written to the pasteboard, Cmd+V is simulated via the Accessibility API, and the original clipboard contents are restored afterward. A space is automatically prepended when the cursor follows non-whitespace. In terminal apps (iTerm2, Ghostty), Enter is sent automatically after pasting.
+
+### Visual feedback
+
+An animated floating overlay with a MeshGradient responds to real-time audio level and FFT spectrum. Partial transcription text streams into the overlay as you speak. A spinner appears during final inference.
+
+### Other features
+
+- **Configurable hotkey** — any key combination, left/right modifier aware
+- **Audio device hot-swap** — seamlessly switches when you plug/unplug microphones
+- **Pause media while dictating** — optionally pauses playback during recording
+- **Transcription history** — last 20 transcriptions in the menu, click to copy
+- **Run on startup** — uses SMAppService for native login item support
+- **Escape to cancel** — press Escape (or hotkey + Escape in toggle mode) to cancel without pasting
+- **Return to submit** — press Return while recording to stop and force-submit with Enter
 
 ## Requirements
 
-- macOS (Apple Silicon recommended for MLX performance)
+- macOS on Apple Silicon
 - Xcode (for building from source)
 - Microphone permission
 - Accessibility permission (for simulating paste keystrokes and detecting cursor context)
 
-## Installation
+## Building
 
-1. Open `hark.xcodeproj` in Xcode. Go to the **hark** target, then **Signing & Capabilities**, enable **Automatically manage signing**, and select your Team (Personal Team works for local use).
+The app links against `libqwen3_asr_ffi`, a static library built from the vendored `qwen3-asr-rs/` Rust crate.
 
-2. Build a Release app bundle:
+1. Build the Rust library:
+   ```
+   cd qwen3-asr-rs && cargo build --release
+   ```
+
+2. Open `hark.xcodeproj` in Xcode. Go to the **hark** target → **Signing & Capabilities**, enable **Automatically manage signing**, and select your Team.
+
+3. Build and install:
    ```
    xcodebuild -project hark.xcodeproj -scheme hark -configuration Release -derivedDataPath build clean build
-   ```
-
-3. Copy the built `.app` into `/Applications`:
-   ```
    cp -R "build/Build/Products/Release/hark.app" /Applications/
-   ```
-
-4. Launch from `/Applications` (not from DerivedData):
-   ```
    open /Applications/hark.app
    ```
 
-5. Grant **Microphone** and **Accessibility** permissions when prompted.
+4. Grant **Microphone** and **Accessibility** permissions when prompted.
 
-> **Why `/Applications` matters** — the Run on Startup toggle uses `SMAppService.mainApp`, which works most reliably when the app is installed in `/Applications` and properly signed.
-
-> **If macOS blocks launch** — right-click the app and choose Open, or remove quarantine:
+> **If macOS blocks launch** — right-click the app and choose Open, or:
 > ```
 > xattr -dr com.apple.quarantine /Applications/hark.app
 > ```
 
-## How It Works
-
-1. A global CGEvent tap listens for the configured key combination (left/right modifier aware).
-2. On key-down, `AVAudioEngine` begins capturing microphone input at the native sample rate.
-3. On key-up, recording stops. Audio is resampled to 16 kHz and passed to the Qwen3 ASR model running on-device via MLX.
-4. The transcribed text is placed on the pasteboard, a Cmd+V keystroke is simulated through the Accessibility API, and the original pasteboard contents are restored.
-
 ## Architecture
 
 ```
-harkApp.swift          App entry point, hotkey wiring, lifecycle
-AppState.swift            Observable state machine (idle/recording/transcribing/pasting/error)
+harkApp.swift             App entry, hotkey wiring, streaming loop, state machine
+AppState.swift            Observable state (idle/recording/transcribing/pasting/error)
 
 Services/
-  TranscriptionService    Actor-isolated ML inference, model download & cache
-  AudioRecorder           AVAudioEngine capture, RMS level, 16 kHz resampling
+  TranscriptionService    Rust FFI wrapper — streaming sessions + single-shot fallback
+  AudioRecorder           AVAudioEngine capture, RMS level, FFT spectrum, 16 kHz resampling
   PasteController         Pasteboard snapshot/restore, Cmd+V simulation
+  InputDeviceMonitor      Audio device connect/disconnect handling
+  MediaController         Pause/resume media during recording
 
 Views/
-  MenuBarView             Dropdown menu (models, permissions, settings)
-  RecordingOverlay        Animated MeshGradient circle
-  OverlayManager          Overlay lifecycle
+  MenuBarView             Dropdown menu (models, permissions, per-app settings)
+  RecordingOverlay        Animated MeshGradient circle + partial transcript
+  OverlayManager          Per-screen overlay lifecycle
   OverlayPanel            Non-activating transparent NSPanel
 
 Models/
-  STTModelDefinition      Model registry (name, HuggingFace repo, quantization)
+  STTModelDefinition      Model registry (name, repo, quantization)
 
 Hotkey/
-  HotkeyDefinitions       CGEvent tap, custom key combos, UserDefaults persistence + legacy migration
+  HotkeyDefinitions       CGEvent tap, modifier-aware key combos, persistence
+
+qwen3-asr-rs/             Vendored Rust ASR engine (Candle + Metal)
+  qwen3-asr-ffi/          C FFI layer consumed by the Swift app
 ```
-
-## Dependencies
-
-| Package | Requirement | Products used | Purpose |
-|---------|-------------|---------------|---------|
-| [mlx-audio-swift](https://github.com/Blaizzy/mlx-audio-swift) | `revision: cc3b3880be05caf908970729e15ec209d018f06d` | `MLXAudioSTT`, `MLXAudioCore` | On-device speech-to-text and audio ML pipeline |
 
 ## License
 

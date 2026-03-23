@@ -24,5 +24,6 @@ Package.resolved
 *.ipa
 *.dSYM.zip
 *.dSYM
-whisper-*.zip
+hark-*.zip
 default.profraw
+target/

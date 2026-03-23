@@ -1,0 +1,29 @@
+# Build artifacts
+/target/
+
+# Model weights (large binary files, download separately from HuggingFace)
+/models/
+/models_1.7b/
+
+# Secrets
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+
+# GGUF model files
+*.gguf
+
+# Benchmark shell script
+bench.sh
+
+# Internal compatibility test crate
+compat_test/
+
+# Claude Code
+CLAUDE.md
