@@ -1,142 +1,194 @@
-/// Phoneme feature-based substitution cost.
+/// Phoneme substitution cost matrix.
 ///
 /// Returns a cost between 0.0 (identical) and 1.0 (maximally different).
-/// Phonemes that share place, manner, or voicing are cheaper to substitute.
+/// Costs are based on articulatory similarity + real ASR confusion patterns.
+///
+/// ARPAbet inventory (39 phonemes):
+///   Stops:      P B T D K G
+///   Fricatives: F V TH DH S Z SH ZH HH
+///   Affricates: CH JH
+///   Nasals:     M N NG
+///   Liquids:    L R
+///   Glides:     W Y
+///   Vowels:     IY IH EH EY AE AA AO OW OY UH UW AH ER AW AY
 pub fn substitution_cost(a: &str, b: &str) -> f32 {
     if a == b {
         return 0.0;
     }
 
-    let fa = features(a);
-    let fb = features(b);
+    // Check explicit pair table first (symmetric)
+    if let Some(cost) = lookup(a, b).or_else(|| lookup(b, a)) {
+        return cost;
+    }
 
-    // If either is unknown, use max cost
-    if fa.is_none() || fb.is_none() {
+    // Fallback: vowel↔consonant is always expensive
+    if is_vowel(a) != is_vowel(b) {
         return 1.0;
     }
-    let fa = fa.unwrap();
-    let fb = fb.unwrap();
 
-    // Vowel-vowel or consonant-consonant?
-    if fa.is_vowel != fb.is_vowel {
-        return 1.0; // vowel↔consonant is maximally different
-    }
-
-    if fa.is_vowel {
-        vowel_distance(&fa, &fb)
-    } else {
-        consonant_distance(&fa, &fb)
-    }
+    // Unknown pair: assume expensive
+    0.9
 }
 
-#[derive(Clone, Copy)]
-struct PhonemeFeatures {
-    is_vowel: bool,
-    // Consonant features
-    place: u8,    // 0=bilabial 1=labiodental 2=dental 3=alveolar 4=postalveolar 5=velar 6=glottal
-    manner: u8,   // 0=stop 1=fricative 2=affricate 3=nasal 4=liquid 5=glide
-    voiced: bool,
-    // Vowel features
-    height: u8,   // 0=high 1=mid 2=low
-    backness: u8, // 0=front 1=central 2=back
-    rounded: bool,
+fn is_vowel(p: &str) -> bool {
+    matches!(p, "IY" | "IH" | "EH" | "EY" | "AE" | "AA" | "AO" | "OW" | "OY" | "UH" | "UW" | "AH" | "ER" | "AW" | "AY")
 }
 
-fn consonant_distance(a: &PhonemeFeatures, b: &PhonemeFeatures) -> f32 {
-    let mut cost = 0.0f32;
+/// Explicit similarity scores for phoneme pairs.
+///
+/// Principles:
+/// - Voicing pairs (P/B, T/D, K/G, F/V, S/Z, SH/ZH, CH/JH, TH/DH): 0.15–0.20
+///   These are the #1 source of ASR confusions
+/// - Same place, different manner (T/S, D/Z, K/NG): 0.25–0.35
+/// - Adjacent place, same manner (P/T, T/K, M/N, N/NG): 0.35–0.45
+/// - Similar vowels (IY/IH, EH/AE, UH/UW, AO/OW): 0.20–0.35
+/// - Distant vowels (IY/AA, AE/UW): 0.70–0.90
+/// - Liquid/glide confusion (L/R, W/L): 0.30
+/// - Vowel reduction to schwa (anything→AH): 0.25–0.40
+fn lookup(a: &str, b: &str) -> Option<f32> {
+    Some(match (a, b) {
+        // ══════════════════════════════════════════════════════
+        // VOICING PAIRS — very commonly confused by ASR
+        // ══════════════════════════════════════════════════════
+        ("P", "B") | ("B", "P") => 0.15,
+        ("T", "D") | ("D", "T") => 0.15,
+        ("K", "G") | ("G", "K") => 0.15,
+        ("F", "V") | ("V", "F") => 0.15,
+        ("S", "Z") | ("Z", "S") => 0.15,
+        ("SH", "ZH") | ("ZH", "SH") => 0.15,
+        ("CH", "JH") | ("JH", "CH") => 0.15,
+        ("TH", "DH") | ("DH", "TH") => 0.15,
 
-    // Voicing difference: small cost (0.2)
-    if a.voiced != b.voiced {
-        cost += 0.2;
-    }
+        // ══════════════════════════════════════════════════════
+        // SAME PLACE, DIFFERENT MANNER — common confusions
+        // ══════════════════════════════════════════════════════
+        // Alveolar: T/D ↔ S/Z (stop↔fricative)
+        ("T", "S") | ("S", "T") => 0.25,
+        ("D", "Z") | ("Z", "D") => 0.25,
+        ("T", "Z") | ("Z", "T") => 0.30,
+        ("D", "S") | ("S", "D") => 0.30,
+        // Alveolar: T/D ↔ N (stop↔nasal)
+        ("T", "N") | ("N", "T") => 0.30,
+        ("D", "N") | ("N", "D") => 0.30,
+        // Postalveolar: SH/ZH ↔ CH/JH (fricative↔affricate)
+        ("SH", "CH") | ("CH", "SH") => 0.25,
+        ("ZH", "JH") | ("JH", "ZH") => 0.25,
+        // Velar: K/G ↔ NG (stop↔nasal)
+        ("K", "NG") | ("NG", "K") => 0.30,
+        ("G", "NG") | ("NG", "G") => 0.30,
+        // Bilabial: P/B ↔ M (stop↔nasal)
+        ("P", "M") | ("M", "P") => 0.30,
+        ("B", "M") | ("M", "B") => 0.25, // B→M especially common
 
-    // Place difference: scaled by distance
-    let place_diff = (a.place as i8 - b.place as i8).unsigned_abs();
-    cost += match place_diff {
-        0 => 0.0,
-        1 => 0.2, // adjacent places (alveolar↔postalveolar)
-        2 => 0.4,
-        _ => 0.6,
-    };
+        // ══════════════════════════════════════════════════════
+        // ADJACENT PLACE, SAME MANNER — moderately confused
+        // ══════════════════════════════════════════════════════
+        // Stop pairs across place
+        ("P", "T") | ("T", "P") => 0.40,
+        ("B", "D") | ("D", "B") => 0.40,
+        ("T", "K") | ("K", "T") => 0.40,
+        ("D", "G") | ("G", "D") => 0.40,
+        ("P", "K") | ("K", "P") => 0.50,
+        ("B", "G") | ("G", "B") => 0.50,
+        // Nasal pairs across place
+        ("M", "N") | ("N", "M") => 0.35,
+        ("N", "NG") | ("NG", "N") => 0.35,
+        ("M", "NG") | ("NG", "M") => 0.50,
+        // Fricative pairs across place
+        ("F", "TH") | ("TH", "F") => 0.30, // very commonly confused!
+        ("V", "DH") | ("DH", "V") => 0.30, // very commonly confused!
+        ("F", "S") | ("S", "F") => 0.40,
+        ("V", "Z") | ("Z", "V") => 0.40,
+        ("S", "SH") | ("SH", "S") => 0.30,
+        ("Z", "ZH") | ("ZH", "Z") => 0.30,
+        ("TH", "S") | ("S", "TH") => 0.35,
+        ("DH", "Z") | ("Z", "DH") => 0.35,
 
-    // Manner difference: scaled by distance
-    let manner_diff = (a.manner as i8 - b.manner as i8).unsigned_abs();
-    cost += match manner_diff {
-        0 => 0.0,
-        1 => 0.2, // stop↔fricative, fricative↔affricate
-        _ => 0.4,
-    };
+        // ══════════════════════════════════════════════════════
+        // LIQUIDS & GLIDES — frequently confused
+        // ══════════════════════════════════════════════════════
+        ("L", "R") | ("R", "L") => 0.30,
+        ("W", "L") | ("L", "W") => 0.40,
+        ("R", "W") | ("W", "R") => 0.40,
+        ("Y", "IY") | ("IY", "Y") => 0.20, // glide↔vowel
+        ("W", "UW") | ("UW", "W") => 0.20, // glide↔vowel
 
-    cost.min(1.0)
-}
+        // ══════════════════════════════════════════════════════
+        // HH (glottal) — often dropped or inserted by ASR
+        // ══════════════════════════════════════════════════════
+        ("HH", _) if !is_vowel(b) => 0.50,
 
-fn vowel_distance(a: &PhonemeFeatures, b: &PhonemeFeatures) -> f32 {
-    let mut cost = 0.0f32;
+        // ══════════════════════════════════════════════════════
+        // VOWELS — organized by proximity in vowel space
+        // ══════════════════════════════════════════════════════
 
-    let height_diff = (a.height as i8 - b.height as i8).unsigned_abs();
-    cost += height_diff as f32 * 0.25;
+        // Near-identical (tense/lax pairs)
+        ("IY", "IH") | ("IH", "IY") => 0.15, // beat/bit
+        ("UW", "UH") | ("UH", "UW") => 0.15, // boot/book
+        ("EY", "EH") | ("EH", "EY") => 0.20, // bait/bet
+        ("AO", "OW") | ("OW", "AO") => 0.20, // bought/boat
+        ("AO", "OY") | ("OY", "AO") => 0.25,
+        ("OW", "OY") | ("OY", "OW") => 0.25,
 
-    let back_diff = (a.backness as i8 - b.backness as i8).unsigned_abs();
-    cost += back_diff as f32 * 0.25;
+        // Schwa (AH) — the great neutralizer, everything reduces to it
+        ("AH", "IH") | ("IH", "AH") => 0.25,
+        ("AH", "EH") | ("EH", "AH") => 0.25,
+        ("AH", "AE") | ("AE", "AH") => 0.30,
+        ("AH", "AA") | ("AA", "AH") => 0.25,
+        ("AH", "AO") | ("AO", "AH") => 0.30,
+        ("AH", "UH") | ("UH", "AH") => 0.25,
+        ("AH", "ER") | ("ER", "AH") => 0.20, // very close
+        ("AH", "IY") | ("IY", "AH") => 0.35,
+        ("AH", "UW") | ("UW", "AH") => 0.35,
+        ("AH", "OW") | ("OW", "AH") => 0.30,
+        ("AH", "EY") | ("EY", "AH") => 0.30,
 
-    if a.rounded != b.rounded {
-        cost += 0.15;
-    }
+        // ER is close to AH and UH
+        ("ER", "IH") | ("IH", "ER") => 0.30,
+        ("ER", "EH") | ("EH", "ER") => 0.30,
+        ("ER", "UH") | ("UH", "ER") => 0.30,
 
-    cost.min(1.0)
-}
+        // Front vowel ladder: IY → IH → EH → EY → AE
+        ("IY", "EH") | ("EH", "IY") => 0.35,
+        ("IY", "EY") | ("EY", "IY") => 0.30,
+        ("IH", "EH") | ("EH", "IH") => 0.25,
+        ("IH", "EY") | ("EY", "IH") => 0.30,
+        ("EH", "AE") | ("AE", "EH") => 0.25,
+        ("EY", "AE") | ("AE", "EY") => 0.30,
+        ("IY", "AE") | ("AE", "IY") => 0.50,
+        ("IH", "AE") | ("AE", "IH") => 0.35,
 
-fn features(phoneme: &str) -> Option<PhonemeFeatures> {
-    Some(match phoneme {
-        // ── Consonants ──────────────────────────────────────────
-        // Stops
-        "P"  => PhonemeFeatures { is_vowel: false, place: 0, manner: 0, voiced: false, height: 0, backness: 0, rounded: false },
-        "B"  => PhonemeFeatures { is_vowel: false, place: 0, manner: 0, voiced: true,  height: 0, backness: 0, rounded: false },
-        "T"  => PhonemeFeatures { is_vowel: false, place: 3, manner: 0, voiced: false, height: 0, backness: 0, rounded: false },
-        "D"  => PhonemeFeatures { is_vowel: false, place: 3, manner: 0, voiced: true,  height: 0, backness: 0, rounded: false },
-        "K"  => PhonemeFeatures { is_vowel: false, place: 5, manner: 0, voiced: false, height: 0, backness: 0, rounded: false },
-        "G"  => PhonemeFeatures { is_vowel: false, place: 5, manner: 0, voiced: true,  height: 0, backness: 0, rounded: false },
-        // Fricatives
-        "F"  => PhonemeFeatures { is_vowel: false, place: 1, manner: 1, voiced: false, height: 0, backness: 0, rounded: false },
-        "V"  => PhonemeFeatures { is_vowel: false, place: 1, manner: 1, voiced: true,  height: 0, backness: 0, rounded: false },
-        "TH" => PhonemeFeatures { is_vowel: false, place: 2, manner: 1, voiced: false, height: 0, backness: 0, rounded: false },
-        "DH" => PhonemeFeatures { is_vowel: false, place: 2, manner: 1, voiced: true,  height: 0, backness: 0, rounded: false },
-        "S"  => PhonemeFeatures { is_vowel: false, place: 3, manner: 1, voiced: false, height: 0, backness: 0, rounded: false },
-        "Z"  => PhonemeFeatures { is_vowel: false, place: 3, manner: 1, voiced: true,  height: 0, backness: 0, rounded: false },
-        "SH" => PhonemeFeatures { is_vowel: false, place: 4, manner: 1, voiced: false, height: 0, backness: 0, rounded: false },
-        "ZH" => PhonemeFeatures { is_vowel: false, place: 4, manner: 1, voiced: true,  height: 0, backness: 0, rounded: false },
-        "HH" => PhonemeFeatures { is_vowel: false, place: 6, manner: 1, voiced: false, height: 0, backness: 0, rounded: false },
-        // Affricates
-        "CH" => PhonemeFeatures { is_vowel: false, place: 4, manner: 2, voiced: false, height: 0, backness: 0, rounded: false },
-        "JH" => PhonemeFeatures { is_vowel: false, place: 4, manner: 2, voiced: true,  height: 0, backness: 0, rounded: false },
-        // Nasals
-        "M"  => PhonemeFeatures { is_vowel: false, place: 0, manner: 3, voiced: true,  height: 0, backness: 0, rounded: false },
-        "N"  => PhonemeFeatures { is_vowel: false, place: 3, manner: 3, voiced: true,  height: 0, backness: 0, rounded: false },
-        "NG" => PhonemeFeatures { is_vowel: false, place: 5, manner: 3, voiced: true,  height: 0, backness: 0, rounded: false },
-        // Liquids
-        "L"  => PhonemeFeatures { is_vowel: false, place: 3, manner: 4, voiced: true,  height: 0, backness: 0, rounded: false },
-        "R"  => PhonemeFeatures { is_vowel: false, place: 3, manner: 4, voiced: true,  height: 0, backness: 0, rounded: false },
-        // Glides
-        "W"  => PhonemeFeatures { is_vowel: false, place: 0, manner: 5, voiced: true,  height: 0, backness: 0, rounded: false },
-        "Y"  => PhonemeFeatures { is_vowel: false, place: 4, manner: 5, voiced: true,  height: 0, backness: 0, rounded: false },
+        // Back vowel ladder: UW → UH → OW → AO → AA
+        ("UW", "OW") | ("OW", "UW") => 0.30,
+        ("UH", "OW") | ("OW", "UH") => 0.30,
+        ("UH", "AO") | ("AO", "UH") => 0.35,
+        ("UW", "AO") | ("AO", "UW") => 0.40,
+        ("OW", "AA") | ("AA", "OW") => 0.40,
+        ("AO", "AA") | ("AA", "AO") => 0.30,
+        ("UW", "AA") | ("AA", "UW") => 0.60,
 
-        // ── Vowels ──────────────────────────────────────────────
-        //                                           height  backness  rounded
-        "IY" => PhonemeFeatures { is_vowel: true, place: 0, manner: 0, voiced: true, height: 0, backness: 0, rounded: false },
-        "IH" => PhonemeFeatures { is_vowel: true, place: 0, manner: 0, voiced: true, height: 0, backness: 0, rounded: false },
-        "EH" => PhonemeFeatures { is_vowel: true, place: 0, manner: 0, voiced: true, height: 1, backness: 0, rounded: false },
-        "EY" => PhonemeFeatures { is_vowel: true, place: 0, manner: 0, voiced: true, height: 1, backness: 0, rounded: false },
-        "AE" => PhonemeFeatures { is_vowel: true, place: 0, manner: 0, voiced: true, height: 2, backness: 0, rounded: false },
-        "AA" => PhonemeFeatures { is_vowel: true, place: 0, manner: 0, voiced: true, height: 2, backness: 2, rounded: false },
-        "AO" => PhonemeFeatures { is_vowel: true, place: 0, manner: 0, voiced: true, height: 1, backness: 2, rounded: true },
-        "OW" => PhonemeFeatures { is_vowel: true, place: 0, manner: 0, voiced: true, height: 1, backness: 2, rounded: true },
-        "OY" => PhonemeFeatures { is_vowel: true, place: 0, manner: 0, voiced: true, height: 1, backness: 2, rounded: true },
-        "UH" => PhonemeFeatures { is_vowel: true, place: 0, manner: 0, voiced: true, height: 0, backness: 2, rounded: true },
-        "UW" => PhonemeFeatures { is_vowel: true, place: 0, manner: 0, voiced: true, height: 0, backness: 2, rounded: true },
-        "AH" => PhonemeFeatures { is_vowel: true, place: 0, manner: 0, voiced: true, height: 1, backness: 1, rounded: false },
-        "ER" => PhonemeFeatures { is_vowel: true, place: 0, manner: 0, voiced: true, height: 1, backness: 1, rounded: false },
-        "AW" => PhonemeFeatures { is_vowel: true, place: 0, manner: 0, voiced: true, height: 2, backness: 1, rounded: false },
-        "AY" => PhonemeFeatures { is_vowel: true, place: 0, manner: 0, voiced: true, height: 2, backness: 1, rounded: false },
+        // Front↔back (distant)
+        ("IY", "UW") | ("UW", "IY") => 0.60,
+        ("IY", "OW") | ("OW", "IY") => 0.60,
+        ("IY", "AA") | ("AA", "IY") => 0.70,
+        ("IH", "UH") | ("UH", "IH") => 0.50,
+        ("EH", "OW") | ("OW", "EH") => 0.50,
+        ("AE", "AA") | ("AA", "AE") => 0.35, // actually somewhat close
+        ("AE", "AO") | ("AO", "AE") => 0.45,
+        ("AE", "OW") | ("OW", "AE") => 0.55,
+        ("AE", "UW") | ("UW", "AE") => 0.70,
+
+        // Diphthongs vs monophthongs
+        ("AY", "AE") | ("AE", "AY") => 0.30,
+        ("AY", "AA") | ("AA", "AY") => 0.30,
+        ("AY", "IY") | ("IY", "AY") => 0.40,
+        ("AY", "EY") | ("EY", "AY") => 0.35,
+        ("AY", "OY") | ("OY", "AY") => 0.40,
+        ("AW", "AO") | ("AO", "AW") => 0.30,
+        ("AW", "OW") | ("OW", "AW") => 0.35,
+        ("AW", "AA") | ("AA", "AW") => 0.30,
+        ("AW", "AE") | ("AE", "AW") => 0.35,
+        ("AW", "AY") | ("AY", "AW") => 0.30,
 
         _ => return None,
     })
@@ -147,38 +199,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn voicing_pair_is_cheap() {
-        // K↔G is just voicing
-        assert!(substitution_cost("K", "G") < 0.3);
-        assert!(substitution_cost("T", "D") < 0.3);
-        assert!(substitution_cost("P", "B") < 0.3);
-        assert!(substitution_cost("S", "Z") < 0.3);
+    fn voicing_pairs_are_cheap() {
+        assert!(substitution_cost("K", "G") <= 0.15);
+        assert!(substitution_cost("T", "D") <= 0.15);
+        assert!(substitution_cost("S", "Z") <= 0.15);
     }
 
     #[test]
-    fn different_place_is_expensive() {
-        // K↔P is place change (velar→bilabial)
-        assert!(substitution_cost("K", "P") > substitution_cost("K", "G"));
-        // K↔B is place + voicing
-        assert!(substitution_cost("K", "B") > substitution_cost("K", "G"));
+    fn k_g_cheaper_than_k_p() {
+        assert!(substitution_cost("K", "G") < substitution_cost("K", "P"));
     }
 
     #[test]
-    fn same_phoneme_is_zero() {
-        assert_eq!(substitution_cost("K", "K"), 0.0);
-        assert_eq!(substitution_cost("AE", "AE"), 0.0);
-    }
-
-    #[test]
-    fn vowel_consonant_is_max() {
-        assert_eq!(substitution_cost("K", "AE"), 1.0);
+    fn k_p_cheaper_than_k_b() {
+        // K→P: place change but same voicing
+        // K→B: place change + voicing change
+        assert!(substitution_cost("K", "P") < substitution_cost("K", "B"));
     }
 
     #[test]
     fn similar_vowels_are_cheap() {
-        // IY↔IH (both high front unrounded)
-        assert!(substitution_cost("IY", "IH") < 0.2);
-        // AE↔EH (front, adjacent height)
-        assert!(substitution_cost("AE", "EH") < 0.4);
+        assert!(substitution_cost("IY", "IH") <= 0.20);
+        assert!(substitution_cost("UW", "UH") <= 0.20);
+    }
+
+    #[test]
+    fn distant_vowels_are_expensive() {
+        assert!(substitution_cost("IY", "AA") >= 0.60);
+        assert!(substitution_cost("IY", "UW") >= 0.50);
+    }
+
+    #[test]
+    fn schwa_is_close_to_everything() {
+        // AH (schwa) should be relatively close to all vowels
+        assert!(substitution_cost("AH", "IH") <= 0.30);
+        assert!(substitution_cost("AH", "EH") <= 0.30);
+        assert!(substitution_cost("AH", "AA") <= 0.30);
+        assert!(substitution_cost("AH", "UH") <= 0.30);
+    }
+
+    #[test]
+    fn f_th_confusion() {
+        // F and TH are notoriously confused
+        assert!(substitution_cost("F", "TH") <= 0.35);
+    }
+
+    #[test]
+    fn vowel_consonant_is_expensive() {
+        assert!(substitution_cost("K", "AE") >= 0.90);
+    }
+
+    #[test]
+    fn identity_is_zero() {
+        assert_eq!(substitution_cost("K", "K"), 0.0);
+        assert_eq!(substitution_cost("AE", "AE"), 0.0);
     }
 }
