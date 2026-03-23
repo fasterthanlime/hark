@@ -366,13 +366,21 @@ struct WhisperApp: App {
     @MainActor
     private func startStreamingLoop() {
         let transcriptionService = self.transcriptionService
-        streamingTask = Task { @MainActor () -> StreamingResult in
+        let audioRecorder = self.audioRecorder
+        let appState = self.appState
+        let session = self.streamingSession!
+
+        streamingTask = Task.detached { () -> StreamingResult in
             var processedCount = 0
             var lastText = ""
             var signal: StreamingSignal = .none
 
-            while appState.phase == .recording {
-                let allSamples = audioRecorder.peekCapture()
+            while !Task.isCancelled {
+                // Check phase on main actor
+                let isRecording = await MainActor.run { appState.phase == .recording }
+                guard isRecording else { break }
+
+                let allSamples = await MainActor.run { audioRecorder.peekCapture() }
 
                 guard allSamples.count > processedCount + 800 else {
                     try? await Task.sleep(for: .milliseconds(30))
@@ -382,18 +390,13 @@ struct WhisperApp: App {
                 let newChunk = Array(allSamples[processedCount...])
                 processedCount = allSamples.count
 
-                guard let session = streamingSession else { break }
-
-                // Run inference off the main thread so UI stays responsive.
-                let text: String? = await Task.detached {
-                    transcriptionService.feed(session: session, samples: newChunk)
-                }.value
+                let text: String? = transcriptionService.feed(session: session, samples: newChunk)
 
                 if let text {
                     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !trimmed.isEmpty {
                         lastText = trimmed
-                        appState.partialTranscript = trimmed
+                        await MainActor.run { appState.partialTranscript = trimmed }
 
                         // Check "over and out" first (higher priority).
                         if trimmed.range(of: #"(?i)[.!?,]\s+over\s+and\s+out\.?\s*$"#, options: .regularExpression) != nil {
@@ -410,7 +413,7 @@ struct WhisperApp: App {
             }
 
             // Strip the trigger phrase from the text.
-            lastText = Self.stripTrigger(lastText, signal: signal)
+            lastText = WhisperApp.stripTrigger(lastText, signal: signal)
 
             return StreamingResult(text: lastText, signal: signal, processedSampleCount: processedCount)
         }
@@ -472,7 +475,7 @@ struct WhisperApp: App {
     }
 
     /// Strip "over" or "over and out" from the end of the text.
-    private static func stripTrigger(_ text: String, signal: StreamingSignal) -> String {
+    private nonisolated static func stripTrigger(_ text: String, signal: StreamingSignal) -> String {
         guard signal != .none else { return text }
         var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = s.lowercased()
@@ -611,7 +614,7 @@ struct WhisperApp: App {
 
     @MainActor
     private func finishAndPaste(text: String, skipPaste: Bool = false, forceSubmit: Bool = false) async {
-        appState.partialTranscript = ""
+        // Don't clear partialTranscript here — let the dismiss animation show the final text.
         if MediaController.isEnabled { MediaController.resumeIfPaused() }
 
         if text.isEmpty || skipPaste {
@@ -625,12 +628,18 @@ struct WhisperApp: App {
 
         let shouldSubmit = forceSubmit || PasteController.isReturnKeyPressed() || Self.isAutoSubmitApp()
 
-        // Start dismiss animation immediately — don't wait for paste to complete.
+        // Paste immediately (don't wait for overlay dismiss).
+        _ = appState.transition(to: .pasting)
+        let pasteTask = Task {
+            try await PasteController.paste(text, submit: shouldSubmit)
+        }
+
+        // Keep overlay showing final text briefly, then dismiss.
+        try? await Task.sleep(for: .milliseconds(350))
         overlayManager.hideWithResult(.success)
 
-        _ = appState.transition(to: .pasting)
         do {
-            try await PasteController.paste(text, submit: shouldSubmit)
+            try await pasteTask.value
             _ = appState.transition(to: .idle)
         } catch {
             _ = appState.transition(to: .error(error.localizedDescription))

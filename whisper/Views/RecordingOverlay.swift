@@ -13,7 +13,11 @@ struct RecordingOverlayView: View {
 
     @State private var isAppearing = false
     @State private var displayedText = ""
+    @State private var stablePrefix = ""
+    @State private var freshStart = 0 // character index where fresh/rewritten text begins
+    @State private var freshOpacity: Double = 1.0
     @State private var textAnimationTask: Task<Void, Never>?
+    @State private var textContentHeight: CGFloat = 0
 
     private var dismissResult: OverlayResult { appState.overlayDismiss }
 
@@ -29,6 +33,8 @@ struct RecordingOverlayView: View {
     }
 
     private let maxTextHeight: CGFloat = 120 // ~6 lines at 17pt
+
+    private var isScrolling: Bool { textContentHeight > maxTextHeight }
 
     var body: some View {
         mainContent
@@ -52,16 +58,18 @@ struct RecordingOverlayView: View {
             // Text area with scroll
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: false) {
-                    Text(displayedTextValue)
-                        .font(.custom("Jost-Medium", size: 17))
-                        .foregroundColor(.white)
+                    Text(styledDisplayText)
                         .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .background(GeometryReader { geo in
+                            Color.clear.preference(key: TextHeightKey.self, value: geo.size.height)
+                        })
                         .id("transcript")
                 }
                 .frame(maxHeight: maxTextHeight, alignment: .top)
-                .mask(textScrollMask)
+                .mask(isScrolling ? textScrollMask : AnyView(Color.white))
+                .onPreferenceChange(TextHeightKey.self) { textContentHeight = $0 }
                 .onChange(of: displayedText) { _, _ in
                     withAnimation(.easeOut(duration: 0.1)) {
                         proxy.scrollTo("transcript", anchor: .bottom)
@@ -86,29 +94,35 @@ struct RecordingOverlayView: View {
                     .animation(.easeInOut(duration: 0.15), value: appState.isLockedMode)
                     .animation(.easeInOut(duration: 0.15), value: appState.isFinishing)
             }
-            .padding(.horizontal, 14)
+            .padding(.leading, 20)
+            .padding(.trailing, 14)
             .padding(.bottom, 12)
         }
         .frame(width: 500, alignment: .topLeading)
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.black.opacity(0.8))
-                .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.black.opacity(0.7))
+            }
+            .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
         )
     }
 
-    // Gradient mask that fades the top when content is scrollable
-    private var textScrollMask: some View {
-        VStack(spacing: 0) {
-            Color.white.frame(height: 10)
-            LinearGradient(
-                colors: [.clear, .white],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: 16)
-            Color.white
-        }
+    // Gradient mask that fades the top when content is scrolling
+    private var textScrollMask: AnyView {
+        AnyView(
+            VStack(spacing: 0) {
+                LinearGradient(
+                    colors: [.clear, .white],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 20)
+                Color.white
+            }
+        )
     }
 
     // MARK: - Hints
@@ -168,6 +182,25 @@ struct RecordingOverlayView: View {
         return "Listening..."
     }
 
+    /// Build an `AttributedString` where the stable prefix is fully opaque
+    /// and the fresh/rewritten portion fades in.
+    private var styledDisplayText: AttributedString {
+        let full = displayedTextValue
+        var result = AttributedString(full)
+        let font = NSFont(name: "Jost-Medium", size: 15) ?? .systemFont(ofSize: 15, weight: .medium)
+
+        result.font = font
+        result.foregroundColor = .white
+
+        // Apply fade to the fresh portion (after the stable prefix)
+        if freshStart > 0, freshStart < full.count {
+            let startIdx = result.index(result.startIndex, offsetByCharacters: freshStart)
+            result[startIdx..<result.endIndex].foregroundColor = .white.opacity(freshOpacity)
+        }
+
+        return result
+    }
+
     private func animateTextChange(to newText: String) {
         guard !newText.isEmpty else { return }
 
@@ -176,21 +209,36 @@ struct RecordingOverlayView: View {
         // After final inference, show complete text instantly.
         if appState.phase == .transcribing {
             displayedText = newText
+            freshStart = 0
+            freshOpacity = 1.0
             return
         }
 
         let currentText = displayedText
         let commonPrefixLength = currentText.commonPrefix(with: newText).count
 
+        // Text unchanged or only shortened — snap immediately.
         if commonPrefixLength == newText.count {
             displayedText = newText
+            freshStart = 0
+            freshOpacity = 1.0
             return
         }
 
+        let hasRewrite = commonPrefixLength < currentText.count
         let newPart = String(newText.dropFirst(commonPrefixLength))
+
+        // Set the full new text, mark where fresh content starts.
+        freshStart = commonPrefixLength
+        freshOpacity = hasRewrite ? 0.35 : 0.35
         displayedText = String(newText.prefix(commonPrefixLength))
 
+        // Typewrite the new characters, then fade in the fresh portion.
         textAnimationTask = Task { @MainActor in
+            // First: if there's rewritten text, show it all at once at low opacity
+            // (it's already set via freshStart/freshOpacity above)
+
+            // Typewrite the genuinely new characters
             let charCount = newPart.count
             let delayMs = max(5, min(50, 800 / max(charCount, 1)))
             for char in newPart {
@@ -198,7 +246,22 @@ struct RecordingOverlayView: View {
                 displayedText.append(char)
                 try? await Task.sleep(for: .milliseconds(delayMs))
             }
+
+            // Fade in the fresh portion
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                freshOpacity = 1.0
+            }
         }
+    }
+}
+
+// MARK: - Preference Key for text height measurement
+
+private struct TextHeightKey: PreferenceKey {
+    nonisolated(unsafe) static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

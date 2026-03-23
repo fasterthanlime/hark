@@ -85,7 +85,7 @@ final class FloatingPanel<Content: View>: NSPanel {
         guard let screen = screen ?? NSScreen.main else { return }
         let screenFrame = screen.visibleFrame
         let x = screenFrame.midX - (frame.width / 2)
-        let y = screenFrame.maxY - frame.height + 70  // offset up to compensate for padding
+        let y = screenFrame.maxY - frame.height - 10  // 10px gap below menu bar
         setFrameOrigin(NSPoint(x: x, y: y))
     }
 
