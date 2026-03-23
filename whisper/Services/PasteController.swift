@@ -50,19 +50,16 @@ struct PasteController {
 
         // If submitting, simulate Enter after paste
         if submit {
-            try? await Task.sleep(for: .milliseconds(500))
-            print("[whisper] simulating Return key")
+            try? await Task.sleep(for: .milliseconds(300))
             try await simulateReturn()
-            print("[whisper] Return key simulated")
         }
 
-        // Restore original pasteboard after paste completes
-        try? await Task.sleep(for: .milliseconds(300))
-        restorePasteboard(
-            snapshot,
-            to: pasteboard,
-            expectedChangeCount: stagedChangeCount
-        )
+        // Restore original pasteboard after a delay (don't block the caller)
+        let changeCount = stagedChangeCount
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            restorePasteboard(snapshot, to: pasteboard, expectedChangeCount: changeCount)
+        }
     }
 
     /// Check if the Return/Enter key is currently pressed.

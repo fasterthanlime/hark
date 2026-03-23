@@ -154,9 +154,10 @@ struct WhisperApp: App {
                 appState.activeInputDeviceName = deviceName
 
                 if previousDevice != nil, previousDevice != deviceName, audioRecorder.isWarmedUp {
-                    Self.logger.info("Input device changed, reinitializing audio")
-                    audioRecorder.coolDown()
+                    let wasRecording = appState.phase == .recording
+                    Self.logger.info("Input device changed (wasRecording=\(wasRecording)), reinitializing audio")
 
+                    audioRecorder.coolDown()
                     try? await Task.sleep(for: .milliseconds(100))
 
                     do {
@@ -172,6 +173,12 @@ struct WhisperApp: App {
                                 }
                             }
                         )
+
+                        // If we were recording, restart capture on the new device.
+                        if wasRecording {
+                            audioRecorder.startCapture()
+                            Self.logger.info("Restarted capture on new device")
+                        }
                     } catch {
                         Self.logger.error("Failed to reinitialize audio after device change: \(error.localizedDescription, privacy: .public)")
                     }
