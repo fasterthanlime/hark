@@ -8,3 +8,4 @@ parakeet-rs = "0.3"
 anyhow.workspace = true
 clap.workspace = true
 hound.workspace = true
+serde_json.workspace = true

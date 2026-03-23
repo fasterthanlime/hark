@@ -8,3 +8,4 @@ qwen3-asr = { path = "../../../qwen3-asr-rs", features = ["metal"] }
 shellexpand = "3"
 anyhow.workspace = true
 clap.workspace = true
+serde_json.workspace = true

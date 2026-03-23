@@ -3909,6 +3909,7 @@ dependencies = [
  "clap",
  "hound",
  "parakeet-rs",
+ "serde_json",
 ]
 
 [[package]]
@@ -3935,6 +3936,7 @@ dependencies = [
  "anyhow",
  "clap",
  "qwen3-asr",
+ "serde_json",
  "shellexpand",
 ]
 

@@ -8,7 +8,6 @@ use ratatui::widgets::*;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 #[derive(Parser)]
 #[command(about = "Record eval sentences with mic profile support")]
@@ -48,13 +47,6 @@ struct RecordingManifest {
     sample_rate: u32,
 }
 
-#[derive(PartialEq)]
-enum State {
-    Waiting,
-    Recording,
-    Recorded,
-}
-
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -82,7 +74,7 @@ fn main() -> Result<()> {
         .append(true)
         .open(&manifest_path)?;
 
-    // Set up audio
+    // Set up audio — always recording
     let host = cpal::default_host();
     let device = host.default_input_device().context("no input device found")?;
     let device_name = device.name().unwrap_or_else(|_| "unknown".to_string());
@@ -90,18 +82,35 @@ fn main() -> Result<()> {
     let sample_rate = config.sample_rate().0;
     let channels = config.channels() as usize;
 
+    let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+    let buf_clone = buffer.clone();
+
+    let stream = device.build_input_stream(
+        &config.into(),
+        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+            let mut buf = buf_clone.lock().unwrap();
+            if channels == 1 {
+                buf.extend_from_slice(data);
+            } else {
+                for chunk in data.chunks(channels) {
+                    let mono: f32 = chunk.iter().sum::<f32>() / channels as f32;
+                    buf.push(mono);
+                }
+            }
+        },
+        |err| eprintln!("Audio error: {err}"),
+        None,
+    )?;
+    stream.play()?;
+
     // Set up terminal
     terminal::enable_raw_mode()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
     terminal.clear()?;
 
     let mut i = args.start;
-    let mut state = State::Waiting;
-    let mut recording_start: Option<Instant> = None;
-    let mut last_duration = 0.0f32;
     let mut status_msg = String::new();
-    let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
-    let mut active_stream: Option<cpal::Stream> = None;
+    let mut recorded_count = 0usize;
 
     loop {
         if i >= sentences.len() {
@@ -109,19 +118,24 @@ fn main() -> Result<()> {
         }
         let sentence = &sentences[i];
 
-        // Draw UI
-        let recording_secs = recording_start
-            .map(|s| s.elapsed().as_secs_f32())
-            .unwrap_or(0.0);
+        // Compute current audio level for VU meter
+        let (buf_len, peak) = {
+            let buf = buffer.lock().unwrap();
+            let len = buf.len();
+            let peak = buf.iter().rev().take(1600).fold(0.0f32, |m, &s| m.max(s.abs()));
+            (len, peak)
+        };
+        let buf_secs = buf_len as f32 / sample_rate as f32;
 
+        // Draw UI
         terminal.draw(|frame| {
             let area = frame.area();
 
             let chunks = Layout::vertical([
                 Constraint::Length(3),  // header
-                Constraint::Min(6),    // sentence
-                Constraint::Length(3), // status
-                Constraint::Length(3),  // controls
+                Constraint::Min(8),    // sentence
+                Constraint::Length(3), // audio meter + status
+                Constraint::Length(3), // controls
             ])
             .split(area);
 
@@ -132,11 +146,13 @@ fn main() -> Result<()> {
                     Style::default().fg(Color::Black).bg(Color::Cyan).bold(),
                 ),
                 Span::raw("  "),
+                Span::styled(&device_name, Style::default().fg(Color::DarkGray)),
+                Span::raw(format!("  {} Hz", sample_rate)),
+                Span::raw("  "),
                 Span::styled(
-                    format!("{}", device_name),
-                    Style::default().fg(Color::DarkGray),
+                    format!("{} recorded", recorded_count),
+                    Style::default().fg(Color::Green),
                 ),
-                Span::raw(format!("  {} Hz  {} ch", sample_rate, channels)),
             ]))
             .block(Block::bordered().title(format!(
                 " Sentence {}/{} ",
@@ -146,7 +162,7 @@ fn main() -> Result<()> {
             frame.render_widget(header, chunks[0]);
 
             // Sentence content
-            let mut lines = vec![
+            let lines = vec![
                 Line::raw(""),
                 Line::from(Span::styled(
                     &sentence.text,
@@ -155,10 +171,7 @@ fn main() -> Result<()> {
                 Line::raw(""),
                 Line::from(vec![
                     Span::styled("say: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        &sentence.spoken,
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled(&sentence.spoken, Style::default().fg(Color::Yellow)),
                 ]),
                 Line::raw(""),
                 Line::from(vec![
@@ -174,108 +187,65 @@ fn main() -> Result<()> {
                 .wrap(Wrap { trim: false });
             frame.render_widget(content, chunks[1]);
 
-            // Status
-            let status_line = match state {
-                State::Waiting => Line::from(Span::styled(
-                    "  Ready to record",
-                    Style::default().fg(Color::DarkGray),
-                )),
-                State::Recording => Line::from(vec![
-                    Span::styled(" ● REC ", Style::default().fg(Color::White).bg(Color::Red).bold()),
-                    Span::raw(format!("  {:.1}s", recording_secs)),
-                ]),
-                State::Recorded => {
-                    let msg = if status_msg.is_empty() {
-                        format!("  Saved ({:.1}s)", last_duration)
-                    } else {
-                        format!("  {}", status_msg)
-                    };
-                    Line::from(Span::styled(
-                        msg,
-                        Style::default().fg(Color::Green),
-                    ))
-                }
+            // Audio meter + status
+            let meter_width = (chunks[2].width.saturating_sub(4)) as usize;
+            let level = (peak * meter_width as f32).min(meter_width as f32) as usize;
+            let meter_bar: String = "█".repeat(level) + &"░".repeat(meter_width.saturating_sub(level));
+            let meter_style = if peak > 0.05 { Color::Red } else { Color::DarkGray };
+
+            let status_line = if status_msg.is_empty() {
+                Line::from(vec![
+                    Span::styled(" ● ", Style::default().fg(Color::Red)),
+                    Span::styled(&meter_bar, Style::default().fg(meter_style)),
+                    Span::styled(format!(" {:.1}s", buf_secs), Style::default().fg(Color::DarkGray)),
+                ])
+            } else {
+                Line::from(Span::styled(
+                    format!("  {}", &status_msg),
+                    Style::default().fg(Color::Green),
+                ))
             };
-            let status = Paragraph::new(status_line).block(Block::bordered().title(" Status "));
+            let status = Paragraph::new(status_line).block(Block::bordered());
             frame.render_widget(status, chunks[2]);
 
             // Controls
-            let controls = match state {
-                State::Waiting => " Space: record  S: skip  Q: quit ",
-                State::Recording => " Space: stop recording ",
-                State::Recorded => " Space: next  R: redo  Q: quit ",
-            };
             let ctrl = Paragraph::new(Line::from(Span::styled(
-                controls,
+                " Space: save & next    R: redo    S: skip    Q: quit ",
                 Style::default().fg(Color::Cyan),
             )))
             .block(Block::bordered());
             frame.render_widget(ctrl, chunks[3]);
         })?;
 
-        // Poll events (with timeout for recording animation)
-        let timeout = if state == State::Recording {
-            std::time::Duration::from_millis(100)
-        } else {
-            std::time::Duration::from_secs(60)
-        };
-
-        if !event::poll(timeout)? {
+        // Poll with short timeout for VU meter updates
+        if !event::poll(std::time::Duration::from_millis(50))? {
             continue;
         }
 
         if let Event::Key(KeyEvent { code, modifiers, .. }) = event::read()? {
-            match (&state, code) {
-                // Quit
-                (_, KeyCode::Char('q')) | (_, KeyCode::Char('Q')) | (_, KeyCode::Esc) => break,
-                (_, KeyCode::Char('c')) if modifiers.contains(KeyModifiers::CONTROL) => break,
+            match code {
+                KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => break,
+                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => break,
 
-                // Start recording
-                (State::Waiting, KeyCode::Char(' ') | KeyCode::Enter) => {
-                    buffer.lock().unwrap().clear();
-                    let buf_clone = buffer.clone();
-                    let ch = channels;
+                // Save current recording & advance
+                KeyCode::Char(' ') | KeyCode::Enter => {
+                    let samples: Vec<f32> = {
+                        let mut buf = buffer.lock().unwrap();
+                        let s = buf.clone();
+                        buf.clear();
+                        s
+                    };
 
-                    let stream = device.build_input_stream(
-                        &config.clone().into(),
-                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                            let mut buf = buf_clone.lock().unwrap();
-                            if ch == 1 {
-                                buf.extend_from_slice(data);
-                            } else {
-                                for chunk in data.chunks(ch) {
-                                    let mono: f32 = chunk.iter().sum::<f32>() / ch as f32;
-                                    buf.push(mono);
-                                }
-                            }
-                        },
-                        |err| eprintln!("Audio error: {err}"),
-                        None,
-                    )?;
-                    stream.play()?;
-                    active_stream = Some(stream);
-                    recording_start = Some(Instant::now());
-                    state = State::Recording;
-                }
-
-                // Stop recording
-                (State::Recording, KeyCode::Char(' ') | KeyCode::Enter) => {
-                    drop(active_stream.take());
-                    let duration = recording_start.take().map(|s| s.elapsed().as_secs_f32()).unwrap_or(0.0);
-                    let samples = buffer.lock().unwrap().clone();
-
-                    if samples.is_empty() || duration < 0.3 {
-                        status_msg = format!("Too short ({:.1}s), try again", duration);
-                        state = State::Waiting;
+                    let duration = samples.len() as f32 / sample_rate as f32;
+                    if duration < 0.5 {
+                        status_msg = format!("Too short ({:.1}s), speak first", duration);
                         continue;
                     }
 
-                    // Write WAV
                     let wav_name = format!("{:04}.wav", i);
                     let wav_path = profile_dir.join(&wav_name);
                     write_wav_16k(&wav_path, &samples, sample_rate)?;
 
-                    // Write manifest
                     let entry = RecordingManifest {
                         sentence_index: i,
                         text: sentence.text.clone(),
@@ -289,29 +259,24 @@ fn main() -> Result<()> {
                     manifest.write_all(b"\n")?;
                     manifest.flush()?;
 
-                    last_duration = duration;
-                    status_msg.clear();
-                    state = State::Recorded;
+                    recorded_count += 1;
+                    status_msg = format!("Saved {:.1}s", duration);
+                    i += 1;
+                    // Clear buffer for next sentence
+                    buffer.lock().unwrap().clear();
+                }
+
+                // Redo — clear buffer, stay on same sentence
+                KeyCode::Char('r') | KeyCode::Char('R') => {
+                    buffer.lock().unwrap().clear();
+                    status_msg = "Buffer cleared, speak again".to_string();
                 }
 
                 // Skip
-                (State::Waiting, KeyCode::Char('s') | KeyCode::Char('S')) => {
+                KeyCode::Char('s') | KeyCode::Char('S') => {
+                    buffer.lock().unwrap().clear();
+                    status_msg.clear();
                     i += 1;
-                    state = State::Waiting;
-                    status_msg.clear();
-                }
-
-                // Next sentence
-                (State::Recorded, KeyCode::Char(' ') | KeyCode::Enter) => {
-                    i += 1;
-                    state = State::Waiting;
-                    status_msg.clear();
-                }
-
-                // Redo
-                (State::Recorded, KeyCode::Char('r') | KeyCode::Char('R')) => {
-                    state = State::Waiting;
-                    status_msg.clear();
                 }
 
                 _ => {}
@@ -319,17 +284,15 @@ fn main() -> Result<()> {
         }
     }
 
-    // Cleanup terminal
+    // Cleanup
+    drop(stream);
     drop(terminal);
     terminal::disable_raw_mode()?;
-    crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
 
-    println!("Done! Recordings in {}", profile_dir.display());
-    println!("Manifest: {}", manifest_path.display());
+    println!("\nDone! {} recordings in {}", recorded_count, profile_dir.display());
     Ok(())
 }
 
-/// Write samples to a 16kHz mono WAV, resampling if needed.
 fn write_wav_16k(path: &Path, samples: &[f32], source_rate: u32) -> Result<()> {
     let samples_16k = if source_rate == 16000 {
         samples.to_vec()
