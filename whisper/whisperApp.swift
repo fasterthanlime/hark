@@ -580,18 +580,22 @@ struct WhisperApp: App {
 
         // Feed any remaining samples and finalize the session to get the complete transcript.
         var text = appState.partialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        Self.logger.warning("[whisper] stop: partial='\(text, privacy: .public)' sessionExists=\(streamingSession != nil) samples=\(allSamples.count)")
         if let session = streamingSession {
             appState.isFinishing = true
 
             // Wait for the streaming loop to exit so we don't race on the session.
             let result = await stask?.value
-            let processedCount = result?.processedSampleCount ?? allSamples.count
+            let processedCount = result?.processedSampleCount ?? 0
+            let remainingCount = max(0, allSamples.count - processedCount)
+
+            Self.logger.warning("[whisper] finalize: processed=\(processedCount) total=\(allSamples.count) remaining=\(remainingCount)")
 
             // Feed remaining unprocessed audio and finalize — off main thread.
             let transcriptionService = self.transcriptionService
             let remaining = processedCount < allSamples.count ? Array(allSamples[processedCount...]) : nil
             let finalText: String? = await Task.detached {
-                if let remaining {
+                if let remaining, !remaining.isEmpty {
                     _ = transcriptionService.feed(session: session, samples: remaining)
                 }
                 return transcriptionService.finish(session: session)
@@ -600,6 +604,22 @@ struct WhisperApp: App {
                 let trimmed = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
                     text = trimmed
+                }
+            }
+
+            // If streaming produced nothing (e.g. too short for a chunk boundary),
+            // fall back to a single-shot transcription of all captured audio.
+            if text.isEmpty && !allSamples.isEmpty {
+                let transcriptionService = self.transcriptionService
+                let samples = allSamples
+                let fallbackText: String? = await Task.detached {
+                    transcriptionService.transcribeSamples(samples)
+                }.value
+                if let fallbackText {
+                    let trimmed = fallbackText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty {
+                        text = trimmed
+                    }
                 }
             }
 

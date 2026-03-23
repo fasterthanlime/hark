@@ -104,7 +104,7 @@ struct RecordingOverlayView: View {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(.ultraThinMaterial)
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.black.opacity(0.7))
+                    .fill(Color.black.opacity(0.8))
             }
             .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
         )
