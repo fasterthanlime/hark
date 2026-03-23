@@ -115,6 +115,8 @@ struct WhisperApp: App {
 
     @MainActor
     private func onLaunch() async {
+        registerBundledFonts()
+
         let savedRepoID = UserDefaults.standard.string(forKey: "selectedModelID")
         let validIDs = Set(STTModelDefinition.allModels.map(\.repoID))
         let defaultRepoID = savedRepoID.flatMap { validIDs.contains($0) ? $0 : nil }
@@ -267,9 +269,9 @@ struct WhisperApp: App {
 
         guard !appState.isEditingHotkey else { return }
 
-        // If already recording in toggle mode, stop recording
+        // In toggle mode, stop on keyUp (not keyDown) so the user can
+        // hold hotkey + press ESC to cancel before releasing.
         if appState.phase == .recording && isToggleMode {
-            await stopRecordingAndTranscribe()
             return
         }
 
@@ -480,6 +482,12 @@ struct WhisperApp: App {
     private func handleKeyUp() async {
         guard appState.phase == .recording else { return }
 
+        // In toggle mode, this keyUp is the "stop and submit" action.
+        if isToggleMode {
+            await stopRecordingAndTranscribe()
+            return
+        }
+
         // Check if this was a quick press (toggle mode)
         if let downTime = keyDownTime {
             let pressDuration = Date().timeIntervalSince(downTime)
@@ -574,27 +582,24 @@ struct WhisperApp: App {
         appState.partialTranscript = ""
         if MediaController.isEnabled { MediaController.resumeIfPaused() }
 
-        guard !text.isEmpty else {
+        if text.isEmpty || skipPaste {
             _ = appState.transition(to: .idle)
-            overlayManager.hide()
+            overlayManager.hideWithResult(.cancelled)
+            if !text.isEmpty { appState.addToHistory(text) }
             return
         }
 
         appState.addToHistory(text)
 
-        if skipPaste {
-            _ = appState.transition(to: .idle)
-            overlayManager.hideWithResult(.cancelled)
-            return
-        }
-
         let shouldSubmit = forceSubmit || PasteController.isReturnKeyPressed() || Self.isAutoSubmitApp()
+
+        // Start dismiss animation immediately — don't wait for paste to complete.
+        overlayManager.hideWithResult(.success)
 
         _ = appState.transition(to: .pasting)
         do {
             try await PasteController.paste(text, submit: shouldSubmit)
             _ = appState.transition(to: .idle)
-            overlayManager.hideWithResult(.success)
         } catch {
             _ = appState.transition(to: .error(error.localizedDescription))
             overlayManager.hide()
@@ -617,7 +622,10 @@ struct WhisperApp: App {
             guard isEscape || isReturn else { return }
 
             if isToggleMode {
-                guard currentHotkeyMonitor.isHeld else { return }
+                // Check if the hotkey's keys are still pressed (not exact isHeld,
+                // because the ESC/Return key itself gets added to pressedKeyCodes
+                // before this monitor fires, breaking the exact match).
+                guard currentHotkeyMonitor.binding.keyCodeSet.isSubset(of: currentHotkeyMonitor.pressedKeyCodes) else { return }
             }
 
             if isEscape {
@@ -870,6 +878,19 @@ struct WhisperApp: App {
     private static func isAutoSubmitApp() -> Bool {
         guard let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return false }
         return autoSubmitBundleIDs.contains(bundleID)
+    }
+
+    // MARK: - Fonts
+
+    private func registerBundledFonts() {
+        guard let resourceURL = Bundle.main.resourceURL else { return }
+        let fontExtensions: Set<String> = ["ttf", "otf"]
+        guard let enumerator = FileManager.default.enumerator(
+            at: resourceURL, includingPropertiesForKeys: nil
+        ) else { return }
+        for case let url as URL in enumerator where fontExtensions.contains(url.pathExtension.lowercased()) {
+            CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+        }
     }
 
     // MARK: - Sound Effects

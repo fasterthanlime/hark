@@ -2,8 +2,15 @@ import AppKit
 import SwiftUI
 
 private final class TransparentHostingView<Content: View>: NSHostingView<Content> {
-    override var isOpaque: Bool {
-        false
+    override var isOpaque: Bool { false }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Disable clipping so scale animations can extend beyond bounds.
+        wantsLayer = true
+        layer?.masksToBounds = false
+        superview?.wantsLayer = true
+        superview?.layer?.masksToBounds = false
     }
 }
 
@@ -78,7 +85,7 @@ final class FloatingPanel<Content: View>: NSPanel {
         guard let screen = screen ?? NSScreen.main else { return }
         let screenFrame = screen.visibleFrame
         let x = screenFrame.midX - (frame.width / 2)
-        let y = screenFrame.maxY - frame.height - 30  // 30pt below menu bar
+        let y = screenFrame.maxY - frame.height + 70  // offset up to compensate for padding
         setFrameOrigin(NSPoint(x: x, y: y))
     }
 

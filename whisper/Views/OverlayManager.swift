@@ -7,7 +7,7 @@ final class OverlayManager {
     private var panels: [FloatingPanel<AnyView>] = []
     private var isPresented = false
     private var currentAppState: AppState?
-    private let overlaySize = CGSize(width: 550, height: 200)
+    private let overlaySize = CGSize(width: 700, height: 300)
     private var dismissTask: Task<Void, Never>?
 
     func show(appState: AppState) {
@@ -80,7 +80,7 @@ final class OverlayManager {
 
         // Schedule cleanup after the animation plays.
         dismissTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(350))
+            try? await Task.sleep(for: .milliseconds(280))
             guard !Task.isCancelled else { return }
             self.hide()
         }

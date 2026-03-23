@@ -7,7 +7,7 @@ enum OverlayResult {
     case cancelled
 }
 
-/// Floating overlay showing transcript with spectrum bars above.
+/// Floating overlay showing transcript with spectrum bars inset at top.
 struct RecordingOverlayView: View {
     let appState: AppState
 
@@ -34,6 +34,7 @@ struct RecordingOverlayView: View {
             .opacity(opacity)
             .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isAppearing)
             .animation(.easeIn(duration: 0.25), value: dismissResult)
+            .frame(width: 700, height: 300)
             .onAppear {
                 withAnimation {
                     isAppearing = true
@@ -45,25 +46,26 @@ struct RecordingOverlayView: View {
     }
 
     private var mainContent: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(spacing: 8) {
+            // Spectrum bars in a floating circle
             SpectrumBarsView(bands: appState.spectrumBands)
-                .frame(maxWidth: .infinity)
 
+            // Transcript text panel
             Text(displayedTextValue)
-                .font(.system(size: 15, weight: .medium))
+                .font(.custom("Jost-Medium", size: 17))
                 .foregroundColor(.white)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
+                .frame(width: 500, alignment: .topLeading)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color.black.opacity(0.8))
+                        .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
+                )
         }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 14)
-        .frame(width: 500, alignment: .topLeading)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.black.opacity(0.8))
-                .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
-        )
     }
 
     private var displayedTextValue: String {
@@ -73,7 +75,6 @@ struct RecordingOverlayView: View {
     }
 
     private func animateTextChange(to newText: String) {
-        // Don't clear displayed text — keep showing the last transcript during dismiss.
         guard !newText.isEmpty else { return }
 
         textAnimationTask?.cancel()
@@ -99,29 +100,36 @@ struct RecordingOverlayView: View {
     }
 }
 
-/// Six vertical capsule bars that grow with audio energy.
+/// Six vertical capsule bars inside a circle, tapered at the edges.
 struct SpectrumBarsView: View {
     let bands: [Float]
 
     private let barCount = 6
     private let barWidth: CGFloat = 3
-    private let minHeight: CGFloat = 4
-    private let maxHeight: CGFloat = 40
-    private let spacing: CGFloat = 3
+    private let spacing: CGFloat = 2.5
+    private let circleSize: CGFloat = 44
+    // Taper: outer bars scale down to fit the circle silhouette
+    private let taperFactors: [CGFloat] = [0.45, 0.75, 1.0, 1.0, 0.75, 0.45]
 
     var body: some View {
-        HStack(alignment: .center, spacing: spacing) {
-            ForEach(0..<barCount, id: \.self) { index in
-                let level = index < bands.count ? CGFloat(bands[index]) : 0
-                let height = minHeight + (maxHeight - minHeight) * level
-                let opacity = 0.4 + 0.6 * level
+        ZStack {
+            HStack(alignment: .center, spacing: spacing) {
+                ForEach(0..<barCount, id: \.self) { index in
+                    let level = index < bands.count ? CGFloat(bands[index]) : 0
+                    let taper = taperFactors[index]
+                    let maxH = (circleSize - 12) * taper
+                    let minH: CGFloat = 3
+                    let height = minH + (maxH - minH) * level
+                    let opacity = 0.5 + 0.5 * level
 
-                Capsule()
-                    .fill(Color.white.opacity(opacity))
-                    .frame(width: barWidth, height: height)
+                    Capsule()
+                        .fill(Color.white.opacity(opacity))
+                        .frame(width: barWidth, height: height)
+                }
             }
+            .animation(.easeOut(duration: 0.07), value: bands)
         }
-        .animation(.easeOut(duration: 0.07), value: bands)
-        .frame(height: maxHeight)
+        .frame(width: circleSize, height: circleSize)
+        .background(Circle().fill(Color.black.opacity(0.8)))
     }
 }
