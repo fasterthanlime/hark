@@ -6,6 +6,7 @@ members = [
     "crates/synth-qwen",
     "crates/synth-pipeline",
     "crates/synth-textgen",
+    "crates/synth-recorder",
 ]
 
 [workspace.dependencies]
