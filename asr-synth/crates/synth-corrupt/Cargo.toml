@@ -11,3 +11,4 @@ serde_json.workspace = true
 rand = "0.9"
 rayon = "1.10"
 phonetisaurus-g2p = "0.1"
+shellexpand = "3"

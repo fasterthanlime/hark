@@ -4034,6 +4034,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "shellexpand",
 ]
 
 [[package]]
