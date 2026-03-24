@@ -14,6 +14,103 @@ use parakeet_rs::Transcriber;
 use crate::tts;
 use crate::{AppState, err, AppError};
 
+/// Clean a word for comparison: strip non-alphanumeric, lowercase.
+fn clean_word(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()
+}
+
+/// Align original words to aligner output using greedy concatenation.
+///
+/// The aligner may:
+/// - Drop words entirely (punctuation, short words)
+/// - Split one word into multiple tokens ("HIR" → "H", "I", "R")
+/// - Transform words ("don't" → "dont")
+///
+/// Strategy: walk original words. For each, try to match by consuming one or more
+/// consecutive aligner tokens whose concatenation equals the cleaned original word.
+/// If no match, the word was dropped — fill from nearest neighbor.
+fn match_alignment(
+    original_words: &[&str],
+    aligner_items: &[qwen3_asr::ForcedAlignItem],
+) -> Vec<serde_json::Value> {
+    let mut aligned: Vec<(usize, f64, f64)> = Vec::new(); // (orig_idx, start, end)
+    let mut ai = 0; // current position in aligner items
+
+    for (oi, orig_word) in original_words.iter().enumerate() {
+        let orig_clean = clean_word(orig_word);
+        if orig_clean.is_empty() {
+            // Punctuation-only token — will be filled from neighbor
+            continue;
+        }
+
+        // Try consuming 1..=N aligner tokens starting at ai
+        let mut matched = false;
+        'outer: for take in 1..=5.min(aligner_items.len().saturating_sub(ai)) {
+            let mut concat = String::new();
+            for k in 0..take {
+                concat.push_str(&clean_word(&aligner_items[ai + k].word));
+            }
+            if concat == orig_clean {
+                // Match! Use the time range spanning all consumed tokens
+                let start = aligner_items[ai].start_time;
+                let end = aligner_items[ai + take - 1].end_time;
+                aligned.push((oi, start, end));
+                ai += take;
+                matched = true;
+                break 'outer;
+            }
+        }
+
+        if !matched {
+            // Maybe the aligner skipped ahead — peek if a later aligner token matches
+            // (handles aligner inserting extra tokens before this word)
+            for skip in 1..=3.min(aligner_items.len().saturating_sub(ai)) {
+                for take in 1..=3.min(aligner_items.len().saturating_sub(ai + skip)) {
+                    let mut concat = String::new();
+                    for k in 0..take {
+                        concat.push_str(&clean_word(&aligner_items[ai + skip + k].word));
+                    }
+                    if concat == orig_clean {
+                        let start = aligner_items[ai + skip].start_time;
+                        let end = aligner_items[ai + skip + take - 1].end_time;
+                        aligned.push((oi, start, end));
+                        ai = ai + skip + take;
+                        matched = true;
+                        break;
+                    }
+                }
+                if matched { break; }
+            }
+        }
+        // If still not matched, this word is "dropped" — no entry in aligned
+    }
+
+    // Build the full result, filling in dropped words from nearest neighbor
+    let mut result: Vec<serde_json::Value> = Vec::with_capacity(original_words.len());
+    let mut next_aligned = 0;
+
+    for (oi, orig_word) in original_words.iter().enumerate() {
+        if next_aligned < aligned.len() && aligned[next_aligned].0 == oi {
+            let (_, start, end) = aligned[next_aligned];
+            result.push(serde_json::json!({"word": orig_word, "start": start, "end": end}));
+            next_aligned += 1;
+        } else {
+            // Dropped — inherit time from nearest aligned neighbor
+            let time = if next_aligned > 0 {
+                let prev = &aligned[next_aligned - 1];
+                (prev.1, prev.2)
+            } else if next_aligned < aligned.len() {
+                let nxt = &aligned[next_aligned];
+                (nxt.1, nxt.2)
+            } else {
+                (0.0, 0.0)
+            };
+            result.push(serde_json::json!({"word": orig_word, "start": time.0, "end": time.1}));
+        }
+    }
+    result
+}
+
 // ==================== Review Session State ====================
 
 pub struct ReviewSession {
@@ -54,11 +151,13 @@ pub fn compute_for_sentence(
     backend: &str,
     audio_dir: &str,
 ) -> anyhow::Result<PrecomputedData> {
-    // Generate TTS
+    // Generate TTS — replace hyphens with spaces for better pronunciation
+    let spoken_owned = sentence.spoken.replace('-', " ");
     let spoken_text = if sentence.spoken != sentence.text {
-        &sentence.spoken
+        &spoken_owned
     } else {
-        &sentence.text
+        // Even if spoken == text, normalize hyphens for TTS
+        &spoken_owned
     };
 
     // TTS is async for remote backends — we need a runtime handle
@@ -79,25 +178,19 @@ pub fn compute_for_sentence(
     let spoken_items = state.aligner.align(&samples_16k, spoken_text)
         .map_err(|e| anyhow::anyhow!("Aligner (spoken): {e}"))?;
 
-    let alignment: Vec<serde_json::Value> = spoken_items.iter().map(|item| {
-        serde_json::json!({
-            "word": item.word,
-            "start": item.start_time,
-            "end": item.end_time,
-        })
-    }).collect();
+    // alignment is built below after written_alignment, filling in dropped words
 
     // Run forced alignment on written text (for transcript grid display row)
+    let original_words: Vec<&str> = sentence.text.split_whitespace().collect();
     let written_items = state.aligner.align(&samples_16k, &sentence.text)
         .unwrap_or_default();
 
-    let written_alignment: Vec<serde_json::Value> = written_items.iter().map(|item| {
-        serde_json::json!({
-            "word": item.word,
-            "start": item.start_time,
-            "end": item.end_time,
-        })
-    }).collect();
+    // Map aligner words back to original words, handling splits/drops/transforms
+    let written_alignment = match_alignment(&original_words, &written_items);
+
+    // Do the same for spoken alignment — fill in dropped words
+    let spoken_words: Vec<&str> = spoken_text.split_whitespace().collect();
+    let alignment = match_alignment(&spoken_words, &spoken_items);
 
     // Run ASR on the TTS audio (round-trip quality check)
     let qwen_asr = match state.asr.transcribe_samples(&samples_16k, qwen3_asr::TranscribeOptions::default()) {
@@ -369,17 +462,9 @@ pub async fn api_review_approve(
         return Ok(Json(serde_json::json!({"error": "no current sentence"})).into_response());
     };
 
-    // Auto-resolve unknown words
     {
         let db = state.db.lock().unwrap();
-        let sentence = db.get_sentence(id).map_err(err)?;
-        if let Some(sentence) = sentence {
-            let unknown_words: Vec<String> = serde_json::from_str(&sentence.unknown_words).unwrap_or_default();
-            for word in &unknown_words {
-                let _ = db.auto_resolve_unknown(word);
-            }
-            db.update_sentence_status(id, "approved").map_err(err)?;
-        }
+        db.update_sentence_status(id, "approved").map_err(err)?;
     }
 
     // Advance to next
@@ -637,15 +722,33 @@ pub async fn api_review_backend(
     Ok(Json(response).into_response())
 }
 
-/// Run both ASR models on uploaded audio. Returns { qwen, parakeet }.
+/// Run both ASR models on uploaded audio, then align the ASR text against the
+/// TTS waveform so the transcript grid can display time-aligned human ASR results.
 pub async fn api_review_asr(
     State(state): State<Arc<AppState>>,
     body: axum::body::Bytes,
 ) -> Result<Response, AppError> {
+    let current_id = state.review.lock().unwrap().current_id;
+    let audio_dir = state.audio_dir.clone();
     let state2 = state.clone();
-    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
-        // Decode WAV
-        let cursor = std::io::Cursor::new(body.to_vec());
+
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
+        let wav_bytes = body.to_vec();
+
+        // Save human recording to disk for eval
+        if let Some(id) = current_id {
+            let human_wav_path = format!("{}/human_{}.wav", audio_dir, id);
+            if let Err(e) = std::fs::write(&human_wav_path, &wav_bytes) {
+                eprintln!("[human-asr] Failed to save recording: {e}");
+            } else {
+                let db = state2.db.lock().unwrap();
+                let _ = db.update_sentence_human_wav(id, &human_wav_path);
+                eprintln!("[human-asr] Saved recording to {human_wav_path}");
+            }
+        }
+
+        // Decode human recording WAV
+        let cursor = std::io::Cursor::new(wav_bytes);
         let mut reader = hound::WavReader::new(cursor)
             .map_err(|e| anyhow::anyhow!("WAV decode: {e}"))?;
         let spec = reader.spec();
@@ -670,6 +773,7 @@ pub async fn api_review_asr(
 
         let samples_16k = crate::tts::resample_to_16k(&mono, spec.sample_rate)?;
 
+        // Run both ASR models on human recording
         let qwen = match state2.asr.transcribe_samples(&samples_16k, qwen3_asr::TranscribeOptions::default()) {
             Ok(r) => r.text,
             Err(e) => format!("(error: {e})"),
@@ -683,14 +787,62 @@ pub async fn api_review_asr(
             }
         };
 
-        Ok((qwen, parakeet))
+        // Run forced aligner on TTS audio with the human ASR text, so the
+        // transcript grid can show time-aligned human ASR words against the TTS waveform
+        let (qwen_alignment, parakeet_alignment) = if let Some(id) = current_id {
+            let wav_path = format!("{}/{}.wav", audio_dir, id);
+            let tts_16k = load_wav_16k(&wav_path);
+            match tts_16k {
+                Ok(samples) => {
+                    let align = |text: &str| -> Vec<serde_json::Value> {
+                        if text.is_empty() { return vec![]; }
+                        match state2.aligner.align(&samples, text) {
+                            Ok(items) => items.iter().map(|item| serde_json::json!({
+                                "word": item.word, "start": item.start_time, "end": item.end_time,
+                            })).collect(),
+                            Err(e) => { eprintln!("[human-asr] Aligner failed: {e}"); vec![] }
+                        }
+                    };
+                    (align(&qwen), align(&parakeet))
+                }
+                Err(e) => { eprintln!("[human-asr] Failed to load TTS wav: {e}"); (vec![], vec![]) }
+            }
+        } else {
+            (vec![], vec![])
+        };
+
+        Ok(serde_json::json!({
+            "qwen": qwen,
+            "parakeet": parakeet,
+            "qwen_alignment": qwen_alignment,
+            "parakeet_alignment": parakeet_alignment,
+        }))
     })
     .await
     .map_err(|e| err(e))?
     .map_err(err)?;
 
-    Ok(Json(serde_json::json!({
-        "qwen": result.0,
-        "parakeet": result.1,
-    })).into_response())
+    Ok(Json(result).into_response())
+}
+
+/// Load a WAV file from disk and resample to 16kHz mono.
+fn load_wav_16k(wav_path: &str) -> anyhow::Result<Vec<f32>> {
+    let mut reader = hound::WavReader::open(wav_path)
+        .map_err(|e| anyhow::anyhow!("WAV open {wav_path}: {e}"))?;
+    let spec = reader.spec();
+    let samples_f32: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
+        hound::SampleFormat::Int => {
+            let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
+            reader.samples::<i32>().filter_map(|s| s.ok()).map(|s| s as f32 / max).collect()
+        }
+    };
+    let mono = if spec.channels > 1 {
+        samples_f32.chunks(spec.channels as usize)
+            .map(|ch| ch.iter().sum::<f32>() / ch.len() as f32)
+            .collect()
+    } else {
+        samples_f32
+    };
+    tts::resample_to_16k(&mono, spec.sample_rate)
 }

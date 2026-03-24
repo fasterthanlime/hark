@@ -4,7 +4,8 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Corpus Dashboard</title>
+    <title>hark ml</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%2358a6ff'/><path d='M6 16h3l2-8 3 16 3-12 2 8 3-10 2 6h2' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Jost:ital,wght@0,100..900;1,100..900&display=swap"
@@ -568,52 +569,42 @@
             text-align: center;
         }
 
+        .vocab-overlay {
+            position: fixed; inset: 0; z-index: 300;
+            display: flex; align-items: center; justify-content: center;
+            background: rgba(0,0,0,0.5);
+        }
         .vocab-editor {
-            position: fixed;
-            bottom: 100px;
-            left: 50%;
-            transform: translateX(-50%);
             background: var(--surface);
             border: 1px solid var(--accent);
-            border-radius: 10px;
-            padding: 16px 20px;
-            z-index: 200;
-            min-width: 350px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            border-radius: 12px;
+            padding: 24px 32px;
+            min-width: 400px; max-width: 500px;
+            box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
+            text-align: center;
         }
-
-        .vocab-editor h4 {
-            font-size: 14px;
-            color: var(--text-muted);
-            margin-bottom: 8px;
-        }
-
         .vocab-editor .term {
-            font-size: 18px;
-            font-weight: 600;
-            margin-bottom: 8px;
+            font-size: 22px; font-weight: 600; margin-bottom: 16px;
         }
-
+        .vocab-editor .status {
+            font-size: 13px; color: var(--text-muted); margin-bottom: 12px; min-height: 1.5em;
+        }
+        .vocab-editor .spoken-display {
+            font-size: 18px; margin-bottom: 12px; min-height: 1.5em;
+            color: var(--accent); font-weight: 500;
+        }
         .vocab-editor .row {
-            display: flex;
-            gap: 8px;
-            align-items: center;
+            display: flex; gap: 8px; align-items: center; justify-content: center;
         }
-
         .vocab-editor input {
-            flex: 1;
-            padding: 8px 12px;
-            background: var(--bg);
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            color: var(--text);
-            font-family: 'Jost', sans-serif;
-            font-size: 15px;
-            outline: none;
+            flex: 1; padding: 8px 12px; background: var(--bg);
+            border: 1px solid var(--border); border-radius: 6px;
+            color: var(--text); font-family: 'Jost', sans-serif;
+            font-size: 15px; outline: none; text-align: center;
         }
-
-        .vocab-editor input:focus {
-            border-color: var(--accent);
+        .vocab-editor input:focus { border-color: var(--accent); }
+        .vocab-editor .actions {
+            display: flex; gap: 8px; justify-content: center; margin-top: 16px;
         }
 
         .record-btn {
@@ -1182,10 +1173,11 @@
                 return m;
             }, [unknownWords, original, unknownSet]);
 
-            // Get all three alignments (timed word lists)
-            const refAlign = writtenAlignment || alignment || [];
-            const qAlign = (humanAsr ? [] : asr?.qwen_alignment) || [];
-            const pAlign = (humanAsr ? [] : asr?.parakeet_alignment) || [];
+            // Get all four alignments (timed word lists)
+            const spokenAlign = alignment || [];  // spoken form (vocab overrides applied)
+            const refAlign = writtenAlignment || alignment || []; // written form
+            const qAlign = humanAsr?.qwen_alignment || asr?.qwen_alignment || [];
+            const pAlign = humanAsr?.parakeet_alignment || asr?.parakeet_alignment || [];
 
             // Build time-based groups: collect all boundaries, find overlapping words
             const groups = useMemo(() => {
@@ -1193,7 +1185,7 @@
 
                 // Collect all time boundaries
                 const boundaries = new Set();
-                for (const list of [refAlign, qAlign, pAlign]) {
+                for (const list of [spokenAlign, refAlign, qAlign, pAlign]) {
                     for (const w of list) {
                         boundaries.add(w.start);
                         boundaries.add(w.end);
@@ -1212,19 +1204,20 @@
 
                 // Walk time slots and build columns (each column = a unique combination change)
                 const cols = [];
-                let lastRef = null, lastQ = null, lastP = null;
+                let lastSpoken = null, lastRef = null, lastQ = null, lastP = null;
                 for (let i = 0; i < times.length - 1; i++) {
                     const t = (times[i] + times[i + 1]) / 2;
+                    const spoken = findWordAt(spokenAlign, t);
                     const ref = findWordAt(refAlign, t);
                     const q = findWordAt(qAlign, t);
                     const p = findWordAt(pAlign, t);
-                    if (!ref && !q && !p) continue;
-                    if (ref === lastRef && q === lastQ && p === lastP) continue;
-                    cols.push({ref, q, p, start: times[i]});
-                    lastRef = ref; lastQ = q; lastP = p;
+                    if (!spoken && !ref && !q && !p) continue;
+                    if (spoken === lastSpoken && ref === lastRef && q === lastQ && p === lastP) continue;
+                    cols.push({spoken, ref, q, p, start: times[i]});
+                    lastSpoken = spoken; lastRef = ref; lastQ = q; lastP = p;
                 }
                 return cols;
-            }, [refAlign, qAlign, pAlign]);
+            }, [spokenAlign, refAlign, qAlign, pAlign]);
 
             // Compute per-row spans: for each row, find runs of same word object
             const rowSpans = useMemo(() => {
@@ -1241,6 +1234,7 @@
                     return spans;
                 };
                 return {
+                    spoken: computeSpans(g => g.spoken),
                     ref: computeSpans(g => g.ref),
                     q: computeSpans(g => g.q),
                     p: computeSpans(g => g.p),
@@ -1257,6 +1251,9 @@
                 return -1;
             }, [activeWordIndex, refAlign, groups]);
 
+            const isSpanActive = (s) => activeColIdx >= 0 && activeColIdx >= s.colStart && activeColIdx < s.colStart + s.colSpan;
+            const activeBg = 'rgba(88,166,255,0.15)';
+
             // Auto-scroll to active column
             useEffect(() => {
                 if (activeColIdx < 0 || !scrollRef.current) return;
@@ -1270,6 +1267,7 @@
                 <div style={{fontFamily: 'Jost,sans-serif', fontSize: 14}}>
                     {/* Legend on top */}
                     <div style={{display: 'flex', gap: 16, marginBottom: 4, fontSize: 11}}>
+                        <span style={{color: '#d2a8ff', fontSize: '0.85em'}}>Spoken</span>
                         <span style={{color: 'var(--text-muted)'}}>Original</span>
                         <span style={{color: qColor}}>Qwen</span>
                         <span style={{color: pColor}}>Parakeet</span>
@@ -1279,46 +1277,63 @@
                         <div style={{
                             display: 'inline-grid',
                             gridTemplateColumns: `repeat(${groups.length}, max-content)`,
-                            gridTemplateRows: 'auto auto auto',
+                            gridTemplateRows: 'auto auto auto auto',
                             gap: '1px 5px',
                             padding: '.5em .2em',
                             whiteSpace: 'nowrap',
                         }}>
-                            {/* Row 1: Original */}
+                            {/* Row 1: Spoken (vocab overrides) — only show words that differ from written */}
+                            {rowSpans.spoken.map((s, i) => {
+                                if (!s.word) return <div key={`s${i}`} style={{gridRow: 1, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}} />;
+                                // Check if spoken word differs from the written word at this position
+                                let differsFromRef = true;
+                                for (let c = s.colStart; c < s.colStart + s.colSpan; c++) {
+                                    const r = groups[c]?.ref;
+                                    if (r && cleanWord(s.word) === cleanWord(r.word)) { differsFromRef = false; break; }
+                                }
+                                if (!differsFromRef) return <div key={`s${i}`} style={{gridRow: 1, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}} />;
+                                return <div key={`s${i}`} style={{gridRow: 1, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em', background: isSpanActive(s) ? activeBg : undefined, borderRadius: isSpanActive(s) ? 3 : undefined}}>
+                                    <span style={{color: '#d2a8ff', fontSize: '0.85em'}}>{s.word}</span>
+                                </div>;
+                            })}
+                            {/* Row 2: Original (written text) */}
                             {rowSpans.ref.map((s, i) => {
-                                if (!s.word) return <div key={`r${i}`} style={{gridRow: 1, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}} />;
-                                const isActive = activeColIdx >= s.colStart && activeColIdx < s.colStart + s.colSpan;
+                                if (!s.word) return <div key={`r${i}`} style={{gridRow: 2, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}} />;
+                                const isActive = isSpanActive(s);
                                 const c = cleanWord(s.word);
                                 const isUnknown = unknownSet.has(c);
                                 const num = unknownNum.get(c);
-                                const style = isActive ? {color: '#fff'} : isUnknown ? {outline: '1px solid var(--warning)', outlineOffset: '1px', borderRadius: '3px', cursor: 'pointer'} : undefined;
-                                return <div key={`r${i}`} data-col={s.colStart} style={{gridRow: 1, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em', background: isActive ? 'rgba(88,166,255,0.15)' : undefined}}>
+                                const style = {
+                                    ...(isActive ? {color: '#fff'} : {}),
+                                    ...(isUnknown ? {outline: '1px solid var(--warning)', outlineOffset: '1px', borderRadius: '3px', cursor: 'pointer'} : {}),
+                                };
+                                return <div key={`r${i}`} data-col={s.colStart} style={{gridRow: 2, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em', background: isActive ? activeBg : undefined, borderRadius: isActive ? 3 : undefined}}>
                                     <span style={style} onClick={isUnknown && onWordClick ? () => onWordClick(s.word) : undefined}>
                                         {s.word}{num && num <= 9 ? <span className="unknown-num-badge" style={{marginLeft: 2, verticalAlign: 'super'}}>{num}</span> : null}
                                     </span>
                                 </div>;
                             })}
-                            {/* Row 2: Qwen */}
+                            {/* Row 3: Qwen */}
                             {rowSpans.q.map((s, i) => {
-                                if (!s.word) return <div key={`q${i}`} style={{gridRow: 2, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}} />;
+                                if (!s.word) return <div key={`q${i}`} style={{gridRow: 3, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}} />;
                                 let isMatch = false;
                                 for (let c = s.colStart; c < s.colStart + s.colSpan; c++) {
                                     const r = groups[c]?.ref;
-                                    if (r && wordsMatch(s.word, r.word)) { isMatch = true; break; }
+                                    if (r && cleanWord(s.word) === cleanWord(r.word)) { isMatch = true; break; }
                                 }
-                                return <div key={`q${i}`} style={{gridRow: 2, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}}>
+                                return <div key={`q${i}`} style={{gridRow: 3, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em', background: isSpanActive(s) ? activeBg : undefined, borderRadius: isSpanActive(s) ? 3 : undefined}}>
                                     <span style={isMatch ? dimStyle : {color: qColor}}>{s.word}</span>
                                 </div>;
                             })}
-                            {/* Row 3: Parakeet */}
+                            {/* Row 4: Parakeet */}
                             {rowSpans.p.map((s, i) => {
-                                if (!s.word) return <div key={`p${i}`} style={{gridRow: 3, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}} />;
+                                if (!s.word) return <div key={`p${i}`} style={{gridRow: 4, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}} />;
                                 let isMatch = false;
                                 for (let c = s.colStart; c < s.colStart + s.colSpan; c++) {
                                     const r = groups[c]?.ref;
-                                    if (r && wordsMatch(s.word, r.word)) { isMatch = true; break; }
+                                    if (r && cleanWord(s.word) === cleanWord(r.word)) { isMatch = true; break; }
                                 }
-                                return <div key={`p${i}`} style={{gridRow: 3, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}}>
+                                return <div key={`p${i}`} style={{gridRow: 4, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em', background: isSpanActive(s) ? activeBg : undefined, borderRadius: isSpanActive(s) ? 3 : undefined}}>
                                     <span style={isMatch ? dimStyle : {color: pColor}}>{s.word}</span>
                                 </div>;
                             })}
@@ -1343,10 +1358,10 @@
         // ==================== NAV ====================
         function Nav() {
             const hash = useHash();
-            const links = [['#/', 'Overview'], ['#/vocab', 'Vocab'], ['#/sentences', 'Sentences'], ['#/jobs', 'Jobs']];
+            const links = [['#/', 'Overview'], ['#/vocab', 'Vocab'], ['#/sentences', 'Sentences'], ['#/pipeline', 'Pipeline'], ['#/jobs', 'Jobs']];
             return (
                 <nav>
-                    <span className="logo">Corpus Dashboard</span>
+                    <span className="logo">hark ml</span>
                     {links.map(([href, label]) => (
                         <a key={href} href={href} className={hash === href || (href !== '#/' && hash.startsWith(href)) ? 'active' : ''}>{label}</a>
                     ))}
@@ -1413,16 +1428,21 @@
         function VocabPage() {
             const [vocab, setVocab] = useState([]);
             const [search, setSearch] = useState('');
+            const [filter, setFilter] = useState('overrides'); // 'all' | 'overrides'
             const [loading, setLoading] = useState(true);
             const [editingId, setEditingId] = useState(null);
             const [editValue, setEditValue] = useState('');
+            const [newTerm, setNewTerm] = useState('');
+            const [newOverride, setNewOverride] = useState('');
+            const [newPreviewed, setNewPreviewed] = useState(false); // true after first Enter in override field
 
             const load = useCallback(() => {
                 const p = new URLSearchParams();
                 if (search) p.set('search', search);
+                if (filter === 'overrides') p.set('has_override', 'true');
                 p.set('limit', '100');
                 api(`/api/vocab?${p}`).then(setVocab).finally(() => setLoading(false));
-            }, [search]);
+            }, [search, filter]);
             useEffect(() => {load();}, [load]);
 
             const startEdit = (row) => {setEditingId(row.id); setEditValue(row.spoken_override || row.spoken_auto);};
@@ -1434,19 +1454,41 @@
                 await api(`/api/vocab/${row.id}`, {method: 'POST', body: JSON.stringify({reviewed: !row.reviewed})});
                 load();
             };
+            const previewNewTerm = () => {
+                const text = newOverride.trim() || newTerm.trim();
+                if (!text) return;
+                fetchTtsBuffer(text).then(buf => playBuffer(buf)).catch(() => {});
+                setNewPreviewed(true);
+            };
+            const addTerm = async () => {
+                if (!newTerm.trim()) return;
+                if (!newPreviewed) { previewNewTerm(); return; }
+                await api('/api/vocab', {method: 'POST', body: JSON.stringify({term: newTerm.trim(), spoken_override: newOverride.trim() || undefined})});
+                setNewTerm(''); setNewOverride(''); setNewPreviewed(false); load();
+            };
 
             return (
                 <div className="container">
                     <h2>Vocabulary</h2>
-                    <div className="search-bar">
-                        <input placeholder="Search terms..." value={search} onChange={e => setSearch(e.target.value)} />
+                    <div className="search-bar" style={{display: 'flex', gap: 8, alignItems: 'center'}}>
+                        <input placeholder="Search terms..." value={search} onChange={e => setSearch(e.target.value)} style={{flex: 1}} />
+                        <button className={`btn btn-sm ${filter === 'overrides' ? 'btn-primary' : ''}`} onClick={() => setFilter(f => f === 'overrides' ? 'all' : 'overrides')}>
+                            {filter === 'overrides' ? 'With overrides' : 'All'}
+                        </button>
+                    </div>
+                    <div className="search-bar" style={{display: 'flex', gap: 8, alignItems: 'center', marginTop: 8}}>
+                        <input placeholder="New term..." value={newTerm} onChange={e => setNewTerm(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') addTerm(); }} />
+                        <input placeholder="Override (optional)" value={newOverride} onChange={e => { setNewOverride(e.target.value); setNewPreviewed(false); }}
+                            onKeyDown={e => { if (e.key === 'Enter') addTerm(); }} />
+                        <button className="btn btn-sm btn-primary" onClick={addTerm} disabled={!newTerm.trim()}>{newPreviewed ? 'Save' : 'Preview'}</button>
                     </div>
                     {loading ? <p>Loading...</p> : vocab.length === 0 ? (
                         <div className="empty-state"><h3>No results</h3></div>
                     ) : (
                         <div className="card" style={{padding: 0, overflow: 'hidden'}}>
                             <table>
-                                <thead><tr><th>Term</th><th>Auto</th><th>Override</th><th style={{width: 36}}></th><th style={{width: 36}}></th></tr></thead>
+                                <thead><tr><th>Term</th><th>Auto</th><th>Override</th><th style={{width: 36}}></th></tr></thead>
                                 <tbody>
                                     {vocab.map(row => (
                                         <tr key={row.id}>
@@ -1468,11 +1510,6 @@
                                                 )}
                                             </td>
                                             <td><PlayBtn text={row.spoken_override || row.spoken_auto} small /></td>
-                                            <td>
-                                                <button className={`btn btn-sm ${row.reviewed ? 'btn-success' : ''}`} onClick={() => toggleReviewed(row)} title={row.reviewed ? 'Reviewed' : 'Mark reviewed'}>
-                                                    {row.reviewed ? '\u2713' : '\u00B7'}
-                                                </button>
-                                            </td>
                                         </tr>
                                     ))}
                                 </tbody>
@@ -1485,8 +1522,6 @@
 
         // ==================== SENTENCES LIST ====================
         function SentencesPage() {
-            const [count, setCount] = useState(20);
-            const [picking, setPicking] = useState(false);
             const [importing, setImporting] = useState(false);
             const [importResult, setImportResult] = useState(null);
             const [stats, setStats] = useState(null);
@@ -1505,60 +1540,51 @@
                 setImporting(false);
             };
 
-            const pickSentences = async () => {
-                setPicking(true);
-                await api('/api/sentences/generate', {method: 'POST', body: JSON.stringify({count})});
-                loadStats();
-                setPicking(false);
-            };
+            const pending = stats?.sentences_pending || 0;
+            const approved = stats?.sentences_approved || 0;
+            const rejected = stats?.sentences_rejected || 0;
+            const total = stats?.sentences_total || 0;
+            const candidates = stats?.candidates_total || 0;
 
             return (
                 <div className="container">
                     <h2>Sentences</h2>
 
-                    <div className="card">
-                        <h3>1. Import Sources (slow, do once)</h3>
-                        <p style={{color: 'var(--text-muted)', fontSize: 13, marginBottom: 12}}>
-                            Scans blog posts and chat history for sentences containing vocab terms. Only needs to be done once (or when sources change).
-                        </p>
+                    {stats && (
+                        <div className="stats-grid" style={{marginBottom: 24}}>
+                            <div className="stat-card"><div className="value">{candidates}</div><div className="label">Candidates</div></div>
+                            <div className="stat-card"><div className="value" style={{color: 'var(--warning)'}}>{pending}</div><div className="label">Pending</div></div>
+                            <div className="stat-card"><div className="value" style={{color: 'var(--success)'}}>{approved}</div><div className="label">Approved</div></div>
+                            <div className="stat-card"><div className="value" style={{color: 'var(--danger)'}}>{rejected}</div><div className="label">Rejected</div></div>
+                        </div>
+                    )}
+
+                    <div style={{display: 'flex', gap: 12, flexWrap: 'wrap'}}>
                         <button className="btn btn-primary" onClick={importSources} disabled={importing}>
                             {importing ? 'Scanning...' : 'Import Sources'}
                         </button>
-                        {stats && <span style={{marginLeft: 12, color: 'var(--text-muted)', fontSize: 13}}>{stats.candidates_total} candidates in pool</span>}
-                        {importResult && (
-                            <div style={{marginTop: 8, fontSize: 13, color: 'var(--success)'}}>
-                                Found {importResult.found} sentences, {importResult.new} new. Pool: {importResult.total}
-                            </div>
+                        {(pending > 0 || candidates > 0) && (
+                            <a href="#/sentences/review" className="btn btn-success">Start Review</a>
                         )}
                     </div>
 
-                    <div className="card">
-                        <h3>2. Pick Sentences (instant)</h3>
-                        <p style={{color: 'var(--text-muted)', fontSize: 13, marginBottom: 12}}>
-                            Randomly pick sentences from the candidate pool for review.
-                        </p>
-                        <div className="form-row">
-                            <div className="form-group"><label>Count</label>
-                                <input type="number" value={count} onChange={e => setCount(parseInt(e.target.value) || 20)} min="1" max="500" />
-                            </div>
+                    {importResult && (
+                        <div style={{marginTop: 12, fontSize: 13, color: 'var(--success)'}}>
+                            Found {importResult.found} sentences, {importResult.new} new. Pool: {importResult.total}
                         </div>
-                        <button className="btn btn-primary" onClick={pickSentences} disabled={picking || !(stats && stats.candidates_total > 0)}>
-                            {picking ? 'Picking...' : 'Pick Sentences'}
-                        </button>
-                    </div>
+                    )}
 
-                    {stats && (
-                        <div className="card">
-                            <h3>Review Queue</h3>
-                            <div className="stats-grid">
-                                <div className="stat-card"><div className="value">{stats.sentences_total}</div><div className="label">Total</div></div>
-                                <div className="stat-card"><div className="value" style={{color: 'var(--warning)'}}>{stats.sentences_pending}</div><div className="label">Pending</div></div>
-                                <div className="stat-card"><div className="value" style={{color: 'var(--success)'}}>{stats.sentences_approved}</div><div className="label">Approved</div></div>
-                                <div className="stat-card"><div className="value" style={{color: 'var(--danger)'}}>{stats.sentences_rejected}</div><div className="label">Rejected</div></div>
+                    {stats && total > 0 && (
+                        <div style={{marginTop: 24}}>
+                            <div style={{height: 6, borderRadius: 3, background: 'var(--border)', overflow: 'hidden'}}>
+                                <div style={{display: 'flex', height: '100%'}}>
+                                    <div style={{width: `${approved / total * 100}%`, background: 'var(--success)'}} />
+                                    <div style={{width: `${rejected / total * 100}%`, background: 'var(--danger)'}} />
+                                </div>
                             </div>
-                            {stats.sentences_pending > 0 && (
-                                <a href="#/sentences/review" className="btn btn-success">Start Reviewing ({stats.sentences_pending} pending)</a>
-                            )}
+                            <div style={{fontSize: 12, color: 'var(--text-muted)', marginTop: 4}}>
+                                {approved + rejected} reviewed of {total} ({total > 0 ? Math.round((approved + rejected) / total * 100) : 0}%)
+                            </div>
                         </div>
                     )}
                 </div>
@@ -1604,6 +1630,7 @@
 
             const [editingWord, setEditingWord] = useState(null);
             const [editSpoken, setEditSpoken] = useState('');
+            const editManualRef = useRef(false); // true when user typed in the input field
             const [editPreviewed, setEditPreviewed] = useState(false); // true after first Enter (TTS preview)
             const [previewBuf, setPreviewBuf] = useState(null);
             const [previewPlaying, setPreviewPlaying] = useState(false);
@@ -1730,6 +1757,9 @@
                 setEditSpoken(original.toLowerCase());
                 setEditPreviewed(false);
                 setPreviewBuf(null); setRecordedBuf(null);
+                editManualRef.current = false;
+                // Auto-start recording
+                setTimeout(() => startRecording(), 50);
             };
 
             const saveVocabOverride = async () => {
@@ -1761,7 +1791,7 @@
             const previewVocabWord = () => {
                 if (!editSpoken) return;
                 stopPreview();
-                fetchTtsBuffer(editSpoken).then(buf => {
+                fetchTtsBuffer(editSpoken, data?.backend).then(buf => {
                     setPreviewBuf(buf); setPreviewPlaying(true);
                     previewSourceRef.current = playBuffer(buf, () => setPreviewPlaying(false));
                 }).catch(() => { });
@@ -1791,16 +1821,20 @@
                             });
                             if (res.ok) {
                                 const {text} = await res.json();
-                                if (text) {
+                                if (text && !editManualRef.current) {
                                     setEditSpoken(text.trim().toLowerCase());
-                                    // Auto-preview the transcription via TTS
+                                    // Auto-preview via TTS and mark as previewed so next Enter saves
                                     try {
-                                        const buf = await fetchTtsBuffer(text.trim().toLowerCase(), activeBackend);
+                                        const buf = await fetchTtsBuffer(text.trim().toLowerCase(), data?.backend);
                                         stopPreview();
                                         setPreviewBuf(buf);
                                         setPreviewPlaying(true);
                                         previewSourceRef.current = playBuffer(buf, () => setPreviewPlaying(false));
+                                        setEditPreviewed(true);
                                     } catch (e) { /* TTS preview failed, not critical */}
+                                } else if (text && editManualRef.current) {
+                                    // User typed something manually — don't overwrite, just mark ready to preview
+                                    setEditPreviewed(false);
                                 }
                             }
                             setTranscribing(false);
@@ -1898,17 +1932,26 @@
                     else if (e.key === 'ArrowLeft') {e.preventDefault(); act('reject');}
                     else if (e.key === ' ') {e.preventDefault(); togglePlayback();}
                     else if ((e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey && !e.altKey) {e.preventDefault(); toggleSentenceRecording();}
+                    else if ((e.key === 's' || e.key === 'S') && !e.metaKey && !e.ctrlKey && !e.altKey && !editingWord) {e.preventDefault(); switchBackend('pocket-hq');}
                     else if ((e.key === 'e' || e.key === 'E') && !e.metaKey && !e.ctrlKey && !e.altKey && !editingText && !editingWord) {
                         e.preventDefault(); setEditingText(sentence?.text || '');
                     }
                     else if (e.key >= '1' && e.key <= '9') {
                         const i = parseInt(e.key) - 1;
-                        if (orderedUnknowns[i]) {e.preventDefault(); onWordClick(orderedUnknowns[i]);}
+                        if (orderedUnknowns[i]) {
+                            e.preventDefault();
+                            if (recording && editingWord) {
+                                // Already recording for a word — stop recording
+                                stopRecording();
+                            } else {
+                                onWordClick(orderedUnknowns[i]);
+                            }
+                        }
                     }
                 };
                 window.addEventListener('keydown', handler);
                 return () => window.removeEventListener('keydown', handler);
-            }, [data, audioBuf, playing, busy, sentenceRec, editingText, editingWord, orderedUnknowns]);
+            }, [data, audioBuf, playing, busy, sentenceRec, recording, editingText, editingWord, orderedUnknowns]);
 
             if (loading) return <div className="review-fullscreen"><div className="review-body"><p>Loading...</p></div></div>;
 
@@ -2008,46 +2051,212 @@
                     {error && <div className="error-toast">{error}</div>}
 
                     {editingWord && (
-                        <div className="vocab-editor">
-                            <h4>Set pronunciation for:</h4>
-                            <div className="term">{editingWord}</div>
-                            <div className="row">
-                                <input value={editSpoken} onChange={e => {setEditSpoken(e.target.value); setEditPreviewed(false); setPreviewBuf(null);}} autoFocus
-                                    placeholder="type or record pronunciation"
-                                    onKeyDown={e => {
-                                        if (e.key === 'Enter') {
-                                            e.preventDefault();
-                                            if (editPreviewed) {saveVocabOverride();}
-                                            else {previewVocabWord(); setEditPreviewed(true);}
-                                        }
-                                        if (e.key === 'Escape') {stopPreview(); stopRecording(); setEditingWord(null);}
-                                    }} />
-                                <button className={`record-btn ${recording ? 'active' : ''}`}
-                                    onClick={recording ? stopRecording : startRecording}
-                                    title={recording ? 'Stop recording' : 'Record pronunciation'}>
-                                    {recording ? '\u25A0' : '\u25CF'}
-                                </button>
-                                <button className="play-btn" onClick={previewVocabWord} title="Preview with TTS">{'\u25B6'}</button>
-                                <button className="btn btn-sm btn-primary" onClick={saveVocabOverride}>Save</button>
-                                <button className="btn btn-sm" onClick={() => {stopPreview(); stopRecording(); setEditingWord(null);}}>Cancel</button>
+                        <div className="vocab-overlay" onClick={e => { if (e.target === e.currentTarget) { stopPreview(); stopRecording(); setEditingWord(null); } }}>
+                            <div className="vocab-editor">
+                                <div className="term">{editingWord}</div>
+                                <div className="status">
+                                    {recording ? <span style={{color:'var(--danger)'}}>Recording... press Enter to stop</span>
+                                        : transcribing ? <span style={{color:'var(--accent)'}}>Transcribing...</span>
+                                        : editPreviewed ? 'Press Enter to save, Escape to cancel'
+                                        : editSpoken ? 'Press Enter to preview'
+                                        : 'Say the pronunciation or type it'}
+                                </div>
+                                <div className="spoken-display">{editSpoken || '\u00A0'}</div>
+                                <div className="row">
+                                    <input value={editSpoken} onChange={e => {setEditSpoken(e.target.value); setEditPreviewed(false); setPreviewBuf(null); editManualRef.current = true;}} autoFocus
+                                        placeholder="pronunciation"
+                                        onKeyDown={e => {
+                                            if (e.key === 'Enter') {
+                                                e.preventDefault();
+                                                if (recording) { stopRecording(); }
+                                                else if (editPreviewed) { saveVocabOverride(); }
+                                                else { previewVocabWord(); setEditPreviewed(true); }
+                                            }
+                                            if (e.key === 'Escape') { stopPreview(); stopRecording(); setEditingWord(null); }
+                                        }} />
+                                    <button className={`record-btn ${recording ? 'active' : ''}`}
+                                        onClick={recording ? stopRecording : startRecording}
+                                        title={recording ? 'Stop recording' : 'Record pronunciation'}>
+                                        {recording ? '\u25A0' : '\u25CF'}
+                                    </button>
+                                </div>
+                                <div className="actions">
+                                    <button className="btn btn-sm" onClick={() => { previewVocabWord(); setEditPreviewed(true); }}>Preview</button>
+                                    <button className="btn btn-sm btn-primary" onClick={saveVocabOverride} disabled={!editSpoken}>Save</button>
+                                    <button className="btn btn-sm" onClick={() => {stopPreview(); stopRecording(); setEditingWord(null);}}>Cancel</button>
+                                </div>
                             </div>
-                            {transcribing && (
-                                <div style={{marginTop: 8, fontSize: 12, color: 'var(--accent)'}}>Transcribing...</div>
-                            )}
-                            {recordedBuf && (
-                                <div style={{marginTop: 8}}>
-                                    <div style={{fontSize: 11, color: 'var(--text-muted)', marginBottom: 4}}>Your recording:</div>
-                                    <Waveform audioBuffer={recordedBuf} playing={false} />
-                                </div>
-                            )}
-                            {previewBuf && (
-                                <div style={{marginTop: 8}}>
-                                    <div style={{fontSize: 11, color: 'var(--text-muted)', marginBottom: 4}}>TTS preview:</div>
-                                    <Waveform audioBuffer={previewBuf} playing={previewPlaying} />
-                                </div>
-                            )}
                         </div>
                     )}
+                </div>
+            );
+        }
+
+        // ==================== PIPELINE ====================
+        function PipelinePage() {
+            const [status, setStatus] = useState(null);
+            const [runningJob, setRunningJob] = useState(null);
+            const [jobLog, setJobLog] = useState('');
+            const [error, setError] = useState(null);
+            const pollRef = useRef(null);
+
+            // Corpus config
+            const [corpusBackend, setCorpusBackend] = useState('openai');
+            // Train config
+            const [trainIters, setTrainIters] = useState(1000);
+            const [trainBatch, setTrainBatch] = useState(1);
+            const [trainLayers, setTrainLayers] = useState(4);
+            const [trainModel, setTrainModel] = useState('Qwen/Qwen2.5-0.5B');
+            // Prepare config
+            const [identityCount, setIdentityCount] = useState(95000);
+
+            const loadStatus = () => api('/api/pipeline/status').then(s => {
+                setStatus(s);
+                if (s.running_job && !runningJob) {
+                    setRunningJob(s.running_job);
+                }
+            });
+            useEffect(() => { loadStatus(); }, []);
+
+            // Poll running job
+            useEffect(() => {
+                if (!runningJob) return;
+                const poll = async () => {
+                    try {
+                        const job = await api(`/api/jobs/${runningJob.id}`);
+                        setJobLog(job.log);
+                        if (job.status !== 'running') {
+                            setRunningJob(null);
+                            setJobLog('');
+                            loadStatus();
+                        }
+                    } catch (e) {}
+                };
+                poll();
+                pollRef.current = setInterval(poll, 2000);
+                return () => clearInterval(pollRef.current);
+            }, [runningJob?.id]);
+
+            const startJob = async (type, config = {}) => {
+                setError(null);
+                try {
+                    const res = await api(`/api/jobs/${type}`, {
+                        method: 'POST', body: JSON.stringify(config),
+                    });
+                    if (res.job_id) {
+                        setRunningJob({id: res.job_id, job_type: type});
+                    } else if (res.error) {
+                        setError(res.error);
+                    }
+                } catch (e) { setError(e.message); }
+            };
+
+            const logRef = useRef(null);
+            useEffect(() => {
+                if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+            }, [jobLog]);
+
+            if (!status) return <div className="container"><p>Loading...</p></div>;
+
+            const isRunning = !!runningJob;
+            const runningType = runningJob?.job_type;
+
+            return (
+                <div className="container">
+                    <h2>Pipeline</h2>
+
+                    {error && <div style={{padding: '8px 12px', background: 'rgba(255,0,0,0.1)', border: '1px solid var(--danger)', borderRadius: 6, marginBottom: 16, fontSize: 13, color: 'var(--danger)'}}>{error}</div>}
+
+                    {/* Stage 1: Generate Corpus */}
+                    <div className="card" style={{opacity: runningType && runningType !== 'corpus' ? 0.5 : 1}}>
+                        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                            <h3 style={{margin: 0}}>1. Generate Corpus</h3>
+                            {status.corpus_exists && <span className="badge badge-completed">{status.corpus_lines} sentences</span>}
+                        </div>
+                        <p style={{color: 'var(--text-muted)', fontSize: 13, margin: '8px 0'}}>
+                            Synthesize TTS audio for approved sentences, run ASR, produce training pairs.
+                        </p>
+                        <div style={{display: 'flex', gap: 8, alignItems: 'center'}}>
+                            <select value={corpusBackend} onChange={e => setCorpusBackend(e.target.value)}
+                                style={{padding: '4px 8px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)', fontFamily: 'Jost,sans-serif', fontSize: 13}}>
+                                {(status.backends || []).map(b => <option key={b} value={b}>{b}</option>)}
+                            </select>
+                            <button className="btn btn-primary btn-sm" disabled={isRunning || status.approved_count === 0}
+                                onClick={() => startJob('corpus', {tts_backend: corpusBackend})}>
+                                {runningType === 'corpus' ? 'Running...' : 'Generate'}
+                            </button>
+                            <span style={{fontSize: 13, color: 'var(--text-muted)'}}>{status.approved_count} approved sentences</span>
+                        </div>
+                        {runningType === 'corpus' && jobLog && (
+                            <pre ref={logRef} style={{marginTop: 12, maxHeight: 200, overflow: 'auto', fontSize: 11, padding: 8, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, whiteSpace: 'pre-wrap'}}>{jobLog}</pre>
+                        )}
+                    </div>
+
+                    {/* Stage 2: Prepare Training Data */}
+                    <div className="card" style={{opacity: runningType && runningType !== 'prepare' ? 0.5 : 1}}>
+                        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                            <h3 style={{margin: 0}}>2. Prepare Training Data</h3>
+                            {status.training_data_exists && <span className="badge badge-completed">{status.train_count.toLocaleString()} examples</span>}
+                        </div>
+                        <p style={{color: 'var(--text-muted)', fontSize: 13, margin: '8px 0'}}>
+                            Generate identity examples, combine with corpus, split into train/valid/test.
+                        </p>
+                        <div style={{display: 'flex', gap: 8, alignItems: 'center'}}>
+                            <label style={{fontSize: 12, color: 'var(--text-muted)'}}>Identity examples:</label>
+                            <input type="number" value={identityCount} onChange={e => setIdentityCount(parseInt(e.target.value) || 95000)}
+                                style={{width: 80, padding: '4px 8px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)', fontFamily: 'Jost,sans-serif', fontSize: 13}} />
+                            <button className="btn btn-primary btn-sm" disabled={isRunning || !status.corpus_exists}
+                                onClick={() => startJob('prepare', {identity_count: identityCount})}>
+                                {runningType === 'prepare' ? 'Running...' : 'Prepare'}
+                            </button>
+                        </div>
+                        {runningType === 'prepare' && jobLog && (
+                            <pre ref={logRef} style={{marginTop: 12, maxHeight: 200, overflow: 'auto', fontSize: 11, padding: 8, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, whiteSpace: 'pre-wrap'}}>{jobLog}</pre>
+                        )}
+                    </div>
+
+                    {/* Stage 3: Train LoRA */}
+                    <div className="card" style={{opacity: runningType && runningType !== 'train' ? 0.5 : 1}}>
+                        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                            <h3 style={{margin: 0}}>3. Train LoRA</h3>
+                            {status.adapters_exist && <span className="badge badge-completed">Adapters ready</span>}
+                        </div>
+                        <p style={{color: 'var(--text-muted)', fontSize: 13, margin: '8px 0'}}>
+                            Fine-tune {trainModel} with LoRA adapters using MLX-LM.
+                        </p>
+                        <div style={{display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap'}}>
+                            <label style={{fontSize: 12, color: 'var(--text-muted)'}}>Model:</label>
+                            <input value={trainModel} onChange={e => setTrainModel(e.target.value)}
+                                style={{width: 180, padding: '4px 8px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)', fontFamily: 'Jost,sans-serif', fontSize: 13}} />
+                            <label style={{fontSize: 12, color: 'var(--text-muted)'}}>Iters:</label>
+                            <input type="number" value={trainIters} onChange={e => setTrainIters(parseInt(e.target.value) || 1000)}
+                                style={{width: 60, padding: '4px 8px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)', fontFamily: 'Jost,sans-serif', fontSize: 13}} />
+                            <label style={{fontSize: 12, color: 'var(--text-muted)'}}>Batch:</label>
+                            <input type="number" value={trainBatch} onChange={e => setTrainBatch(parseInt(e.target.value) || 1)}
+                                style={{width: 40, padding: '4px 8px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)', fontFamily: 'Jost,sans-serif', fontSize: 13}} />
+                            <label style={{fontSize: 12, color: 'var(--text-muted)'}}>Layers:</label>
+                            <input type="number" value={trainLayers} onChange={e => setTrainLayers(parseInt(e.target.value) || 4)}
+                                style={{width: 40, padding: '4px 8px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)', fontFamily: 'Jost,sans-serif', fontSize: 13}} />
+                            <button className="btn btn-primary btn-sm" disabled={isRunning || !status.training_data_exists}
+                                onClick={() => startJob('train', {model: trainModel, iters: trainIters, batch_size: trainBatch, num_layers: trainLayers})}>
+                                {runningType === 'train' ? 'Running...' : 'Train'}
+                            </button>
+                        </div>
+                        {runningType === 'train' && jobLog && (
+                            <pre ref={logRef} style={{marginTop: 12, maxHeight: 300, overflow: 'auto', fontSize: 11, padding: 8, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, whiteSpace: 'pre-wrap'}}>{jobLog}</pre>
+                        )}
+                    </div>
+
+                    {/* Stage 4: Eval (future) */}
+                    <div className="card" style={{opacity: 0.5}}>
+                        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                            <h3 style={{margin: 0}}>4. Evaluate</h3>
+                            <span className="badge badge-pending">{status.human_recordings} recordings</span>
+                        </div>
+                        <p style={{color: 'var(--text-muted)', fontSize: 13, margin: '8px 0'}}>
+                            Run the trained model on human voice recordings to measure correction accuracy. Record sentences during review to build the eval set.
+                        </p>
+                    </div>
                 </div>
             );
         }
@@ -2089,6 +2298,7 @@
             if (hash === '#/sentences/review') page = <SentenceReview />;
             else if (hash.startsWith('#/vocab')) page = <VocabPage />;
             else if (hash.startsWith('#/sentences')) page = <SentencesPage />;
+            else if (hash.startsWith('#/pipeline')) page = <PipelinePage />;
             else if (hash.startsWith('#/jobs')) page = <JobsPage />;
             else page = <Overview />;
             return (<><Nav />{page}</>);

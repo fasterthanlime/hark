@@ -1,4 +1,5 @@
 mod db;
+mod jobs;
 mod review;
 mod tts;
 
@@ -39,6 +40,7 @@ struct ListParams {
 struct VocabListParams {
     search: Option<String>,
     reviewed: Option<bool>,
+    has_override: Option<bool>,
     limit: Option<i64>,
     offset: Option<i64>,
 }
@@ -47,6 +49,12 @@ struct VocabListParams {
 struct VocabUpdateBody {
     spoken_override: Option<String>,
     reviewed: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct VocabAddBody {
+    term: String,
+    spoken_override: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -99,6 +107,7 @@ async fn api_vocab_list(
         .list_vocab(
             params.search.as_deref(),
             params.reviewed,
+            params.has_override,
             params.limit.unwrap_or(100),
             params.offset.unwrap_or(0),
         )
@@ -141,6 +150,27 @@ async fn api_vocab_update(
         db.set_vocab_reviewed(id, reviewed).map_err(err)?;
     }
     Ok(Json(serde_json::json!({ "ok": true })).into_response())
+}
+
+async fn api_vocab_add(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<VocabAddBody>,
+) -> Result<Response, AppError> {
+    let term = body.term.trim().to_string();
+    if term.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "term is empty"})).into_response());
+    }
+    let spoken_auto = synth_textgen::corpus::to_spoken(&term);
+    let db = state.db.lock().unwrap();
+    db.insert_candidate_vocab(&term, &spoken_auto).map_err(err)?;
+    if let Some(ref spoken) = body.spoken_override {
+        if !spoken.is_empty() {
+            if let Ok(Some(row)) = db.find_vocab_by_term(&term) {
+                db.update_vocab_override(row.id, Some(spoken)).map_err(err)?;
+            }
+        }
+    }
+    Ok(Json(serde_json::json!({"ok": true})).into_response())
 }
 
 // ==================== SENTENCES ====================
@@ -684,7 +714,7 @@ async fn main() -> anyhow::Result<()> {
         // Stats
         .route("/api/stats", get(api_stats))
         // Vocab
-        .route("/api/vocab", get(api_vocab_list))
+        .route("/api/vocab", get(api_vocab_list).post(api_vocab_add))
         .route("/api/vocab/import", post(api_vocab_import))
         .route("/api/vocab/{id}", post(api_vocab_update))
         // Candidates + Sentences
@@ -713,10 +743,15 @@ async fn main() -> anyhow::Result<()> {
         // Jobs
         .route("/api/jobs", get(api_jobs))
         .route("/api/jobs/{id}", get(api_job_detail))
+        // Pipeline jobs
+        .route("/api/jobs/corpus", post(jobs::api_start_corpus_job))
+        .route("/api/jobs/prepare", post(jobs::api_start_prepare_job))
+        .route("/api/jobs/train", post(jobs::api_start_train_job))
+        .route("/api/pipeline/status", get(jobs::api_pipeline_status))
         .with_state(state);
 
     let addr = format!("127.0.0.1:{}", cli.port);
-    eprintln!("Corpus dashboard listening on http://{addr}");
+    eprintln!("hark ml listening on http://{addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
 

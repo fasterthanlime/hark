@@ -255,6 +255,46 @@ pub fn train(config: &TrainConfig) -> Result<std::process::ExitStatus> {
     Ok(status)
 }
 
+/// Run MLX-LM LoRA training with streaming output. Each line from stderr
+/// is passed to `on_line` for progress tracking.
+pub fn train_streaming(
+    config: &TrainConfig,
+    mut on_line: impl FnMut(&str),
+) -> Result<std::process::ExitStatus> {
+    use std::io::BufRead;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("uvx")
+        .args([
+            "--from", "mlx-lm",
+            "mlx_lm.lora",
+            "--model", &config.model,
+            "--data", &config.data,
+            "--train",
+            "--iters", &config.iters.to_string(),
+            "--batch-size", &config.batch_size.to_string(),
+            "--num-layers", &config.num_layers.to_string(),
+            "--adapter-path", &config.adapters,
+            "--mask-prompt",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    // MLX-LM writes progress to stderr
+    if let Some(stderr) = child.stderr.take() {
+        let reader = std::io::BufReader::new(stderr);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                on_line(&line);
+            }
+        }
+    }
+
+    let status = child.wait()?;
+    Ok(status)
+}
+
 pub fn glob_md(root: &str) -> Result<Vec<std::path::PathBuf>> {
     let mut results = Vec::new();
     fn walk(dir: &Path, results: &mut Vec<std::path::PathBuf>) {

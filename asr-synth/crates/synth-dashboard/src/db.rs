@@ -99,6 +99,7 @@ pub struct SentenceRow {
     pub tts_backend: Option<String>,
     pub parakeet_output: Option<String>,
     pub qwen_output: Option<String>,
+    pub human_wav_path: Option<String>,
 }
 
 // --- Stats ---
@@ -155,6 +156,7 @@ impl Db {
         let _ = conn.execute_batch("ALTER TABLE sentences ADD COLUMN unknown_words TEXT NOT NULL DEFAULT '[]';");
         let _ = conn.execute_batch("ALTER TABLE sentences ADD COLUMN alignment_json TEXT;");
         let _ = conn.execute_batch("ALTER TABLE sentences ADD COLUMN tts_backend TEXT;");
+        let _ = conn.execute_batch("ALTER TABLE sentences ADD COLUMN human_wav_path TEXT;");
         Ok(Db { conn })
     }
 
@@ -202,6 +204,7 @@ impl Db {
         &self,
         search: Option<&str>,
         reviewed_only: Option<bool>,
+        has_override: Option<bool>,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<VocabRow>> {
@@ -218,6 +221,11 @@ impl Db {
             conditions.push(format!("reviewed = ?{idx}"));
             param_values.push(Box::new(rev as i64));
             idx += 1;
+        }
+        if let Some(true) = has_override {
+            conditions.push("spoken_override IS NOT NULL AND spoken_override != ''".to_string());
+        } else if let Some(false) = has_override {
+            conditions.push("(spoken_override IS NULL OR spoken_override = '')".to_string());
         }
 
         let where_clause = if conditions.is_empty() {
@@ -326,7 +334,7 @@ impl Db {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<SentenceRow>> {
-        let cols = "id, text, spoken, vocab_terms, unknown_words, status, wav_path, alignment_json, tts_backend, parakeet_output, qwen_output";
+        let cols = "id, text, spoken, vocab_terms, unknown_words, status, wav_path, alignment_json, tts_backend, parakeet_output, qwen_output, human_wav_path";
         let (sql, param_values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match status {
             Some(s) => (
                 format!("SELECT {cols} FROM sentences WHERE status = ?1 ORDER BY id LIMIT ?2 OFFSET ?3"),
@@ -352,6 +360,7 @@ impl Db {
                 tts_backend: row.get(8)?,
                 parakeet_output: row.get(9)?,
                 qwen_output: row.get(10)?,
+                human_wav_path: row.get(11)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -400,14 +409,14 @@ impl Db {
 
     /// Get a single sentence by ID.
     pub fn get_sentence(&self, id: i64) -> Result<Option<SentenceRow>> {
-        let cols = "id, text, spoken, vocab_terms, unknown_words, status, wav_path, alignment_json, tts_backend, parakeet_output, qwen_output";
+        let cols = "id, text, spoken, vocab_terms, unknown_words, status, wav_path, alignment_json, tts_backend, parakeet_output, qwen_output, human_wav_path";
         let mut stmt = self.conn.prepare(&format!("SELECT {cols} FROM sentences WHERE id = ?1"))?;
         let mut rows = stmt.query_map(params![id], |row| {
             Ok(SentenceRow {
                 id: row.get(0)?, text: row.get(1)?, spoken: row.get(2)?,
                 vocab_terms: row.get(3)?, unknown_words: row.get(4)?, status: row.get(5)?,
                 wav_path: row.get(6)?, alignment_json: row.get(7)?, tts_backend: row.get(8)?,
-                parakeet_output: row.get(9)?, qwen_output: row.get(10)?,
+                parakeet_output: row.get(9)?, qwen_output: row.get(10)?, human_wav_path: row.get(11)?,
             })
         })?;
         match rows.next() {
@@ -470,6 +479,44 @@ impl Db {
         let rejected: i64 = self.conn.query_row("SELECT COUNT(*) FROM sentences WHERE status = 'rejected'", [], |r| r.get(0))?;
         let total: i64 = self.conn.query_row("SELECT COUNT(*) FROM sentences", [], |r| r.get(0))?;
         Ok((approved, rejected, total))
+    }
+
+    pub fn list_approved_sentences(&self) -> Result<Vec<SentenceRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, text, spoken, vocab_terms, unknown_words, status, wav_path, alignment_json, tts_backend, parakeet_output, qwen_output, human_wav_path FROM sentences WHERE status = 'approved' ORDER BY id"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SentenceRow {
+                id: row.get(0)?,
+                text: row.get(1)?,
+                spoken: row.get(2)?,
+                vocab_terms: row.get(3)?,
+                unknown_words: row.get(4)?,
+                status: row.get(5)?,
+                wav_path: row.get(6)?,
+                alignment_json: row.get(7)?,
+                tts_backend: row.get(8)?,
+                parakeet_output: row.get(9)?,
+                qwen_output: row.get(10)?,
+                human_wav_path: row.get(11)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn sentences_with_human_recording_count(&self) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM sentences WHERE human_wav_path IS NOT NULL",
+            [], |r| r.get(0),
+        )?)
+    }
+
+    pub fn update_sentence_human_wav(&self, id: i64, path: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sentences SET human_wav_path = ?1 WHERE id = ?2",
+            params![path, id],
+        )?;
+        Ok(())
     }
 
     // ==================== CANDIDATES ====================
