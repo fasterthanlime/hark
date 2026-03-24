@@ -54,24 +54,16 @@ impl ForcedAligner {
             .context("load config")
             .map_err(AsrError::ModelLoad)?;
 
-        let classify_num = config
-            .classify_num
-            .ok_or_else(|| AsrError::ModelLoad(anyhow::anyhow!(
-                "config.json missing `classify_num` — is this a ForcedAligner model?"
-            )))?;
         let timestamp_token_id = config
             .timestamp_token_id
             .ok_or_else(|| AsrError::ModelLoad(anyhow::anyhow!(
-                "config.json missing `timestamp_token_id`"
+                "config.json missing `timestamp_token_id` — is this a ForcedAligner model?"
             )))?;
         let timestamp_segment_time = config
             .timestamp_segment_time
             .ok_or_else(|| AsrError::ModelLoad(anyhow::anyhow!(
                 "config.json missing `timestamp_segment_time`"
             )))?;
-
-        info!("ForcedAligner: classify_num={}, ts_token={}, segment_time={}ms",
-            classify_num, timestamp_token_id, timestamp_segment_time);
 
         info!("Loading weights...");
         let mut weights = load_safetensors_weights(model_dir, &device)
@@ -82,6 +74,19 @@ impl ForcedAligner {
             match &weights { Weights::Dense(m) => m.len(), _ => 0 }
         );
         weights.maybe_convert_for_cpu(&device);
+
+        // classify_num: prefer config, fall back to lm_head output dimension
+        let classify_num = config.classify_num.unwrap_or_else(|| {
+            let shape = weights.get_tensor("thinker.lm_head.weight")
+                .map(|t| t.dims().to_vec())
+                .unwrap_or_default();
+            let n = shape.first().copied().unwrap_or(5000);
+            info!("classify_num not in config, inferred {} from lm_head shape {:?}", n, shape);
+            n
+        });
+
+        info!("ForcedAligner: classify_num={}, ts_token={}, segment_time={}ms",
+            classify_num, timestamp_token_id, timestamp_segment_time);
 
         info!("Loading tokenizer...");
         let tokenizer_path = model_dir.join("tokenizer.json");

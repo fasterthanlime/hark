@@ -9,5 +9,6 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rand = "0.9"
+rayon = "1"
 shellexpand = "3"
 pulldown-cmark = "0.12"

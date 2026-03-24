@@ -1,768 +1,2101 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Corpus Dashboard</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Jost:ital,wght@0,100..900;1,100..900&display=swap" rel="stylesheet">
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<style>
-:root {
-  --bg: #0d1117; --surface: #161b22; --border: #30363d;
-  --text: #e6edf3; --text-muted: #8b949e;
-  --accent: #58a6ff; --accent-hover: #79c0ff;
-  --danger: #f85149; --danger-bg: rgba(248,81,73,0.15);
-  --success: #3fb950; --success-bg: rgba(63,185,80,0.15);
-  --warning: #d29922; --warning-bg: rgba(210,153,34,0.15);
-}
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: 'Jost', sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; }
-.container { max-width: 1000px; margin: 0 auto; padding: 24px; }
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Corpus Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Jost:ital,wght@0,100..900;1,100..900&display=swap"
+        rel="stylesheet">
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --surface: #161b22;
+            --border: #30363d;
+            --text: #e6edf3;
+            --text-muted: #8b949e;
+            --accent: #58a6ff;
+            --accent-hover: #79c0ff;
+            --danger: #f85149;
+            --danger-bg: rgba(248, 81, 73, 0.15);
+            --success: #3fb950;
+            --success-bg: rgba(63, 185, 80, 0.15);
+            --warning: #d29922;
+            --warning-bg: rgba(210, 153, 34, 0.15);
+        }
 
-nav { display: flex; gap: 20px; padding: 12px 24px; background: var(--surface); border-bottom: 1px solid var(--border); align-items: center; }
-nav .logo { font-weight: 700; font-size: 16px; color: var(--accent); margin-right: 8px; }
-nav a { color: var(--text-muted); text-decoration: none; font-size: 14px; cursor: pointer; padding: 4px 0; }
-nav a:hover, nav a.active { color: var(--text); }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
 
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
-.card h3 { font-size: 14px; margin-bottom: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+        body {
+            font-family: 'Jost', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+        }
 
-.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin-bottom: 24px; }
-.stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px; text-align: center; }
-.stat-card .value { font-size: 26px; font-weight: 700; color: var(--accent); }
-.stat-card .label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 24px;
+        }
 
-h2 { font-size: 20px; margin-bottom: 16px; }
+        nav {
+            display: flex;
+            gap: 20px;
+            padding: 12px 24px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            align-items: center;
+        }
 
-.btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-family: 'Jost', sans-serif; font-size: 14px; cursor: pointer; transition: all 0.15s; }
-.btn:hover { border-color: var(--text-muted); }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-primary { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
-.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
-.btn-success { background: var(--success); color: #000; border-color: var(--success); font-weight: 600; }
-.btn-danger { color: var(--danger); border-color: var(--danger); }
-.btn-sm { padding: 3px 8px; font-size: 12px; }
+        nav .logo {
+            font-weight: 700;
+            font-size: 16px;
+            color: var(--accent);
+            margin-right: 8px;
+        }
 
-table { width: 100%; border-collapse: collapse; }
-th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border); font-size: 14px; }
-th { color: var(--text-muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+        nav a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 14px;
+            cursor: pointer;
+            padding: 4px 0;
+        }
 
-.badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 500; }
-.badge-pending { background: var(--warning-bg); color: var(--warning); }
-.badge-approved { background: var(--success-bg); color: var(--success); }
-.badge-rejected { background: var(--danger-bg); color: var(--danger); }
-.badge-needs_resynth { background: rgba(88,166,255,0.15); color: var(--accent); }
-.badge-running { background: rgba(88,166,255,0.15); color: var(--accent); }
-.badge-completed { background: var(--success-bg); color: var(--success); }
-.badge-failed { background: var(--danger-bg); color: var(--danger); }
+        nav a:hover,
+        nav a.active {
+            color: var(--text);
+        }
 
-.form-group { margin-bottom: 12px; }
-.form-group label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 4px; }
-.form-group input { width: 100%; padding: 7px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: 'Jost', sans-serif; font-size: 14px; outline: none; }
-.form-group input:focus { border-color: var(--accent); }
-.form-row { display: flex; gap: 12px; }
-.form-row .form-group { flex: 1; }
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
 
-.empty-state { text-align: center; padding: 48px 20px; color: var(--text-muted); }
-.empty-state h3 { color: var(--text); margin-bottom: 8px; }
+        .card h3 {
+            font-size: 14px;
+            margin-bottom: 12px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
 
-.search-bar { display: flex; gap: 12px; margin-bottom: 16px; }
-.search-bar input { flex: 1; padding: 8px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: 'Jost', sans-serif; font-size: 14px; outline: none; }
-.search-bar input:focus { border-color: var(--accent); }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 12px;
+            margin-bottom: 24px;
+        }
 
-.toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 14px;
+            text-align: center;
+        }
 
-/* Aligned sentence — inline text with annotated diff spans */
-.sentence-display { font-size: 20px; line-height: 2.2; text-align: center; }
-.sentence-display .word { display: inline; }
-.sentence-display .word-annotated {
-  display: inline-flex; flex-direction: column; align-items: center;
-  vertical-align: baseline; margin: 0 1px;
-}
-.sentence-display .word-annotated .written {
-  border: 1px solid var(--accent); border-radius: 6px;
-  padding: 2px 8px; background: rgba(88,166,255,0.08);
-}
-.sentence-display .word-annotated .spoken-alt {
-  font-size: 13px; color: var(--accent); font-weight: 600;
-  margin-top: 2px; white-space: nowrap;
-}
+        .stat-card .value {
+            font-size: 26px;
+            font-weight: 700;
+            color: var(--accent);
+        }
 
-/* Full-screen review */
-.review-fullscreen {
-  position: fixed; inset: 0; background: var(--bg); z-index: 100;
-  display: flex; flex-direction: column; overflow: hidden;
-}
-.review-topbar {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 12px 24px; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0;
-}
-.review-body {
-  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  padding: 32px; gap: 32px; overflow-y: auto;
-}
-.review-card {
-  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-  padding: 40px; max-width: 900px; width: 100%;
-}
-.review-actions {
-  display: flex; justify-content: center; gap: 24px; flex-shrink: 0;
-  padding: 20px; background: var(--surface); border-top: 1px solid var(--border);
-}
-.review-action-btn {
-  display: flex; flex-direction: column; align-items: center; gap: 4px;
-  padding: 12px 32px; border-radius: 8px; border: 1px solid var(--border);
-  background: var(--surface); color: var(--text); font-family: 'Jost', sans-serif;
-  font-size: 15px; cursor: pointer; transition: all 0.15s; min-width: 100px;
-}
-.review-action-btn:hover { border-color: var(--text-muted); }
-.review-action-btn.approve { border-color: var(--success); color: var(--success); }
-.review-action-btn.approve:hover { background: var(--success-bg); }
-.review-action-btn.reject { border-color: var(--danger); color: var(--danger); }
-.review-action-btn.reject:hover { background: var(--danger-bg); }
-.review-action-btn.replay { border-color: var(--accent); color: var(--accent); }
-.review-action-btn.replay:hover { background: rgba(88,166,255,0.1); }
-.review-action-btn kbd { font-family: 'Jost', sans-serif; font-size: 11px; color: var(--text-muted); background: var(--bg); padding: 1px 6px; border-radius: 3px; border: 1px solid var(--border); }
+        .stat-card .label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
 
-.progress-bar { width: 100%; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
-.progress-bar .fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; }
+        h2 {
+            font-size: 20px;
+            margin-bottom: 16px;
+        }
 
-/* Waveform */
-.waveform-container { width: 100%; position: relative; cursor: pointer; }
-.waveform-canvas { width: 100%; height: 80px; display: block; border-radius: 6px; }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 7px 14px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text);
+            font-family: 'Jost', sans-serif;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
 
-.play-btn { background: none; border: 1px solid var(--border); border-radius: 50%; width: 28px; height: 28px; color: var(--accent); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; transition: all 0.15s; flex-shrink: 0; }
-.play-btn:hover { border-color: var(--accent); background: rgba(88,166,255,0.1); }
-.play-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-</style>
+        .btn:hover {
+            border-color: var(--text-muted);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: #000;
+            border-color: var(--accent);
+            font-weight: 600;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background: var(--accent-hover);
+        }
+
+        .btn-success {
+            background: var(--success);
+            color: #000;
+            border-color: var(--success);
+            font-weight: 600;
+        }
+
+        .btn-danger {
+            color: var(--danger);
+            border-color: var(--danger);
+        }
+
+        .btn-sm {
+            padding: 3px 8px;
+            font-size: 12px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th,
+        td {
+            padding: 6px 10px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+            font-size: 14px;
+        }
+
+        th {
+            color: var(--text-muted);
+            font-weight: 600;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        .badge-pending {
+            background: var(--warning-bg);
+            color: var(--warning);
+        }
+
+        .badge-approved {
+            background: var(--success-bg);
+            color: var(--success);
+        }
+
+        .badge-rejected {
+            background: var(--danger-bg);
+            color: var(--danger);
+        }
+
+        .badge-needs_resynth {
+            background: rgba(88, 166, 255, 0.15);
+            color: var(--accent);
+        }
+
+        .badge-running {
+            background: rgba(88, 166, 255, 0.15);
+            color: var(--accent);
+        }
+
+        .badge-completed {
+            background: var(--success-bg);
+            color: var(--success);
+        }
+
+        .badge-failed {
+            background: var(--danger-bg);
+            color: var(--danger);
+        }
+
+        .form-group {
+            margin-bottom: 12px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 7px 10px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-family: 'Jost', sans-serif;
+            font-size: 14px;
+            outline: none;
+        }
+
+        .form-group input:focus {
+            border-color: var(--accent);
+        }
+
+        .form-row {
+            display: flex;
+            gap: 12px;
+        }
+
+        .form-row .form-group {
+            flex: 1;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 48px 20px;
+            color: var(--text-muted);
+        }
+
+        .empty-state h3 {
+            color: var(--text);
+            margin-bottom: 8px;
+        }
+
+        .search-bar {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .search-bar input {
+            flex: 1;
+            padding: 8px 12px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-family: 'Jost', sans-serif;
+            font-size: 14px;
+            outline: none;
+        }
+
+        .search-bar input:focus {
+            border-color: var(--accent);
+        }
+
+        .toolbar {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+
+        /* Aligned sentence — every token is a .word span */
+        .sentence-display {
+            font-size: 20px;
+            text-align: center;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 0.3em 0.3em;
+            align-items: baseline;
+        }
+
+        .sentence-display .word {
+            display: inline-block;
+            text-align: center;
+        }
+
+        .sentence-display .word .spoken-alt {
+            display: block;
+            font-size: 13px;
+            color: var(--accent);
+            font-weight: 600;
+            line-height: 1.2;
+        }
+
+        .sentence-display .word.unknown {
+            outline: 1px solid var(--warning);
+            outline-offset: 2px;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+
+        .sentence-display .word.resolved {
+            outline: 1px solid var(--success);
+            outline-offset: 2px;
+            border-radius: 3px;
+        }
+
+        .sentence-display .word-active {
+            outline: 2px solid rgba(88, 166, 255, 0.6);
+            outline-offset: 2px;
+            border-radius: 3px;
+            color: #fff;
+        }
+
+        .unknown-num-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 1em;
+            height: 1em;
+            border-radius: 50%;
+            background: var(--warning);
+            color: var(--bg);
+            font-size: 80%;
+            font-weight: 700;
+            line-height: 1;
+            vertical-align: super;
+            margin-left: 2px;
+        }
+
+        /* Full-screen review */
+        .review-fullscreen {
+            position: fixed;
+            inset: 0;
+            background: var(--bg);
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .review-topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 24px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+
+        .review-body {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 32px;
+            gap: 32px;
+            overflow-y: auto;
+        }
+
+        .review-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 40px;
+            width: 100%;
+        }
+
+        .transcript-grid-scroll::-webkit-scrollbar {
+            height: 4px;
+        }
+
+        .transcript-grid-scroll::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 2px;
+        }
+
+        .review-actions {
+            display: flex;
+            justify-content: center;
+            gap: 24px;
+            flex-shrink: 0;
+            padding: 20px;
+            background: var(--surface);
+            border-top: 1px solid var(--border);
+        }
+
+        .review-action-btn {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            padding: 12px 32px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text);
+            font-family: 'Jost', sans-serif;
+            font-size: 15px;
+            cursor: pointer;
+            transition: all 0.15s;
+            min-width: 100px;
+        }
+
+        .review-action-btn:hover {
+            border-color: var(--text-muted);
+        }
+
+        .review-action-btn.approve {
+            border-color: var(--success);
+            color: var(--success);
+        }
+
+        .review-action-btn.approve:hover {
+            background: var(--success-bg);
+        }
+
+        .review-action-btn.reject {
+            border-color: var(--danger);
+            color: var(--danger);
+        }
+
+        .review-action-btn.reject:hover {
+            background: var(--danger-bg);
+        }
+
+        .review-action-btn.replay {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .review-action-btn.replay:hover {
+            background: rgba(88, 166, 255, 0.1);
+        }
+
+        .review-action-btn kbd {
+            font-family: 'Jost', sans-serif;
+            font-size: 11px;
+            color: var(--text-muted);
+            background: var(--bg);
+            padding: 1px 6px;
+            border-radius: 3px;
+            border: 1px solid var(--border);
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: var(--border);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .progress-bar .fill {
+            height: 100%;
+            background: var(--accent);
+            border-radius: 2px;
+            transition: width 0.3s;
+        }
+
+        /* Waveform */
+        .waveform-container {
+            width: 100%;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .waveform-canvas {
+            width: 100%;
+            height: 80px;
+            display: block;
+            border-radius: 6px;
+        }
+
+        .play-btn {
+            background: none;
+            border: 1px solid var(--border);
+            border-radius: 50%;
+            width: 28px;
+            height: 28px;
+            color: var(--accent);
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            transition: all 0.15s;
+            flex-shrink: 0;
+        }
+
+        .play-btn:hover {
+            border-color: var(--accent);
+            background: rgba(88, 166, 255, 0.1);
+        }
+
+        .play-btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
+        .error-toast {
+            position: fixed;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--danger-bg);
+            border: 1px solid var(--danger);
+            color: var(--danger);
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            z-index: 200;
+            max-width: 600px;
+            text-align: center;
+        }
+
+        .vocab-editor {
+            position: fixed;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--surface);
+            border: 1px solid var(--accent);
+            border-radius: 10px;
+            padding: 16px 20px;
+            z-index: 200;
+            min-width: 350px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+        }
+
+        .vocab-editor h4 {
+            font-size: 14px;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }
+
+        .vocab-editor .term {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .vocab-editor .row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .vocab-editor input {
+            flex: 1;
+            padding: 8px 12px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-family: 'Jost', sans-serif;
+            font-size: 15px;
+            outline: none;
+        }
+
+        .vocab-editor input:focus {
+            border-color: var(--accent);
+        }
+
+        .record-btn {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            border: 2px solid var(--danger);
+            background: none;
+            color: var(--danger);
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            transition: all 0.15s;
+            flex-shrink: 0;
+        }
+
+        .record-btn:hover {
+            background: var(--danger-bg);
+        }
+
+        .record-btn.active {
+            background: var(--danger);
+            color: #fff;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.6;
+            }
+        }
+    </style>
 </head>
+
 <body>
-<div id="root"></div>
-<script type="text/babel">
-const { useState, useEffect, useCallback, useRef, useMemo } = React;
+    <div id="root"></div>
+    <script type="text/babel">
+        const {useState, useEffect, useCallback, useRef, useMemo} = React;
 
-const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-function api(path, opts = {}) {
-  return fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts })
-    .then(r => { if (!r.ok) throw new Error(`${r.status} ${r.statusText}`); const ct = r.headers.get('content-type') || ''; return ct.includes('json') ? r.json() : r.text(); });
-}
-
-function useHash() {
-  const [hash, setHash] = useState(window.location.hash || '#/');
-  useEffect(() => { const h = () => setHash(window.location.hash || '#/'); window.addEventListener('hashchange', h); return () => window.removeEventListener('hashchange', h); }, []);
-  return hash;
-}
-
-// ==================== TTS ====================
-async function fetchTtsBuffer(text) {
-  const res = await fetch('/api/tts/preview', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ text }),
-  });
-  const arrayBuf = await res.arrayBuffer();
-  const audioBuf = await audioCtx.decodeAudioData(arrayBuf);
-  return audioBuf;
-}
-
-function playBuffer(audioBuf, onEnd) {
-  const source = audioCtx.createBufferSource();
-  source.buffer = audioBuf;
-  source.connect(audioCtx.destination);
-  source.onended = onEnd || (() => {});
-  source.start();
-  return source;
-}
-
-// ==================== WAVEFORM ====================
-function Waveform({ audioBuffer, playing, onSeek }) {
-  const canvasRef = useRef(null);
-  const animRef = useRef(null);
-  const startTimeRef = useRef(null);
-
-  useEffect(() => {
-    if (!audioBuffer || !canvasRef.current) return;
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
-    ctx.scale(dpr, dpr);
-
-    const data = audioBuffer.getChannelData(0);
-    const w = rect.width;
-    const h = rect.height;
-    const step = Math.max(1, Math.floor(data.length / w));
-
-    const draw = (playbackPos) => {
-      ctx.clearRect(0, 0, w, h);
-
-      // Draw waveform
-      const mid = h / 2;
-      for (let x = 0; x < w; x++) {
-        const start = x * step;
-        let min = 0, max = 0;
-        for (let j = 0; j < step && start + j < data.length; j++) {
-          const v = data[start + j];
-          if (v < min) min = v;
-          if (v > max) max = v;
+        // Canonical word extraction — must match the Rust side (tts::extract_words)
+        function canonicalWord(w) {
+            return w.replace(/^[^a-zA-Z0-9]+/, '').replace(/[^a-zA-Z0-9]+$/, '').toLowerCase();
         }
-        const topY = mid + min * mid * 0.9;
-        const botY = mid + max * mid * 0.9;
 
-        // Color based on playback position
-        const samplePos = playbackPos != null ? (playbackPos / audioBuffer.duration) * w : -1;
-        if (x < samplePos) {
-          ctx.fillStyle = 'rgba(88, 166, 255, 0.7)';
-        } else {
-          ctx.fillStyle = 'rgba(88, 166, 255, 0.25)';
+        function api(path, opts = {}) {
+            return fetch(path, {headers: {'Content-Type': 'application/json'}, ...opts})
+                .then(r => {if (!r.ok) throw new Error(`${r.status} ${r.statusText}`); const ct = r.headers.get('content-type') || ''; return ct.includes('json') ? r.json() : r.text();});
         }
-        ctx.fillRect(x, topY, 1, botY - topY || 1);
-      }
 
-      // Playback cursor
-      if (playbackPos != null && playbackPos >= 0) {
-        const cx = (playbackPos / audioBuffer.duration) * w;
-        ctx.strokeStyle = 'rgba(255,255,255,0.8)';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(cx, 0);
-        ctx.lineTo(cx, h);
-        ctx.stroke();
-      }
-    };
-
-    if (playing) {
-      startTimeRef.current = audioCtx.currentTime;
-      const animate = () => {
-        const elapsed = audioCtx.currentTime - startTimeRef.current;
-        if (elapsed <= audioBuffer.duration) {
-          draw(elapsed);
-          animRef.current = requestAnimationFrame(animate);
-        } else {
-          draw(null);
+        function useHash() {
+            const [hash, setHash] = useState(window.location.hash || '#/');
+            useEffect(() => {const h = () => setHash(window.location.hash || '#/'); window.addEventListener('hashchange', h); return () => window.removeEventListener('hashchange', h);}, []);
+            return hash;
         }
-      };
-      animate();
-    } else {
-      draw(null);
-    }
 
-    return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [audioBuffer, playing]);
-
-  return (
-    <div className="waveform-container">
-      <canvas ref={canvasRef} className="waveform-canvas" />
-    </div>
-  );
-}
-
-// ==================== ALIGNED SENTENCE ====================
-// Shows the written form as flowing text. Where the spoken form differs,
-// the written word(s) get a pill border with the spoken alternative below.
-function AlignedSentence({ text, spoken }) {
-  const segments = useMemo(() => diffSegments(text, spoken), [text, spoken]);
-
-  return (
-    <div className="sentence-display">
-      {segments.map((seg, i) => {
-        if (seg.same) {
-          return <span key={i} className="word">{seg.written} </span>;
-        } else {
-          return (
-            <span key={i} className="word-annotated">
-              <span className="written">{seg.written}</span>
-              <span className="spoken-alt">{seg.spoken}</span>
-            </span>
-          );
+        // ==================== TTS ====================
+        async function fetchTtsBuffer(text, backend) {
+            const body = {text};
+            if (backend) body.backend = backend;
+            const res = await fetch('/api/tts/preview', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body),
+            });
+            if (!res.ok) throw new Error(`TTS ${res.status}: ${await res.text()}`);
+            const arrayBuf = await res.arrayBuffer();
+            const audioBuf = await audioCtx.decodeAudioData(arrayBuf);
+            return audioBuf;
         }
-      })}
-    </div>
-  );
-}
 
-// Diff the written and spoken forms into segments.
-// Each segment is either { same: true, written } or { same: false, written, spoken }.
-function diffSegments(written, spoken) {
-  if (written === spoken) {
-    return [{ same: true, written }];
-  }
+        // TTS + forced alignment in one shot. Returns { audioBuf, alignment }.
+        // alignment is [{word, start, end}, ...] with times in seconds.
+        async function fetchTtsAligned(spokenText, backend, alignText) {
+            const body = {text: spokenText, align_text: alignText};
+            if (backend) body.backend = backend;
+            const res = await fetch('/api/tts/preview', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body),
+            });
+            if (!res.ok) throw new Error(`TTS ${res.status}: ${await res.text()}`);
+            const data = await res.json();
+            const binaryStr = atob(data.audio_b64);
+            const bytes = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+            const audioBuf = await audioCtx.decodeAudioData(bytes.buffer);
+            return {audioBuf, alignment: data.alignment};
+        }
 
-  const wWords = written.split(/\s+/);
-  const sWords = spoken.split(/\s+/);
+        function playBuffer(audioBuf, onEnd) {
+            const source = audioCtx.createBufferSource();
+            source.buffer = audioBuf;
+            source.connect(audioCtx.destination);
+            source.onended = onEnd || (() => { });
+            source.start();
+            return source;
+        }
 
-  // LCS to find matching words (case-insensitive)
-  const m = wWords.length, n = sWords.length;
-  const dp = Array.from({length: m+1}, () => new Uint16Array(n+1));
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      if (wWords[i-1].toLowerCase() === sWords[j-1].toLowerCase()) {
-        dp[i][j] = dp[i-1][j-1] + 1;
-      } else {
-        dp[i][j] = Math.max(dp[i-1][j], dp[i][j-1]);
-      }
-    }
-  }
+        // ==================== WAVEFORM ====================
+        function Waveform({audioBuffer, playing, alignment, onActiveWord, onWordClick, playOffset}) {
+            const canvasRef = useRef(null);
+            const animRef = useRef(null);
+            const startTimeRef = useRef(null);
+            const lastActiveRef = useRef(null);
 
-  // Backtrack to find which words match
-  const wMatched = new Array(m).fill(false);
-  const sMatched = new Array(n).fill(false);
-  let i = m, j = n;
-  while (i > 0 && j > 0) {
-    if (wWords[i-1].toLowerCase() === sWords[j-1].toLowerCase()) {
-      wMatched[i-1] = true;
-      sMatched[j-1] = true;
-      i--; j--;
-    } else if (dp[i-1][j] >= dp[i][j-1]) {
-      i--;
-    } else {
-      j--;
-    }
-  }
+            useEffect(() => {
+                if (!audioBuffer || !canvasRef.current) return;
+                const canvas = canvasRef.current;
+                const ctx = canvas.getContext('2d');
+                const dpr = window.devicePixelRatio || 1;
+                const rect = canvas.getBoundingClientRect();
+                canvas.width = rect.width * dpr;
+                canvas.height = rect.height * dpr;
+                ctx.scale(dpr, dpr);
 
-  // Build segments: walk both arrays, grouping matched (same) and unmatched (diff)
-  const segments = [];
-  let wi = 0, si = 0;
-  while (wi < m || si < n) {
-    // Collect a run of matched words
-    let sameRun = [];
-    while (wi < m && wMatched[wi] && si < n && sMatched[si]) {
-      sameRun.push(wWords[wi]);
-      wi++; si++;
-    }
-    if (sameRun.length > 0) {
-      segments.push({ same: true, written: sameRun.join(' ') });
-    }
+                const data = audioBuffer.getChannelData(0);
+                const w = rect.width;
+                const h = rect.height;
+                const step = Math.max(1, Math.floor(data.length / w));
+                const dur = audioBuffer.duration;
 
-    // Collect a run of unmatched words from both sides
-    let wRun = [], sRun = [];
-    while (wi < m && !wMatched[wi]) { wRun.push(wWords[wi]); wi++; }
-    while (si < n && !sMatched[si]) { sRun.push(sWords[si]); si++; }
-    if (wRun.length > 0 || sRun.length > 0) {
-      segments.push({
-        same: false,
-        written: wRun.join(' ') || '\u2014',
-        spoken: sRun.join(' ') || '\u2014',
-      });
-    }
-  }
-  return segments;
-}
+                const draw = (playbackPos) => {
+                    ctx.clearRect(0, 0, w, h);
 
-function PlayBtn({ text, small }) {
-  const [playing, setPlaying] = useState(false);
-  const play = async () => {
-    setPlaying(true);
-    try {
-      const buf = await fetchTtsBuffer(text);
-      playBuffer(buf, () => setPlaying(false));
-    } catch(e) { setPlaying(false); }
-  };
-  return <button className={`play-btn${small ? ' btn-sm' : ''}`} onClick={play} disabled={playing} title="Play TTS">{playing ? '...' : '\u25B6'}</button>;
-}
+                    // Draw word region backgrounds from alignment
+                    if (alignment && alignment.length > 0) {
+                        for (let i = 0; i < alignment.length; i++) {
+                            const a = alignment[i];
+                            const x0 = (a.start / dur) * w;
+                            const x1 = (a.end / dur) * w;
+                            // Alternating subtle tint for word regions
+                            const isActive = playbackPos != null && playbackPos >= a.start && playbackPos < a.end;
+                            if (isActive) {
+                                ctx.fillStyle = 'rgba(88, 166, 255, 0.12)';
+                                ctx.fillRect(x0, 0, x1 - x0, h);
+                            }
+                        }
+                    }
 
-// ==================== NAV ====================
-function Nav() {
-  const hash = useHash();
-  const links = [['#/', 'Overview'], ['#/vocab', 'Vocab'], ['#/sentences', 'Sentences'], ['#/jobs', 'Jobs']];
-  return (
-    <nav>
-      <span className="logo">Corpus Dashboard</span>
-      {links.map(([href, label]) => (
-        <a key={href} href={href} className={hash === href || (href !== '#/' && hash.startsWith(href)) ? 'active' : ''}>{label}</a>
-      ))}
-    </nav>
-  );
-}
+                    // Draw waveform
+                    const mid = h / 2;
+                    for (let x = 0; x < w; x++) {
+                        const start = x * step;
+                        let min = 0, max = 0;
+                        for (let j = 0; j < step && start + j < data.length; j++) {
+                            const v = data[start + j];
+                            if (v < min) min = v;
+                            if (v > max) max = v;
+                        }
+                        const topY = mid + min * mid * 0.9;
+                        const botY = mid + max * mid * 0.9;
 
-// ==================== OVERVIEW ====================
-function Overview() {
-  const [stats, setStats] = useState(null);
-  const [importing, setImporting] = useState(false);
-  const load = () => api('/api/stats').then(setStats);
-  useEffect(() => { load(); }, []);
+                        const samplePos = playbackPos != null ? (playbackPos / dur) * w : -1;
+                        if (x < samplePos) {
+                            ctx.fillStyle = 'rgba(88, 166, 255, 0.7)';
+                        } else {
+                            ctx.fillStyle = 'rgba(88, 166, 255, 0.25)';
+                        }
+                        ctx.fillRect(x, topY, 1, botY - topY || 1);
+                    }
 
-  const doImport = async () => {
-    setImporting(true);
-    await api('/api/vocab/import', { method: 'POST' });
-    load();
-    setImporting(false);
-  };
+                    // Draw word boundary lines and labels
+                    if (alignment && alignment.length > 0) {
+                        ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+                        ctx.lineWidth = 1;
+                        for (const a of alignment) {
+                            const bx = (a.start / dur) * w;
+                            ctx.beginPath();
+                            ctx.moveTo(bx, 0);
+                            ctx.lineTo(bx, h);
+                            ctx.stroke();
+                        }
 
-  if (!stats) return <div className="container"><p>Loading...</p></div>;
+                        // Word labels at bottom
+                        ctx.font = '12px Jost, sans-serif';
+                        ctx.textAlign = 'center';
+                        ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+                        for (const a of alignment) {
+                            const cx = ((a.start + a.end) / 2 / dur) * w;
+                            const regionW = ((a.end - a.start) / dur) * w;
+                            if (regionW > 15) { // only draw if there's room
+                                ctx.fillText(a.word, cx, h - 3);
+                            }
+                        }
+                    }
 
-  return (
-    <div className="container">
-      <h2>Pipeline Overview</h2>
-      <div className="stats-grid">
-        <div className="stat-card"><div className="value">{stats.vocab_total}</div><div className="label">Vocab Terms</div></div>
-        <div className="stat-card"><div className="value" style={{color:'var(--warning)'}}>{stats.vocab_reviewed}</div><div className="label">Vocab Reviewed</div></div>
-        <div className="stat-card"><div className="value">{stats.vocab_with_override}</div><div className="label">Overrides</div></div>
-        <div className="stat-card"><div className="value">{stats.sentences_total}</div><div className="label">Sentences</div></div>
-        <div className="stat-card"><div className="value" style={{color:'var(--success)'}}>{stats.sentences_approved}</div><div className="label">Approved</div></div>
-        <div className="stat-card"><div className="value" style={{color:'var(--warning)'}}>{stats.sentences_pending}</div><div className="label">Pending</div></div>
-        <div className="stat-card"><div className="value">{stats.sentences_with_audio}</div><div className="label">With Audio</div></div>
-        <div className="stat-card"><div className="value">{stats.sentences_with_asr}</div><div className="label">With ASR</div></div>
-      </div>
+                    // Playback cursor
+                    if (playbackPos != null && playbackPos >= 0) {
+                        const cx = (playbackPos / dur) * w;
+                        ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+                        ctx.lineWidth = 1.5;
+                        ctx.beginPath();
+                        ctx.moveTo(cx, 0);
+                        ctx.lineTo(cx, h);
+                        ctx.stroke();
+                    }
 
-      <div className="card">
-        <h3>Quick Actions</h3>
-        <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
-          <button className="btn btn-primary" onClick={doImport} disabled={importing}>{importing ? 'Importing...' : 'Import Vocab from Docs'}</button>
-          {stats.sentences_pending > 0 && <a href="#/sentences/review" className="btn btn-success">Review Sentences ({stats.sentences_pending} pending)</a>}
-          {stats.sentences_total === 0 && stats.vocab_total > 0 && <a href="#/sentences" className="btn">Generate Sentences</a>}
-        </div>
-      </div>
+                    // Notify active word (by index into alignment array, not by word text)
+                    if (onActiveWord && alignment) {
+                        let active = null;
+                        if (playbackPos != null) {
+                            for (let ai = 0; ai < alignment.length; ai++) {
+                                const a = alignment[ai];
+                                if (playbackPos >= a.start && playbackPos < a.end) {active = ai; break;}
+                            }
+                        }
+                        if (active !== lastActiveRef.current) {
+                            lastActiveRef.current = active;
+                            onActiveWord(active);
+                        }
+                    }
+                };
 
-      <div className="card">
-        <h3>Pipeline</h3>
-        <table>
-          <tbody>
-            <tr><td style={{width:30,textAlign:'center',color:'var(--accent)',fontWeight:700}}>1</td><td>Import vocab from docs</td><td style={{textAlign:'right'}}><span className="badge badge-completed">{stats.vocab_total} terms</span></td></tr>
-            <tr><td style={{textAlign:'center',color:'var(--accent)',fontWeight:700}}>2</td><td>Review spoken forms</td><td style={{textAlign:'right'}}><span className="badge badge-pending">{stats.vocab_reviewed}/{stats.vocab_total}</span></td></tr>
-            <tr><td style={{textAlign:'center',color:'var(--accent)',fontWeight:700}}>3</td><td>Generate &amp; review sentences</td><td style={{textAlign:'right'}}><span className="badge badge-pending">{stats.sentences_approved} approved</span></td></tr>
-            <tr><td style={{textAlign:'center',color:'var(--accent)',fontWeight:700}}>4</td><td>ASR transcription</td><td style={{textAlign:'right'}}><span className="badge badge-pending">{stats.sentences_with_asr}</span></td></tr>
-            <tr><td style={{textAlign:'center',color:'var(--accent)',fontWeight:700}}>5</td><td>Train LoRA</td><td style={{textAlign:'right'}}><span className="badge badge-pending">-</span></td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
+                if (playing) {
+                    startTimeRef.current = audioCtx.currentTime;
+                    const offset = playOffset || 0;
+                    const animate = () => {
+                        const elapsed = offset + (audioCtx.currentTime - startTimeRef.current);
+                        if (elapsed <= dur) {
+                            draw(elapsed);
+                            animRef.current = requestAnimationFrame(animate);
+                        } else {
+                            draw(null);
+                        }
+                    };
+                    animate();
+                } else {
+                    draw(null);
+                }
 
-// ==================== VOCAB ====================
-function VocabPage() {
-  const [vocab, setVocab] = useState([]);
-  const [search, setSearch] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [editingId, setEditingId] = useState(null);
-  const [editValue, setEditValue] = useState('');
+                return () => {
+                    if (animRef.current) cancelAnimationFrame(animRef.current);
+                    lastActiveRef.current = null;
+                    if (onActiveWord) onActiveWord(null);
+                };
+            }, [audioBuffer, playing, alignment, playOffset]);
 
-  const load = useCallback(() => {
-    const p = new URLSearchParams();
-    if (search) p.set('search', search);
-    p.set('limit', '100');
-    api(`/api/vocab?${p}`).then(setVocab).finally(() => setLoading(false));
-  }, [search]);
-  useEffect(() => { load(); }, [load]);
+            // Click on waveform to play a specific word
+            const handleClick = (e) => {
+                if (!alignment || !audioBuffer || !onWordClick) return;
+                const rect = canvasRef.current.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const t = (x / rect.width) * audioBuffer.duration;
+                for (const a of alignment) {
+                    if (t >= a.start && t < a.end) {
+                        onWordClick(a);
+                        return;
+                    }
+                }
+            };
 
-  const startEdit = (row) => { setEditingId(row.id); setEditValue(row.spoken_override || row.spoken_auto); };
-  const saveEdit = async (id) => {
-    await api(`/api/vocab/${id}`, { method: 'POST', body: JSON.stringify({ spoken_override: editValue }) });
-    setEditingId(null); load();
-  };
-  const toggleReviewed = async (row) => {
-    await api(`/api/vocab/${row.id}`, { method: 'POST', body: JSON.stringify({ reviewed: !row.reviewed }) });
-    load();
-  };
+            return (
+                <div className="waveform-container">
+                    <canvas ref={canvasRef} className="waveform-canvas" onClick={handleClick}
+                        style={{cursor: alignment ? 'pointer' : 'default'}} />
+                </div>
+            );
+        }
 
-  return (
-    <div className="container">
-      <h2>Vocabulary</h2>
-      <div className="search-bar">
-        <input placeholder="Search terms..." value={search} onChange={e => setSearch(e.target.value)} />
-      </div>
-      {loading ? <p>Loading...</p> : vocab.length === 0 ? (
-        <div className="empty-state"><h3>No results</h3></div>
-      ) : (
-        <div className="card" style={{padding:0,overflow:'hidden'}}>
-          <table>
-            <thead><tr><th>Term</th><th>Auto</th><th>Override</th><th style={{width:36}}></th><th style={{width:36}}></th></tr></thead>
-            <tbody>
-              {vocab.map(row => (
-                <tr key={row.id}>
-                  <td style={{fontWeight:600}}>{row.term}</td>
-                  <td style={{color:'var(--text-muted)'}}>{row.spoken_auto}</td>
-                  <td>
-                    {editingId === row.id ? (
-                      <div style={{display:'flex',gap:4}}>
-                        <input style={{flex:1,padding:'3px 6px',fontSize:13,background:'var(--bg)',border:'1px solid var(--accent)',borderRadius:3,color:'var(--text)',outline:'none',fontFamily:'Jost,sans-serif'}}
-                          value={editValue} onChange={e => setEditValue(e.target.value)} autoFocus
-                          onKeyDown={e => { if(e.key==='Enter') saveEdit(row.id); if(e.key==='Escape') setEditingId(null); }} />
-                        <button className="btn btn-sm btn-primary" onClick={() => saveEdit(row.id)}>OK</button>
-                      </div>
+        // ==================== ALIGNED SENTENCE ====================
+        // Shows the written form as flowing text. Where the spoken form differs,
+        // the written word(s) get a pill border with the spoken alternative below.
+        // Clicking any word opens a vocab override editor.
+        function AlignedSentence({text, spoken, onWordClick, unknownWords, resolvedWords, activeWordIndex, alignment}) {
+            const segments = useMemo(() => diffSegments(text, spoken), [text, spoken]);
+            const unknownSet = useMemo(() => {
+                const s = new Set();
+                if (unknownWords) unknownWords.forEach(w => s.add(canonicalWord(w)));
+                return s;
+            }, [unknownWords]);
+            // Map from canonical unknown word → 1-based number, ordered by appearance in text (left-to-right)
+            const unknownNum = useMemo(() => {
+                const m = new Map();
+                if (!unknownWords || unknownWords.length === 0) return m;
+                let n = 1;
+                // Walk through text words left-to-right, assign numbers to unknown ones
+                for (const w of text.split(/\s+/)) {
+                    const clean = canonicalWord(w);
+                    if (clean && unknownSet.has(clean) && !m.has(clean)) {
+                        m.set(clean, n++);
+                    }
+                }
+                return m;
+            }, [unknownWords, text, unknownSet]);
+            const resolvedSet = useMemo(() => {
+                const s = new Set();
+                if (resolvedWords) resolvedWords.forEach(w => s.add(canonicalWord(w)));
+                return s;
+            }, [resolvedWords]);
+
+            // Map alignment index → written word index for active highlighting
+            const activeWrittenIdx = useMemo(() => {
+                if (activeWordIndex == null || !alignment || !alignment.length) return -1;
+                const activeAlignWord = canonicalWord(alignment[activeWordIndex]?.word || '');
+                if (!activeAlignWord) return -1;
+                // Walk written words and alignment words in parallel to find the matching position
+                const writtenWords = text.split(/\s+/).map(w => canonicalWord(w));
+                let alignIdx = 0;
+                for (let wi = 0; wi < writtenWords.length && alignIdx < alignment.length; wi++) {
+                    if (canonicalWord(alignment[alignIdx]?.word || '') === writtenWords[wi]) {
+                        if (alignIdx === activeWordIndex) return wi;
+                        alignIdx++;
+                    }
+                }
+                return -1;
+            }, [activeWordIndex, alignment, text]);
+
+            // Track written word index during render
+            let writtenWordCounter = -1;
+
+            const wordClass = (word) => {
+                writtenWordCounter++;
+                const clean = canonicalWord(word);
+                let cls = '';
+                if (resolvedSet.has(clean)) cls = 'resolved';
+                else if (unknownSet.has(clean)) cls = 'unknown';
+                if (writtenWordCounter === activeWrittenIdx) cls += ' word-active';
+                return cls;
+            };
+
+            const numBadgeBelow = (word) => {
+                const n = unknownNum.get(canonicalWord(word));
+                if (!n || n > 9) return null;
+                return <span className="unknown-num-badge">{n}</span>;
+            };
+
+            // Flatten all segments into a flat list of whitespace-delimited tokens
+            const allWords = useMemo(() => {
+                const words = [];
+                for (const seg of segments) {
+                    if (seg.same) {
+                        for (const w of seg.written.split(/\s+/)) {
+                            if (w) words.push({text: w, spokenAlt: null});
+                        }
+                    } else {
+                        // Diff segment: the written form may be multiple words
+                        words.push({text: seg.written, spokenAlt: seg.spoken});
+                    }
+                }
+                return words;
+            }, [segments]);
+
+            return (
+                <div className="sentence-display">
+                    {allWords.map((w, j) => {
+                        const cls = wordClass(w.text);
+                        const badge = numBadgeBelow(w.text);
+                        return <span key={j} className={`word ${cls}`}
+                            onClick={() => onWordClick && onWordClick(w.text)}
+                            style={{cursor: onWordClick ? 'pointer' : 'default'}}>
+                            {w.text}
+                            {w.spokenAlt && <span className="spoken-alt">{w.spokenAlt}</span>}
+                            {badge}
+                        </span>;
+                    })}
+                </div>
+            );
+        }
+
+        // Diff the written and spoken forms into segments.
+        // Each segment is either { same: true, written } or { same: false, written, spoken }.
+        function diffSegments(written, spoken) {
+            if (written === spoken) {
+                return [{same: true, written}];
+            }
+
+            const wWords = written.split(/\s+/);
+            const sWords = spoken.split(/\s+/);
+
+            // LCS to find matching words (case-insensitive)
+            const m = wWords.length, n = sWords.length;
+            const dp = Array.from({length: m + 1}, () => new Uint16Array(n + 1));
+            for (let i = 1; i <= m; i++) {
+                for (let j = 1; j <= n; j++) {
+                    if (wWords[i - 1].toLowerCase() === sWords[j - 1].toLowerCase()) {
+                        dp[i][j] = dp[i - 1][j - 1] + 1;
+                    } else {
+                        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+                    }
+                }
+            }
+
+            // Backtrack to find which words match
+            const wMatched = new Array(m).fill(false);
+            const sMatched = new Array(n).fill(false);
+            let i = m, j = n;
+            while (i > 0 && j > 0) {
+                if (wWords[i - 1].toLowerCase() === sWords[j - 1].toLowerCase()) {
+                    wMatched[i - 1] = true;
+                    sMatched[j - 1] = true;
+                    i--; j--;
+                } else if (dp[i - 1][j] >= dp[i][j - 1]) {
+                    i--;
+                } else {
+                    j--;
+                }
+            }
+
+            // Build segments: walk both arrays, grouping matched (same) and unmatched (diff)
+            const segments = [];
+            let wi = 0, si = 0;
+            while (wi < m || si < n) {
+                // Collect a run of matched words
+                let sameRun = [];
+                while (wi < m && wMatched[wi] && si < n && sMatched[si]) {
+                    sameRun.push(wWords[wi]);
+                    wi++; si++;
+                }
+                if (sameRun.length > 0) {
+                    segments.push({same: true, written: sameRun.join(' ')});
+                }
+
+                // Collect a run of unmatched words from both sides
+                let wRun = [], sRun = [];
+                while (wi < m && !wMatched[wi]) {wRun.push(wWords[wi]); wi++;}
+                while (si < n && !sMatched[si]) {sRun.push(sWords[si]); si++;}
+                if (wRun.length > 0 || sRun.length > 0) {
+                    segments.push({
+                        same: false,
+                        written: wRun.join(' ') || '\u2014',
+                        spoken: sRun.join(' ') || '\u2014',
+                    });
+                }
+            }
+            return segments;
+        }
+
+        // ==================== UNIFIED TRANSCRIPT GRID ====================
+        // 3-way word alignment: original, Qwen, Parakeet in a CSS grid.
+        // Matching words dimmed, diffs highlighted in model color.
+        // Scrolls horizontally, syncs with playback.
+
+        function cleanWord(w) {return w.replace(/[^a-zA-Z0-9']/g, '').toLowerCase();}
+
+        function editDist(a, b) {
+            if (a === b) return 0;
+            const m = a.length, n = b.length;
+            if (m === 0) return n;
+            if (n === 0) return m;
+            const dp = Array.from({length: m + 1}, (_, i) => {
+                const row = new Uint8Array(n + 1); row[0] = i; return row;
+            });
+            for (let j = 1; j <= n; j++) dp[0][j] = j;
+            for (let i = 1; i <= m; i++)
+                for (let j = 1; j <= n; j++)
+                    dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1]
+                        : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+            return dp[m][n];
+        }
+
+        function wordsMatch(a, b) {
+            const ca = cleanWord(a), cb = cleanWord(b);
+            if (ca === cb) return true;
+            if (!ca || !cb) return false;
+            const maxLen = Math.max(ca.length, cb.length);
+            const threshold = Math.min(2, Math.ceil(maxLen * 0.3));
+            return editDist(ca, cb) <= threshold;
+        }
+
+        // Pre-process: merge adjacent ASR words that together match a reference word
+        function mergeAdjacentWords(refWords, asrWords) {
+            const refSet = new Set(refWords.map(w => cleanWord(w)));
+            const merged = [];
+            let i = 0;
+            while (i < asrWords.length) {
+                // Try merging current + next
+                if (i + 1 < asrWords.length) {
+                    const combined = cleanWord(asrWords[i]) + cleanWord(asrWords[i + 1]);
+                    if (refSet.has(combined) || [...refSet].some(r => wordsMatch(combined, r))) {
+                        merged.push(asrWords[i] + asrWords[i + 1]);
+                        i += 2;
+                        continue;
+                    }
+                }
+                merged.push(asrWords[i]);
+                i++;
+            }
+            return merged;
+        }
+
+        function lcsAlign(refWords, asrWords) {
+            // Pre-merge split ASR words that together match a ref word (e.g. "front end" → "frontend")
+            asrWords = mergeAdjacentWords(refWords, asrWords);
+            const m = refWords.length, n = asrWords.length;
+            const dp = Array.from({length: m + 1}, () => new Uint16Array(n + 1));
+            for (let i = 1; i <= m; i++)
+                for (let j = 1; j <= n; j++)
+                    dp[i][j] = wordsMatch(refWords[i - 1], asrWords[j - 1])
+                        ? dp[i - 1][j - 1] + 1
+                        : Math.max(dp[i - 1][j], dp[i][j - 1]);
+            const cols = [];
+            let i = m, j = n;
+            while (i > 0 || j > 0) {
+                if (i > 0 && j > 0 && wordsMatch(refWords[i - 1], asrWords[j - 1])) {
+                    cols.push({ref: i - 1, asr: j - 1, match: true}); i--; j--;
+                } else if (i > 0 && (j === 0 || dp[i - 1][j] >= dp[i][j - 1])) {
+                    cols.push({ref: i - 1, asr: null, match: false}); i--;
+                } else {
+                    cols.push({ref: null, asr: j - 1, match: false}); j--;
+                }
+            }
+            cols.reverse();
+            return cols;
+        }
+
+        function mergeAlignments(refWords, qCols, pCols) {
+            // Build unified columns: each column has {ref, qwen, parakeet} (word index or null)
+            // Walk both alignments in parallel, merging on shared ref positions
+            const unified = [];
+            let qi = 0, pi = 0;
+            while (qi < qCols.length || pi < pCols.length) {
+                const qc = qi < qCols.length ? qCols[qi] : null;
+                const pc = pi < pCols.length ? pCols[pi] : null;
+                if (qc && pc && qc.ref != null && pc.ref != null && qc.ref === pc.ref) {
+                    unified.push({ref: qc.ref, qwen: qc.asr, parakeet: pc.asr, qMatch: qc.match, pMatch: pc.match});
+                    qi++; pi++;
+                } else if (qc && pc && qc.ref != null && pc.ref != null) {
+                    if (qc.ref < pc.ref) {
+                        unified.push({ref: qc.ref, qwen: qc.asr, parakeet: null, qMatch: qc.match, pMatch: false});
+                        qi++;
+                    } else {
+                        unified.push({ref: pc.ref, qwen: null, parakeet: pc.asr, qMatch: false, pMatch: pc.match});
+                        pi++;
+                    }
+                } else if (qc && qc.ref == null) {
+                    unified.push({ref: null, qwen: qc.asr, parakeet: null, qMatch: false, pMatch: false});
+                    qi++;
+                } else if (pc && pc.ref == null) {
+                    unified.push({ref: null, qwen: null, parakeet: pc.asr, qMatch: false, pMatch: false});
+                    pi++;
+                } else if (qc) {
+                    unified.push({ref: qc.ref, qwen: qc.asr, parakeet: null, qMatch: qc.match, pMatch: false});
+                    qi++;
+                } else {
+                    unified.push({ref: pc.ref, qwen: null, parakeet: pc.asr, qMatch: false, pMatch: pc.match});
+                    pi++;
+                }
+            }
+            return unified;
+        }
+
+        function TranscriptGrid({original, asr, humanAsr, activeWordIndex, alignment, writtenAlignment, unknownWords, onWordClick}) {
+            const scrollRef = useRef(null);
+            const qColor = '#58a6ff';
+            const pColor = '#7ee787';
+            const dimStyle = {opacity: 0.2};
+
+            // Unknown word set + left-to-right numbering
+            const unknownSet = useMemo(() => new Set((unknownWords || []).map(w => cleanWord(w))), [unknownWords]);
+            const unknownNum = useMemo(() => {
+                const m = new Map();
+                if (!unknownWords?.length) return m;
+                let n = 1;
+                for (const w of original.split(/\s+/)) {
+                    const c = cleanWord(w);
+                    if (c && unknownSet.has(c) && !m.has(c)) m.set(c, n++);
+                }
+                return m;
+            }, [unknownWords, original, unknownSet]);
+
+            // Get all three alignments (timed word lists)
+            const refAlign = writtenAlignment || alignment || [];
+            const qAlign = (humanAsr ? [] : asr?.qwen_alignment) || [];
+            const pAlign = (humanAsr ? [] : asr?.parakeet_alignment) || [];
+
+            // Build time-based groups: collect all boundaries, find overlapping words
+            const groups = useMemo(() => {
+                if (!refAlign.length) return [];
+
+                // Collect all time boundaries
+                const boundaries = new Set();
+                for (const list of [refAlign, qAlign, pAlign]) {
+                    for (const w of list) {
+                        boundaries.add(w.start);
+                        boundaries.add(w.end);
+                    }
+                }
+                const times = [...boundaries].sort((a, b) => a - b);
+
+                // For each time slot, find active word from each list
+                const findWordAt = (list, t) => {
+                    for (const w of list) {
+                        const mid = (w.start + w.end) / 2;
+                        if (t >= w.start - 0.01 && t < w.end + 0.01) return w;
+                    }
+                    return null;
+                };
+
+                // Walk time slots and build columns (each column = a unique combination change)
+                const cols = [];
+                let lastRef = null, lastQ = null, lastP = null;
+                for (let i = 0; i < times.length - 1; i++) {
+                    const t = (times[i] + times[i + 1]) / 2;
+                    const ref = findWordAt(refAlign, t);
+                    const q = findWordAt(qAlign, t);
+                    const p = findWordAt(pAlign, t);
+                    if (!ref && !q && !p) continue;
+                    if (ref === lastRef && q === lastQ && p === lastP) continue;
+                    cols.push({ref, q, p, start: times[i]});
+                    lastRef = ref; lastQ = q; lastP = p;
+                }
+                return cols;
+            }, [refAlign, qAlign, pAlign]);
+
+            // Compute per-row spans: for each row, find runs of same word object
+            const rowSpans = useMemo(() => {
+                const computeSpans = (getWord) => {
+                    const spans = []; // [{word, colStart, colSpan, wordObj}]
+                    let i = 0;
+                    while (i < groups.length) {
+                        const obj = getWord(groups[i]);
+                        let span = 1;
+                        while (i + span < groups.length && getWord(groups[i + span]) === obj) span++;
+                        spans.push({wordObj: obj, word: obj?.word || null, colStart: i, colSpan: span});
+                        i += span;
+                    }
+                    return spans;
+                };
+                return {
+                    ref: computeSpans(g => g.ref),
+                    q: computeSpans(g => g.q),
+                    p: computeSpans(g => g.p),
+                };
+            }, [groups]);
+
+            // Map alignment index → column index for active word tracking
+            const activeColIdx = useMemo(() => {
+                if (activeWordIndex == null || !refAlign[activeWordIndex]) return -1;
+                const activeObj = refAlign[activeWordIndex];
+                for (let ci = 0; ci < groups.length; ci++) {
+                    if (groups[ci].ref === activeObj) return ci;
+                }
+                return -1;
+            }, [activeWordIndex, refAlign, groups]);
+
+            // Auto-scroll to active column
+            useEffect(() => {
+                if (activeColIdx < 0 || !scrollRef.current) return;
+                const cell = scrollRef.current.querySelector(`[data-col="${activeColIdx}"]`);
+                if (cell) cell.scrollIntoView({behavior: 'smooth', inline: 'center', block: 'nearest'});
+            }, [activeColIdx]);
+
+            if (!groups.length) return null;
+
+            return (
+                <div style={{fontFamily: 'Jost,sans-serif', fontSize: 14}}>
+                    {/* Legend on top */}
+                    <div style={{display: 'flex', gap: 16, marginBottom: 4, fontSize: 11}}>
+                        <span style={{color: 'var(--text-muted)'}}>Original</span>
+                        <span style={{color: qColor}}>Qwen</span>
+                        <span style={{color: pColor}}>Parakeet</span>
+                    </div>
+                    {/* Scrolling grid */}
+                    <div ref={scrollRef} style={{overflowX: 'auto', paddingBottom: 4}} className="transcript-grid-scroll">
+                        <div style={{
+                            display: 'inline-grid',
+                            gridTemplateColumns: `repeat(${groups.length}, max-content)`,
+                            gridTemplateRows: 'auto auto auto',
+                            gap: '1px 5px',
+                            padding: '.5em .2em',
+                            whiteSpace: 'nowrap',
+                        }}>
+                            {/* Row 1: Original */}
+                            {rowSpans.ref.map((s, i) => {
+                                if (!s.word) return <div key={`r${i}`} style={{gridRow: 1, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}} />;
+                                const isActive = activeColIdx >= s.colStart && activeColIdx < s.colStart + s.colSpan;
+                                const c = cleanWord(s.word);
+                                const isUnknown = unknownSet.has(c);
+                                const num = unknownNum.get(c);
+                                const style = isActive ? {color: '#fff'} : isUnknown ? {outline: '1px solid var(--warning)', outlineOffset: '1px', borderRadius: '3px', cursor: 'pointer'} : undefined;
+                                return <div key={`r${i}`} data-col={s.colStart} style={{gridRow: 1, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em', background: isActive ? 'rgba(88,166,255,0.15)' : undefined}}>
+                                    <span style={style} onClick={isUnknown && onWordClick ? () => onWordClick(s.word) : undefined}>
+                                        {s.word}{num && num <= 9 ? <span className="unknown-num-badge" style={{marginLeft: 2, verticalAlign: 'super'}}>{num}</span> : null}
+                                    </span>
+                                </div>;
+                            })}
+                            {/* Row 2: Qwen */}
+                            {rowSpans.q.map((s, i) => {
+                                if (!s.word) return <div key={`q${i}`} style={{gridRow: 2, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}} />;
+                                let isMatch = false;
+                                for (let c = s.colStart; c < s.colStart + s.colSpan; c++) {
+                                    const r = groups[c]?.ref;
+                                    if (r && wordsMatch(s.word, r.word)) { isMatch = true; break; }
+                                }
+                                return <div key={`q${i}`} style={{gridRow: 2, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}}>
+                                    <span style={isMatch ? dimStyle : {color: qColor}}>{s.word}</span>
+                                </div>;
+                            })}
+                            {/* Row 3: Parakeet */}
+                            {rowSpans.p.map((s, i) => {
+                                if (!s.word) return <div key={`p${i}`} style={{gridRow: 3, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}} />;
+                                let isMatch = false;
+                                for (let c = s.colStart; c < s.colStart + s.colSpan; c++) {
+                                    const r = groups[c]?.ref;
+                                    if (r && wordsMatch(s.word, r.word)) { isMatch = true; break; }
+                                }
+                                return <div key={`p${i}`} style={{gridRow: 3, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}}>
+                                    <span style={isMatch ? dimStyle : {color: pColor}}>{s.word}</span>
+                                </div>;
+                            })}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function PlayBtn({text, small}) {
+            const [playing, setPlaying] = useState(false);
+            const play = async () => {
+                setPlaying(true);
+                try {
+                    const buf = await fetchTtsBuffer(text);
+                    playBuffer(buf, () => setPlaying(false));
+                } catch (e) {setPlaying(false);}
+            };
+            return <button className={`play-btn${small ? ' btn-sm' : ''}`} onClick={play} disabled={playing} title="Play TTS">{playing ? '...' : '\u25B6'}</button>;
+        }
+
+        // ==================== NAV ====================
+        function Nav() {
+            const hash = useHash();
+            const links = [['#/', 'Overview'], ['#/vocab', 'Vocab'], ['#/sentences', 'Sentences'], ['#/jobs', 'Jobs']];
+            return (
+                <nav>
+                    <span className="logo">Corpus Dashboard</span>
+                    {links.map(([href, label]) => (
+                        <a key={href} href={href} className={hash === href || (href !== '#/' && hash.startsWith(href)) ? 'active' : ''}>{label}</a>
+                    ))}
+                </nav>
+            );
+        }
+
+        // ==================== OVERVIEW ====================
+        function Overview() {
+            const [stats, setStats] = useState(null);
+            const [importing, setImporting] = useState(false);
+            const load = () => api('/api/stats').then(setStats);
+            useEffect(() => {load();}, []);
+
+            const doImport = async () => {
+                setImporting(true);
+                await api('/api/vocab/import', {method: 'POST'});
+                load();
+                setImporting(false);
+            };
+
+            if (!stats) return <div className="container"><p>Loading...</p></div>;
+
+            return (
+                <div className="container">
+                    <h2>Pipeline Overview</h2>
+                    <div className="stats-grid">
+                        <div className="stat-card"><div className="value">{stats.vocab_total}</div><div className="label">Vocab Terms</div></div>
+                        <div className="stat-card"><div className="value" style={{color: 'var(--warning)'}}>{stats.vocab_reviewed}</div><div className="label">Vocab Reviewed</div></div>
+                        <div className="stat-card"><div className="value">{stats.vocab_with_override}</div><div className="label">Overrides</div></div>
+                        <div className="stat-card"><div className="value">{stats.sentences_total}</div><div className="label">Sentences</div></div>
+                        <div className="stat-card"><div className="value" style={{color: 'var(--success)'}}>{stats.sentences_approved}</div><div className="label">Approved</div></div>
+                        <div className="stat-card"><div className="value" style={{color: 'var(--warning)'}}>{stats.sentences_pending}</div><div className="label">Pending</div></div>
+                        <div className="stat-card"><div className="value">{stats.sentences_with_audio}</div><div className="label">With Audio</div></div>
+                        <div className="stat-card"><div className="value">{stats.sentences_with_asr}</div><div className="label">With ASR</div></div>
+                    </div>
+
+                    <div className="card">
+                        <h3>Quick Actions</h3>
+                        <div style={{display: 'flex', gap: 12, flexWrap: 'wrap'}}>
+                            <button className="btn btn-primary" onClick={doImport} disabled={importing}>{importing ? 'Importing...' : 'Import Vocab from Docs'}</button>
+                            {stats.sentences_pending > 0 && <a href="#/sentences/review" className="btn btn-success">Review Sentences ({stats.sentences_pending} pending)</a>}
+                            {stats.sentences_total === 0 && stats.vocab_total > 0 && <a href="#/sentences" className="btn">Generate Sentences</a>}
+                        </div>
+                    </div>
+
+                    <div className="card">
+                        <h3>Pipeline</h3>
+                        <table>
+                            <tbody>
+                                <tr><td style={{width: 30, textAlign: 'center', color: 'var(--accent)', fontWeight: 700}}>1</td><td>Import vocab from docs</td><td style={{textAlign: 'right'}}><span className="badge badge-completed">{stats.vocab_total} terms</span></td></tr>
+                                <tr><td style={{textAlign: 'center', color: 'var(--accent)', fontWeight: 700}}>2</td><td>Review spoken forms</td><td style={{textAlign: 'right'}}><span className="badge badge-pending">{stats.vocab_reviewed}/{stats.vocab_total}</span></td></tr>
+                                <tr><td style={{textAlign: 'center', color: 'var(--accent)', fontWeight: 700}}>3</td><td>Generate &amp; review sentences</td><td style={{textAlign: 'right'}}><span className="badge badge-pending">{stats.sentences_approved} approved</span></td></tr>
+                                <tr><td style={{textAlign: 'center', color: 'var(--accent)', fontWeight: 700}}>4</td><td>ASR transcription</td><td style={{textAlign: 'right'}}><span className="badge badge-pending">{stats.sentences_with_asr}</span></td></tr>
+                                <tr><td style={{textAlign: 'center', color: 'var(--accent)', fontWeight: 700}}>5</td><td>Train LoRA</td><td style={{textAlign: 'right'}}><span className="badge badge-pending">-</span></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            );
+        }
+
+        // ==================== VOCAB ====================
+        function VocabPage() {
+            const [vocab, setVocab] = useState([]);
+            const [search, setSearch] = useState('');
+            const [loading, setLoading] = useState(true);
+            const [editingId, setEditingId] = useState(null);
+            const [editValue, setEditValue] = useState('');
+
+            const load = useCallback(() => {
+                const p = new URLSearchParams();
+                if (search) p.set('search', search);
+                p.set('limit', '100');
+                api(`/api/vocab?${p}`).then(setVocab).finally(() => setLoading(false));
+            }, [search]);
+            useEffect(() => {load();}, [load]);
+
+            const startEdit = (row) => {setEditingId(row.id); setEditValue(row.spoken_override || row.spoken_auto);};
+            const saveEdit = async (id) => {
+                await api(`/api/vocab/${id}`, {method: 'POST', body: JSON.stringify({spoken_override: editValue})});
+                setEditingId(null); load();
+            };
+            const toggleReviewed = async (row) => {
+                await api(`/api/vocab/${row.id}`, {method: 'POST', body: JSON.stringify({reviewed: !row.reviewed})});
+                load();
+            };
+
+            return (
+                <div className="container">
+                    <h2>Vocabulary</h2>
+                    <div className="search-bar">
+                        <input placeholder="Search terms..." value={search} onChange={e => setSearch(e.target.value)} />
+                    </div>
+                    {loading ? <p>Loading...</p> : vocab.length === 0 ? (
+                        <div className="empty-state"><h3>No results</h3></div>
                     ) : (
-                      <span style={{cursor:'pointer',color:row.spoken_override?'var(--accent)':'var(--text-muted)',fontStyle:row.spoken_override?'normal':'italic'}}
-                        onClick={() => startEdit(row)}>
-                        {row.spoken_override || 'click to set'}
-                      </span>
+                        <div className="card" style={{padding: 0, overflow: 'hidden'}}>
+                            <table>
+                                <thead><tr><th>Term</th><th>Auto</th><th>Override</th><th style={{width: 36}}></th><th style={{width: 36}}></th></tr></thead>
+                                <tbody>
+                                    {vocab.map(row => (
+                                        <tr key={row.id}>
+                                            <td style={{fontWeight: 600}}>{row.term}</td>
+                                            <td style={{color: 'var(--text-muted)'}}>{row.spoken_auto}</td>
+                                            <td>
+                                                {editingId === row.id ? (
+                                                    <div style={{display: 'flex', gap: 4}}>
+                                                        <input style={{flex: 1, padding: '3px 6px', fontSize: 13, background: 'var(--bg)', border: '1px solid var(--accent)', borderRadius: 3, color: 'var(--text)', outline: 'none', fontFamily: 'Jost,sans-serif'}}
+                                                            value={editValue} onChange={e => setEditValue(e.target.value)} autoFocus
+                                                            onKeyDown={e => {if (e.key === 'Enter') saveEdit(row.id); if (e.key === 'Escape') setEditingId(null);}} />
+                                                        <button className="btn btn-sm btn-primary" onClick={() => saveEdit(row.id)}>OK</button>
+                                                    </div>
+                                                ) : (
+                                                    <span style={{cursor: 'pointer', color: row.spoken_override ? 'var(--accent)' : 'var(--text-muted)', fontStyle: row.spoken_override ? 'normal' : 'italic'}}
+                                                        onClick={() => startEdit(row)}>
+                                                        {row.spoken_override || 'click to set'}
+                                                    </span>
+                                                )}
+                                            </td>
+                                            <td><PlayBtn text={row.spoken_override || row.spoken_auto} small /></td>
+                                            <td>
+                                                <button className={`btn btn-sm ${row.reviewed ? 'btn-success' : ''}`} onClick={() => toggleReviewed(row)} title={row.reviewed ? 'Reviewed' : 'Mark reviewed'}>
+                                                    {row.reviewed ? '\u2713' : '\u00B7'}
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
                     )}
-                  </td>
-                  <td><PlayBtn text={row.spoken_override || row.spoken_auto} small /></td>
-                  <td>
-                    <button className={`btn btn-sm ${row.reviewed?'btn-success':''}`} onClick={() => toggleReviewed(row)} title={row.reviewed?'Reviewed':'Mark reviewed'}>
-                      {row.reviewed ? '\u2713' : '\u00B7'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
+                </div>
+            );
+        }
 
-// ==================== SENTENCES LIST ====================
-function SentencesPage() {
-  const [count, setCount] = useState(20);
-  const [picking, setPicking] = useState(false);
-  const [importing, setImporting] = useState(false);
-  const [importResult, setImportResult] = useState(null);
-  const [stats, setStats] = useState(null);
+        // ==================== SENTENCES LIST ====================
+        function SentencesPage() {
+            const [count, setCount] = useState(20);
+            const [picking, setPicking] = useState(false);
+            const [importing, setImporting] = useState(false);
+            const [importResult, setImportResult] = useState(null);
+            const [stats, setStats] = useState(null);
 
-  const loadStats = () => api('/api/stats').then(setStats);
-  useEffect(() => { loadStats(); }, []);
+            const loadStats = () => api('/api/stats').then(setStats);
+            useEffect(() => {loadStats();}, []);
 
-  const importSources = async () => {
-    setImporting(true);
-    setImportResult(null);
-    try {
-      const res = await api('/api/candidates/import', { method: 'POST' });
-      setImportResult(res);
-      loadStats();
-    } catch (e) { alert('Import failed: ' + e.message); }
-    setImporting(false);
-  };
+            const importSources = async () => {
+                setImporting(true);
+                setImportResult(null);
+                try {
+                    const res = await api('/api/candidates/import', {method: 'POST'});
+                    setImportResult(res);
+                    loadStats();
+                } catch (e) {alert('Import failed: ' + e.message);}
+                setImporting(false);
+            };
 
-  const pickSentences = async () => {
-    setPicking(true);
-    await api('/api/sentences/generate', { method: 'POST', body: JSON.stringify({ count }) });
-    loadStats();
-    setPicking(false);
-  };
+            const pickSentences = async () => {
+                setPicking(true);
+                await api('/api/sentences/generate', {method: 'POST', body: JSON.stringify({count})});
+                loadStats();
+                setPicking(false);
+            };
 
-  return (
-    <div className="container">
-      <h2>Sentences</h2>
+            return (
+                <div className="container">
+                    <h2>Sentences</h2>
 
-      <div className="card">
-        <h3>1. Import Sources (slow, do once)</h3>
-        <p style={{color:'var(--text-muted)', fontSize:13, marginBottom:12}}>
-          Scans blog posts and chat history for sentences containing vocab terms. Only needs to be done once (or when sources change).
-        </p>
-        <button className="btn btn-primary" onClick={importSources} disabled={importing}>
-          {importing ? 'Scanning...' : 'Import Sources'}
-        </button>
-        {stats && <span style={{marginLeft:12, color:'var(--text-muted)', fontSize:13}}>{stats.candidates_total} candidates in pool</span>}
-        {importResult && (
-          <div style={{marginTop:8, fontSize:13, color:'var(--success)'}}>
-            Found {importResult.found} sentences, {importResult.new} new. Pool: {importResult.total}
-          </div>
-        )}
-      </div>
+                    <div className="card">
+                        <h3>1. Import Sources (slow, do once)</h3>
+                        <p style={{color: 'var(--text-muted)', fontSize: 13, marginBottom: 12}}>
+                            Scans blog posts and chat history for sentences containing vocab terms. Only needs to be done once (or when sources change).
+                        </p>
+                        <button className="btn btn-primary" onClick={importSources} disabled={importing}>
+                            {importing ? 'Scanning...' : 'Import Sources'}
+                        </button>
+                        {stats && <span style={{marginLeft: 12, color: 'var(--text-muted)', fontSize: 13}}>{stats.candidates_total} candidates in pool</span>}
+                        {importResult && (
+                            <div style={{marginTop: 8, fontSize: 13, color: 'var(--success)'}}>
+                                Found {importResult.found} sentences, {importResult.new} new. Pool: {importResult.total}
+                            </div>
+                        )}
+                    </div>
 
-      <div className="card">
-        <h3>2. Pick Sentences (instant)</h3>
-        <p style={{color:'var(--text-muted)', fontSize:13, marginBottom:12}}>
-          Randomly pick sentences from the candidate pool for review.
-        </p>
-        <div className="form-row">
-          <div className="form-group"><label>Count</label>
-            <input type="number" value={count} onChange={e => setCount(parseInt(e.target.value)||20)} min="1" max="500" />
-          </div>
-        </div>
-        <button className="btn btn-primary" onClick={pickSentences} disabled={picking || !(stats && stats.candidates_total > 0)}>
-          {picking ? 'Picking...' : 'Pick Sentences'}
-        </button>
-      </div>
+                    <div className="card">
+                        <h3>2. Pick Sentences (instant)</h3>
+                        <p style={{color: 'var(--text-muted)', fontSize: 13, marginBottom: 12}}>
+                            Randomly pick sentences from the candidate pool for review.
+                        </p>
+                        <div className="form-row">
+                            <div className="form-group"><label>Count</label>
+                                <input type="number" value={count} onChange={e => setCount(parseInt(e.target.value) || 20)} min="1" max="500" />
+                            </div>
+                        </div>
+                        <button className="btn btn-primary" onClick={pickSentences} disabled={picking || !(stats && stats.candidates_total > 0)}>
+                            {picking ? 'Picking...' : 'Pick Sentences'}
+                        </button>
+                    </div>
 
-      {stats && (
-        <div className="card">
-          <h3>Review Queue</h3>
-          <div className="stats-grid">
-            <div className="stat-card"><div className="value">{stats.sentences_total}</div><div className="label">Total</div></div>
-            <div className="stat-card"><div className="value" style={{color:'var(--warning)'}}>{stats.sentences_pending}</div><div className="label">Pending</div></div>
-            <div className="stat-card"><div className="value" style={{color:'var(--success)'}}>{stats.sentences_approved}</div><div className="label">Approved</div></div>
-            <div className="stat-card"><div className="value" style={{color:'var(--danger)'}}>{stats.sentences_rejected}</div><div className="label">Rejected</div></div>
-          </div>
-          {stats.sentences_pending > 0 && (
-            <a href="#/sentences/review" className="btn btn-success">Start Reviewing ({stats.sentences_pending} pending)</a>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
+                    {stats && (
+                        <div className="card">
+                            <h3>Review Queue</h3>
+                            <div className="stats-grid">
+                                <div className="stat-card"><div className="value">{stats.sentences_total}</div><div className="label">Total</div></div>
+                                <div className="stat-card"><div className="value" style={{color: 'var(--warning)'}}>{stats.sentences_pending}</div><div className="label">Pending</div></div>
+                                <div className="stat-card"><div className="value" style={{color: 'var(--success)'}}>{stats.sentences_approved}</div><div className="label">Approved</div></div>
+                                <div className="stat-card"><div className="value" style={{color: 'var(--danger)'}}>{stats.sentences_rejected}</div><div className="label">Rejected</div></div>
+                            </div>
+                            {stats.sentences_pending > 0 && (
+                                <a href="#/sentences/review" className="btn btn-success">Start Reviewing ({stats.sentences_pending} pending)</a>
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
+        }
 
-// ==================== FULL-SCREEN SENTENCE REVIEW ====================
-function SentenceReview() {
-  const [queue, setQueue] = useState([]);
-  const [idx, setIdx] = useState(0);
-  const [total, setTotal] = useState(0);
-  const [reviewed, setReviewed] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [audioBuf, setAudioBuf] = useState(null);
-  const [playing, setPlaying] = useState(false);
-  const sourceRef = useRef(null);
+        // ==================== HELPERS ====================
+        async function decodeAudioB64(b64) {
+            const binaryStr = atob(b64);
+            const bytes = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+            return audioCtx.decodeAudioData(bytes.buffer);
+        }
 
-  const loadQueue = async () => {
-    setLoading(true);
-    const st = await api('/api/stats');
-    setTotal(st.sentences_total);
-    setReviewed(st.sentences_approved + st.sentences_rejected);
-    const items = await api('/api/sentences?status=pending&limit=200');
-    setQueue(items);
-    setIdx(0);
-    setAudioBuf(null);
-    setLoading(false);
-  };
+        function audioBufferToWav(buffer) {
+            const sampleRate = buffer.sampleRate, samples = buffer.getChannelData(0);
+            const dataLen = samples.length * 2, buf = new ArrayBuffer(44 + dataLen), v = new DataView(buf);
+            const ws = (o, s) => {for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i));};
+            ws(0, 'RIFF'); v.setUint32(4, 36 + dataLen, true); ws(8, 'WAVE'); ws(12, 'fmt ');
+            v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+            v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * 2, true);
+            v.setUint16(32, 2, true); v.setUint16(34, 16, true); ws(36, 'data'); v.setUint32(40, dataLen, true);
+            for (let i = 0; i < samples.length; i++) {
+                const s = Math.max(-1, Math.min(1, samples[i]));
+                v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+            }
+            return buf;
+        }
 
-  useEffect(() => { loadQueue(); }, []);
+        // ==================== FULL-SCREEN SENTENCE REVIEW ====================
+        function SentenceReview() {
+            const [data, setData] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
+            const [busy, setBusy] = useState(null); // null or string describing what's happening
+            const [editingText, setEditingText] = useState(null); // non-null = editing sentence text
+            const [audioBuf, setAudioBuf] = useState(null);
+            const [activeWord, setActiveWord] = useState(null);
+            const [playing, setPlaying] = useState(false);
+            const sourceRef = useRef(null);
+            const playStartTimeRef = useRef(null); // audioCtx.currentTime when playback started
+            const playOffsetRef = useRef(0);       // offset into buffer (seconds) where we started
 
-  const current = queue[idx];
+            const [editingWord, setEditingWord] = useState(null);
+            const [editSpoken, setEditSpoken] = useState('');
+            const [editPreviewed, setEditPreviewed] = useState(false); // true after first Enter (TTS preview)
+            const [previewBuf, setPreviewBuf] = useState(null);
+            const [previewPlaying, setPreviewPlaying] = useState(false);
+            const previewSourceRef = useRef(null);
 
-  // Auto-play TTS when sentence changes
-  useEffect(() => {
-    if (!current) return;
-    let cancelled = false;
-    setAudioBuf(null);
-    setPlaying(false);
-    fetchTtsBuffer(current.spoken).then(buf => {
-      if (cancelled) return;
-      setAudioBuf(buf);
-      setPlaying(true);
-      sourceRef.current = playBuffer(buf, () => setPlaying(false));
-    }).catch(() => {});
-    return () => { cancelled = true; if (sourceRef.current) try { sourceRef.current.stop(); } catch(e) {} };
-  }, [current?.id]);
+            const [recording, setRecording] = useState(false);     // recording for vocab word
+            const [sentenceRec, setSentenceRec] = useState(false); // recording the full sentence
+            const [recordedBuf, setRecordedBuf] = useState(null);
+            const [transcribing, setTranscribing] = useState(false);
+            const [humanAsr, setHumanAsr] = useState(null); // {qwen, parakeet} from human recording
+            const mediaRecorderRef = useRef(null);
 
-  const replay = () => {
-    if (!audioBuf) return;
-    if (sourceRef.current) try { sourceRef.current.stop(); } catch(e) {}
-    setPlaying(true);
-    sourceRef.current = playBuffer(audioBuf, () => setPlaying(false));
-  };
+            // Play audio buffer from a given offset (seconds)
+            const playFrom = (buf, offset) => {
+                if (sourceRef.current) try {sourceRef.current.stop();} catch (e) { }
+                const source = audioCtx.createBufferSource();
+                source.buffer = buf;
+                source.connect(audioCtx.destination);
+                source.onended = () => {
+                    // Only mark as not-playing if this source is still the current one
+                    if (sourceRef.current === source) {
+                        setPlaying(false);
+                        playOffsetRef.current = 0; // finished — reset to start
+                        playStartTimeRef.current = null;
+                    }
+                };
+                source.start(0, offset);
+                sourceRef.current = source;
+                playStartTimeRef.current = audioCtx.currentTime;
+                playOffsetRef.current = offset;
+                setPlaying(true);
+            };
 
-  const act = async (status) => {
-    if (!current) return;
-    await api(`/api/sentences/${current.id}`, { method: 'POST', body: JSON.stringify({ status }) });
-    if (sourceRef.current) try { sourceRef.current.stop(); } catch(e) {}
-    setPlaying(false);
-    setReviewed(r => r + 1);
-    if (idx + 1 < queue.length) {
-      setIdx(i => i + 1);
-    } else {
-      loadQueue();
-    }
-  };
+            // --- Load and apply review data from server ---
+            const loadReview = async () => {
+                setLoading(true);
+                try {
+                    const d = await api('/api/review/current');
+                    setData(d);
+                    if (d.audio_b64) {
+                        const buf = await decodeAudioB64(d.audio_b64);
+                        setAudioBuf(buf);
+                        playFrom(buf, 0);
+                    } else {setAudioBuf(null);}
+                } catch (e) {setError(e.message);}
+                setLoading(false); setEditingWord(null); setActiveWord(null);
+            };
 
-  // Keyboard
-  useEffect(() => {
-    const handler = (e) => {
-      if (e.target.tagName === 'INPUT') return;
-      if (e.key === 'ArrowRight') { e.preventDefault(); act('approved'); }
-      else if (e.key === 'ArrowLeft') { e.preventDefault(); act('rejected'); }
-      else if (e.key === ' ') { e.preventDefault(); replay(); }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [current, audioBuf, idx, queue]);
+            const applyReviewData = async (d) => {
+                stopAudio(true); setData(d); setEditingWord(null); setActiveWord(null); setHumanAsr(null);
+                if (d.audio_b64) {
+                    const buf = await decodeAudioB64(d.audio_b64);
+                    setAudioBuf(buf);
+                    playFrom(buf, 0);
+                } else {setAudioBuf(null);}
+            };
 
-  if (loading) return <div className="review-fullscreen"><div className="review-body"><p>Loading...</p></div></div>;
+            useEffect(() => {loadReview();}, []);
 
-  if (!current) return (
-    <div className="review-fullscreen">
-      <div className="review-body">
-        <div className="empty-state">
-          <h3>All done!</h3>
-          <p>No pending sentences to review.</p>
-          <a href="#/sentences" className="btn" style={{marginTop:16}}>Back</a>
-        </div>
-      </div>
-    </div>
-  );
+            const stopAudio = (resetPosition) => {
+                if (playing && playStartTimeRef.current != null && !resetPosition) {
+                    // Save current position for resume
+                    playOffsetRef.current += audioCtx.currentTime - playStartTimeRef.current;
+                }
+                if (resetPosition) playOffsetRef.current = 0;
+                if (sourceRef.current) try {sourceRef.current.stop();} catch (e) { }
+                sourceRef.current = null;
+                playStartTimeRef.current = null;
+                setPlaying(false);
+            };
 
-  const pct = total > 0 ? (reviewed / total * 100) : 0;
+            const stopPreview = () => {
+                if (previewSourceRef.current) try {previewSourceRef.current.stop();} catch (e) { }
+                setPreviewPlaying(false);
+            };
 
-  return (
-    <div className="review-fullscreen">
-      <div className="review-topbar">
-        <div style={{display:'flex',alignItems:'center',gap:16}}>
-          <a href="#/sentences" className="btn btn-sm">&larr; Exit</a>
-          <span style={{color:'var(--text-muted)',fontSize:14}}>{reviewed + 1} / {total}</span>
-        </div>
-        <div style={{flex:1,maxWidth:400,margin:'0 24px'}}>
-          <div className="progress-bar"><div className="fill" style={{width:`${pct}%`}}></div></div>
-        </div>
-        <span className="badge badge-pending">{queue.length - idx - 1} remaining</span>
-      </div>
+            const togglePlayback = () => {
+                if (!audioBuf) return;
+                if (playing) {
+                    // Pause
+                    stopAudio(false);
+                } else {
+                    // Resume from saved position (or replay from start if at end)
+                    const offset = playOffsetRef.current;
+                    if (offset >= audioBuf.duration || offset <= 0) {
+                        playFrom(audioBuf, 0); // replay from start
+                    } else {
+                        playFrom(audioBuf, offset); // resume
+                    }
+                }
+            };
 
-      <div className="review-body">
-        <div className="review-card">
-          <div style={{marginBottom:24}}>
-            <AlignedSentence text={current.text} spoken={current.spoken} />
-          </div>
-          {audioBuf && <Waveform audioBuffer={audioBuf} playing={playing} />}
-          {!audioBuf && <div style={{height:80,display:'flex',alignItems:'center',justifyContent:'center',color:'var(--text-muted)'}}>Loading audio...</div>}
-        </div>
-      </div>
+            // --- Actions: all server-side ---
+            const act = async (action) => {
+                if (busy) return;
+                setBusy(action === 'approve' ? 'Approving...' : 'Rejecting...');
+                stopAudio();
+                try {
+                    const d = await api(`/api/review/current/${action}`, {method: 'POST'});
+                    await applyReviewData(d);
+                } catch (e) {setError(e.message); setTimeout(() => setError(null), 5000);}
+                setBusy(null);
+            };
 
-      <div className="review-actions">
-        <button className="review-action-btn reject" onClick={() => act('rejected')}>
-          Reject<kbd>&larr;</kbd>
-        </button>
-        <button className="review-action-btn replay" onClick={replay}>
-          Replay<kbd>space</kbd>
-        </button>
-        <button className="review-action-btn approve" onClick={() => act('approved')}>
-          Approve<kbd>&rarr;</kbd>
-        </button>
-      </div>
-    </div>
-  );
-}
+            const switchBackend = async (backend) => {
+                if (busy) return;
+                setBusy(`Switching to ${backend}...`);
+                stopAudio();
+                try {
+                    const d = await api('/api/review/current/backend', {
+                        method: 'POST', body: JSON.stringify({backend}),
+                    });
+                    await applyReviewData(d);
+                } catch (e) {setError(e.message); setTimeout(() => setError(null), 5000);}
+                setBusy(null);
+            };
 
-// ==================== JOBS ====================
-function JobsPage() {
-  const [jobs, setJobs] = useState([]);
-  const [selected, setSelected] = useState(null);
-  useEffect(() => { api('/api/jobs').then(setJobs); }, []);
-  const viewJob = async (id) => { setSelected(await api(`/api/jobs/${id}`)); };
-  return (
-    <div className="container">
-      <h2>Jobs</h2>
-      {jobs.length === 0 ? <div className="empty-state"><h3>No jobs yet</h3></div> : (
-        <div className="card" style={{padding:0,overflow:'hidden'}}>
-          <table>
-            <thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Created</th><th></th></tr></thead>
-            <tbody>{jobs.map(j => (
-              <tr key={j.id}><td>{j.id}</td><td>{j.job_type}</td><td><span className={`badge badge-${j.status}`}>{j.status}</span></td><td style={{color:'var(--text-muted)',fontSize:13}}>{j.created_at}</td><td><button className="btn btn-sm" onClick={() => viewJob(j.id)}>View</button></td></tr>
-            ))}</tbody>
-          </table>
-        </div>
-      )}
-      {selected && (
-        <div className="card" style={{marginTop:16}}>
-          <h3>Job #{selected.id} — {selected.job_type}</h3>
-          <span className={`badge badge-${selected.status}`}>{selected.status}</span>
-          {selected.log && <pre style={{marginTop:12,background:'var(--bg)',border:'1px solid var(--border)',borderRadius:6,padding:12,fontFamily:'monospace',fontSize:12,maxHeight:300,overflowY:'auto',color:'var(--text-muted)',whiteSpace:'pre-wrap'}}>{selected.log}</pre>}
-        </div>
-      )}
-    </div>
-  );
-}
+            // --- Vocab editor ---
+            const onWordClick = (word) => {
+                const term = canonicalWord(word);
+                if (term.length < 2) return;
+                const original = word.replace(/^[^a-zA-Z0-9]+/, '').replace(/[^a-zA-Z0-9]+$/, '');
+                setEditingWord(original);
+                setEditSpoken(original.toLowerCase());
+                setEditPreviewed(false);
+                setPreviewBuf(null); setRecordedBuf(null);
+            };
 
-// ==================== APP ====================
-function App() {
-  const hash = useHash();
-  let page;
-  if (hash === '#/sentences/review') page = <SentenceReview />;
-  else if (hash.startsWith('#/vocab')) page = <VocabPage />;
-  else if (hash.startsWith('#/sentences')) page = <SentencesPage />;
-  else if (hash.startsWith('#/jobs')) page = <JobsPage />;
-  else page = <Overview />;
-  return (<><Nav />{page}</>);
-}
+            const saveVocabOverride = async () => {
+                if (!editingWord) return;
+                setBusy('Saving pronunciation...');
+                stopAudio();
+                try {
+                    const d = await api('/api/review/current/pronunciation', {
+                        method: 'POST', body: JSON.stringify({word: editingWord, spoken: editSpoken}),
+                    });
+                    await applyReviewData(d);
+                } catch (e) {setError(`Save failed: ${e.message}`); setTimeout(() => setError(null), 5000);}
+                setBusy(null);
+            };
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-</script>
+            const saveEditedText = async () => {
+                if (editingText == null) return;
+                setBusy('Updating sentence...');
+                try {
+                    const d = await api('/api/review/current/text', {
+                        method: 'POST', body: JSON.stringify({text: editingText}),
+                    });
+                    setEditingText(null);
+                    await applyReviewData(d);
+                } catch (e) {setError(`Save failed: ${e.message}`); setTimeout(() => setError(null), 5000);}
+                setBusy(null);
+            };
+
+            const previewVocabWord = () => {
+                if (!editSpoken) return;
+                stopPreview();
+                fetchTtsBuffer(editSpoken).then(buf => {
+                    setPreviewBuf(buf); setPreviewPlaying(true);
+                    previewSourceRef.current = playBuffer(buf, () => setPreviewPlaying(false));
+                }).catch(() => { });
+            };
+
+            // --- Recording ---
+            const startRecording = async () => {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+                    const mediaRecorder = new MediaRecorder(stream, {mimeType: 'audio/webm'});
+                    const chunks = [];
+                    mediaRecorder.ondataavailable = (e) => {if (e.data.size > 0) chunks.push(e.data);};
+                    mediaRecorder.onstop = async () => {
+                        stream.getTracks().forEach(t => t.stop());
+                        const blob = new Blob(chunks, {type: 'audio/webm'});
+                        const arrayBuf = await blob.arrayBuffer();
+                        try {
+                            const decoded = await audioCtx.decodeAudioData(arrayBuf);
+                            setRecordedBuf(decoded);
+                            // Send to server ASR
+                            setTranscribing(true);
+                            const wavBytes = audioBufferToWav(decoded);
+                            const res = await fetch('/api/asr/transcribe', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'audio/wav'},
+                                body: wavBytes,
+                            });
+                            if (res.ok) {
+                                const {text} = await res.json();
+                                if (text) {
+                                    setEditSpoken(text.trim().toLowerCase());
+                                    // Auto-preview the transcription via TTS
+                                    try {
+                                        const buf = await fetchTtsBuffer(text.trim().toLowerCase(), activeBackend);
+                                        stopPreview();
+                                        setPreviewBuf(buf);
+                                        setPreviewPlaying(true);
+                                        previewSourceRef.current = playBuffer(buf, () => setPreviewPlaying(false));
+                                    } catch (e) { /* TTS preview failed, not critical */}
+                                }
+                            }
+                            setTranscribing(false);
+                        } catch (e) {
+                            console.error('decode/transcribe error:', e);
+                            setTranscribing(false);
+                        }
+                    };
+                    mediaRecorderRef.current = mediaRecorder;
+                    mediaRecorder.start();
+                    setRecording(true);
+                    setRecordedBuf(null);
+                } catch (e) {
+                    setError('Microphone access denied');
+                    setTimeout(() => setError(null), 3000);
+                }
+            };
+
+            const stopRecording = () => {
+                if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+                    mediaRecorderRef.current.stop();
+                }
+                setRecording(false);
+                setSentenceRec(false);
+            };
+
+            // Record yourself saying the sentence → run both ASR models on your voice
+            const startSentenceRecording = async () => {
+                stopAudio(true);
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+                    const mediaRecorder = new MediaRecorder(stream, {mimeType: 'audio/webm'});
+                    const chunks = [];
+                    mediaRecorder.ondataavailable = (e) => {if (e.data.size > 0) chunks.push(e.data);};
+                    mediaRecorder.onstop = async () => {
+                        stream.getTracks().forEach(t => t.stop());
+                        setSentenceRec(false);
+                        const blob = new Blob(chunks, {type: 'audio/webm'});
+                        const arrayBuf = await blob.arrayBuffer();
+                        try {
+                            const decoded = await audioCtx.decodeAudioData(arrayBuf);
+                            setTranscribing(true);
+                            const wavBytes = audioBufferToWav(decoded);
+                            const res = await fetch('/api/review/current/asr', {
+                                method: 'POST', headers: {'Content-Type': 'audio/wav'}, body: wavBytes,
+                            });
+                            if (res.ok) {
+                                const asr = await res.json();
+                                setHumanAsr(asr);
+                            }
+                            setTranscribing(false);
+                        } catch (e) {console.error(e); setTranscribing(false);}
+                    };
+                    mediaRecorderRef.current = mediaRecorder;
+                    mediaRecorder.start();
+                    setSentenceRec(true);
+                } catch (e) {
+                    setError('Microphone access denied');
+                    setTimeout(() => setError(null), 3000);
+                }
+            };
+
+            const toggleSentenceRecording = () => {
+                if (sentenceRec) {stopRecording();}
+                else {startSentenceRecording();}
+            };
+
+            // --- Derived state from server data ---
+            const sentence = data?.sentence;
+            const unknownWords = sentence?.unknown_words || [];
+            const alignment = data?.alignment || null;
+            const backends = data?.backends || [];
+            const activeBackend = data?.backend || 'pocket-hq';
+            const progress = data?.progress || {};
+
+            const orderedUnknowns = useMemo(() => {
+                if (!unknownWords.length || !sentence) return [];
+                const unknownSet = new Set(unknownWords.map(w => canonicalWord(w)));
+                const ordered = [], seen = new Set();
+                for (const w of sentence.text.split(/\s+/)) {
+                    const clean = canonicalWord(w);
+                    if (clean && unknownSet.has(clean) && !seen.has(clean)) {
+                        seen.add(clean); ordered.push(w);
+                    }
+                }
+                return ordered;
+            }, [unknownWords, sentence]);
+
+            // --- Keyboard ---
+            useEffect(() => {
+                const handler = (e) => {
+                    if (e.target.tagName === 'INPUT') return;
+                    if (busy && e.key !== 'r' && e.key !== 'R') return;
+                    if (e.key === 'ArrowRight') {e.preventDefault(); act('approve');}
+                    else if (e.key === 'ArrowLeft') {e.preventDefault(); act('reject');}
+                    else if (e.key === ' ') {e.preventDefault(); togglePlayback();}
+                    else if ((e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey && !e.altKey) {e.preventDefault(); toggleSentenceRecording();}
+                    else if ((e.key === 'e' || e.key === 'E') && !e.metaKey && !e.ctrlKey && !e.altKey && !editingText && !editingWord) {
+                        e.preventDefault(); setEditingText(sentence?.text || '');
+                    }
+                    else if (e.key >= '1' && e.key <= '9') {
+                        const i = parseInt(e.key) - 1;
+                        if (orderedUnknowns[i]) {e.preventDefault(); onWordClick(orderedUnknowns[i]);}
+                    }
+                };
+                window.addEventListener('keydown', handler);
+                return () => window.removeEventListener('keydown', handler);
+            }, [data, audioBuf, playing, busy, sentenceRec, editingText, editingWord, orderedUnknowns]);
+
+            if (loading) return <div className="review-fullscreen"><div className="review-body"><p>Loading...</p></div></div>;
+
+            if (!sentence) return (
+                <div className="review-fullscreen">
+                    <div className="review-body">
+                        <div className="empty-state">
+                            <h3>All done!</h3>
+                            <p>No pending sentences to review.</p>
+                            <a href="#/sentences" className="btn" style={{marginTop: 16}}>Back</a>
+                        </div>
+                    </div>
+                </div>
+            );
+
+            const pct = progress.total > 0 ? (progress.reviewed / progress.total * 100) : 0;
+
+            return (
+                <div className="review-fullscreen">
+                    <div className="review-topbar">
+                        <div style={{display: 'flex', alignItems: 'center', gap: 16}}>
+                            <a href="#/sentences" className="btn btn-sm">&larr; Exit</a>
+                            <span style={{color: 'var(--text-muted)', fontSize: 14}}>{(progress.reviewed || 0) + 1} / {progress.total || 0}</span>
+                        </div>
+                        <div style={{flex: 1, maxWidth: 400, margin: '0 24px'}}>
+                            <div className="progress-bar"><div className="fill" style={{width: `${pct}%`}}></div></div>
+                        </div>
+                        <span className="badge badge-pending">{progress.remaining || 0} remaining</span>
+                        <div style={{display: 'flex', gap: 4, marginLeft: 16}}>
+                            {backends.map(b => (
+                                <button key={b}
+                                    className={`btn btn-sm ${b === activeBackend ? 'btn-primary' : ''}`}
+                                    onClick={() => switchBackend(b)}
+                                    style={{minWidth: 60, fontSize: 12, padding: '2px 8px'}}>
+                                    {b}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="review-body">
+                        <div className="review-card">
+                            <div style={{marginBottom: 24}}>
+                                {editingText != null ? (
+                                    <div style={{textAlign: 'center'}}>
+                                        <input value={editingText} onChange={e => setEditingText(e.target.value)} autoFocus
+                                            style={{width: '100%', maxWidth: 700, padding: '8px 12px', fontSize: 18, background: 'var(--bg)', border: '1px solid var(--accent)', borderRadius: 6, color: 'var(--text)', fontFamily: 'Jost,sans-serif', textAlign: 'center', outline: 'none'}}
+                                            onKeyDown={e => {
+                                                if (e.key === 'Enter') {e.preventDefault(); saveEditedText();}
+                                                if (e.key === 'Escape') setEditingText(null);
+                                            }} />
+                                        <div style={{fontSize: 11, color: 'var(--text-muted)', marginTop: 4}}>Enter to save, Escape to cancel</div>
+                                    </div>
+                                ) : (
+                                    <TranscriptGrid
+                                        original={sentence.text}
+                                        asr={data?.asr}
+                                        humanAsr={humanAsr}
+                                        activeWordIndex={activeWord}
+                                        alignment={alignment}
+                                        writtenAlignment={data?.written_alignment}
+                                        unknownWords={unknownWords}
+                                        onWordClick={onWordClick} />
+                                )}
+                                {sentenceRec && (
+                                    <div style={{marginTop: 12, padding: '12px 16px', background: 'rgba(255,0,0,0.05)', border: '1px solid var(--danger)', borderRadius: 8, textAlign: 'center'}}>
+                                        <div style={{fontSize: 18, lineHeight: 1.6, marginBottom: 8}}>{sentence.text}</div>
+                                        <div style={{fontSize: 12, color: 'var(--danger)'}}>Recording... press R to stop</div>
+                                    </div>
+                                )}
+                                {transcribing && <div style={{fontSize: 12, color: 'var(--accent)', marginTop: 4}}>Transcribing...</div>}
+                            </div>
+
+                            {audioBuf && <Waveform audioBuffer={audioBuf} playing={playing} alignment={alignment} onActiveWord={setActiveWord} playOffset={playOffsetRef.current} />}
+                            {!audioBuf && <div style={{height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)'}}>Loading audio...</div>}
+                        </div>
+                    </div>
+
+                    <div className="review-actions">
+                        <button className="review-action-btn reject" onClick={() => act('reject')} disabled={!!busy}>
+                            Reject<kbd>&larr;</kbd>
+                        </button>
+                        <button className="review-action-btn replay" onClick={togglePlayback}>
+                            {playing ? 'Pause' : 'Play'}<kbd>space</kbd>
+                        </button>
+                        <button className="review-action-btn approve" onClick={() => act('approve')} disabled={!!busy}>
+                            Approve<kbd>&rarr;</kbd>
+                        </button>
+                    </div>
+
+                    {busy && <div style={{
+                        position: 'fixed', top: 60, left: '50%', transform: 'translateX(-50%)',
+                        background: 'var(--accent)', color: 'var(--bg)', padding: '6px 16px', borderRadius: 6, fontSize: 13, fontWeight: 600, zIndex: 300
+                    }}>
+                        {busy}
+                    </div>}
+                    {error && <div className="error-toast">{error}</div>}
+
+                    {editingWord && (
+                        <div className="vocab-editor">
+                            <h4>Set pronunciation for:</h4>
+                            <div className="term">{editingWord}</div>
+                            <div className="row">
+                                <input value={editSpoken} onChange={e => {setEditSpoken(e.target.value); setEditPreviewed(false); setPreviewBuf(null);}} autoFocus
+                                    placeholder="type or record pronunciation"
+                                    onKeyDown={e => {
+                                        if (e.key === 'Enter') {
+                                            e.preventDefault();
+                                            if (editPreviewed) {saveVocabOverride();}
+                                            else {previewVocabWord(); setEditPreviewed(true);}
+                                        }
+                                        if (e.key === 'Escape') {stopPreview(); stopRecording(); setEditingWord(null);}
+                                    }} />
+                                <button className={`record-btn ${recording ? 'active' : ''}`}
+                                    onClick={recording ? stopRecording : startRecording}
+                                    title={recording ? 'Stop recording' : 'Record pronunciation'}>
+                                    {recording ? '\u25A0' : '\u25CF'}
+                                </button>
+                                <button className="play-btn" onClick={previewVocabWord} title="Preview with TTS">{'\u25B6'}</button>
+                                <button className="btn btn-sm btn-primary" onClick={saveVocabOverride}>Save</button>
+                                <button className="btn btn-sm" onClick={() => {stopPreview(); stopRecording(); setEditingWord(null);}}>Cancel</button>
+                            </div>
+                            {transcribing && (
+                                <div style={{marginTop: 8, fontSize: 12, color: 'var(--accent)'}}>Transcribing...</div>
+                            )}
+                            {recordedBuf && (
+                                <div style={{marginTop: 8}}>
+                                    <div style={{fontSize: 11, color: 'var(--text-muted)', marginBottom: 4}}>Your recording:</div>
+                                    <Waveform audioBuffer={recordedBuf} playing={false} />
+                                </div>
+                            )}
+                            {previewBuf && (
+                                <div style={{marginTop: 8}}>
+                                    <div style={{fontSize: 11, color: 'var(--text-muted)', marginBottom: 4}}>TTS preview:</div>
+                                    <Waveform audioBuffer={previewBuf} playing={previewPlaying} />
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // ==================== JOBS ====================
+        function JobsPage() {
+            const [jobs, setJobs] = useState([]);
+            const [selected, setSelected] = useState(null);
+            useEffect(() => {api('/api/jobs').then(setJobs);}, []);
+            const viewJob = async (id) => {setSelected(await api(`/api/jobs/${id}`));};
+            return (
+                <div className="container">
+                    <h2>Jobs</h2>
+                    {jobs.length === 0 ? <div className="empty-state"><h3>No jobs yet</h3></div> : (
+                        <div className="card" style={{padding: 0, overflow: 'hidden'}}>
+                            <table>
+                                <thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Created</th><th></th></tr></thead>
+                                <tbody>{jobs.map(j => (
+                                    <tr key={j.id}><td>{j.id}</td><td>{j.job_type}</td><td><span className={`badge badge-${j.status}`}>{j.status}</span></td><td style={{color: 'var(--text-muted)', fontSize: 13}}>{j.created_at}</td><td><button className="btn btn-sm" onClick={() => viewJob(j.id)}>View</button></td></tr>
+                                ))}</tbody>
+                            </table>
+                        </div>
+                    )}
+                    {selected && (
+                        <div className="card" style={{marginTop: 16}}>
+                            <h3>Job #{selected.id} — {selected.job_type}</h3>
+                            <span className={`badge badge-${selected.status}`}>{selected.status}</span>
+                            {selected.log && <pre style={{marginTop: 12, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: 12, fontFamily: 'monospace', fontSize: 12, maxHeight: 300, overflowY: 'auto', color: 'var(--text-muted)', whiteSpace: 'pre-wrap'}}>{selected.log}</pre>}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // ==================== APP ====================
+        function App() {
+            const hash = useHash();
+            let page;
+            if (hash === '#/sentences/review') page = <SentenceReview />;
+            else if (hash.startsWith('#/vocab')) page = <VocabPage />;
+            else if (hash.startsWith('#/sentences')) page = <SentencesPage />;
+            else if (hash.startsWith('#/jobs')) page = <JobsPage />;
+            else page = <Overview />;
+            return (<><Nav />{page}</>);
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
 </body>
+
 </html>

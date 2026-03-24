@@ -121,7 +121,9 @@ pub fn prepare(config: &PrepareConfig, mut on_status: impl FnMut(&str)) -> Resul
                 let mut in_code_block = false;
                 let mut current_para = String::new();
 
-                for event in pulldown_cmark::Parser::new(&content) {
+                let mut opts = pulldown_cmark::Options::empty();
+                opts.insert(pulldown_cmark::Options::ENABLE_TABLES);
+                for event in pulldown_cmark::Parser::new_ext(&content, opts) {
                     match event {
                         pulldown_cmark::Event::Start(pulldown_cmark::Tag::CodeBlock(_)) => {
                             in_code_block = true;
@@ -137,6 +139,21 @@ pub fn prepare(config: &PrepareConfig, mut on_status: impl FnMut(&str)) -> Resul
                             if !in_code_block =>
                         {
                             current_para.push(' ');
+                        }
+                        // Table cells: add space between cells
+                        pulldown_cmark::Event::End(pulldown_cmark::TagEnd::TableCell) => {
+                            current_para.push(' ');
+                        }
+                        // Table rows: flush like paragraphs
+                        pulldown_cmark::Event::End(
+                            pulldown_cmark::TagEnd::TableHead | pulldown_cmark::TagEnd::TableRow,
+                        ) => {
+                            let clean = current_para.trim().to_string();
+                            if clean.len() >= 30 && clean.len() <= 300 {
+                                chain.feed(&clean);
+                                blog_paragraphs += 1;
+                            }
+                            current_para.clear();
                         }
                         pulldown_cmark::Event::End(pulldown_cmark::TagEnd::Paragraph) => {
                             let clean = current_para.trim().to_string();

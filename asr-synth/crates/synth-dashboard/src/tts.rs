@@ -1,5 +1,42 @@
 use anyhow::Result;
 
+/// Resample f32 mono samples to 16kHz. Returns samples unchanged if already 16kHz.
+pub fn resample_to_16k(samples: &[f32], from_rate: u32) -> Result<Vec<f32>> {
+    if from_rate == 16000 {
+        return Ok(samples.to_vec());
+    }
+    use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
+    let params = SincInterpolationParameters {
+        sinc_len: 256,
+        f_cutoff: 0.95,
+        interpolation: SincInterpolationType::Linear,
+        oversampling_factor: 256,
+        window: WindowFunction::BlackmanHarris2,
+    };
+    let mut resampler = SincFixedIn::<f32>::new(
+        16000.0 / from_rate as f64, 2.0, params, samples.len(), 1,
+    )?;
+    let output = resampler.process(&[samples], None)?;
+    Ok(output.into_iter().next().unwrap_or_default())
+}
+
+/// Replace one word in a spoken form string (case-insensitive match, preserving surrounding punctuation).
+pub fn replace_word_in_spoken(spoken: &str, word: &str, new_pronunciation: &str) -> String {
+    let word_lower = word.to_lowercase();
+    spoken.split_whitespace().map(|token| {
+        // Strip punctuation to compare
+        let clean: String = token.chars().filter(|c| c.is_alphanumeric() || *c == '\'').collect();
+        if clean.to_lowercase() == word_lower {
+            // Preserve leading/trailing punctuation from the original token
+            let lead: String = token.chars().take_while(|c| !c.is_alphanumeric()).collect();
+            let trail: String = token.chars().rev().take_while(|c| !c.is_alphanumeric()).collect::<String>().chars().rev().collect();
+            format!("{lead}{new_pronunciation}{trail}")
+        } else {
+            token.to_string()
+        }
+    }).collect::<Vec<_>>().join(" ")
+}
+
 /// Raw audio output from a TTS backend
 pub struct TtsAudio {
     pub samples: Vec<f32>,
@@ -63,6 +100,23 @@ impl LocalTtsBackend for PocketTtsBackend {
     }
 }
 
+struct PocketTtsHqBackend {
+    model: pocket_tts::TTSModel,
+    voice_state: pocket_tts::ModelState,
+    sample_rate: u32,
+}
+
+impl LocalTtsBackend for PocketTtsHqBackend {
+    fn name(&self) -> &'static str { "pocket-hq" }
+
+    fn generate(&mut self, text: &str) -> Result<TtsAudio> {
+        let audio = self.model.generate(text, &self.voice_state)
+            .map_err(|e| anyhow::anyhow!("pocket-tts-hq: {e}"))?;
+        let samples: Vec<f32> = audio.flatten_all()?.to_vec1()?;
+        Ok(TtsAudio { samples, sample_rate: self.sample_rate })
+    }
+}
+
 struct KokoroBackend {
     model: voice_tts::KokoroModel,
     voice: mlx_rs::Array,
@@ -72,8 +126,34 @@ impl LocalTtsBackend for KokoroBackend {
     fn name(&self) -> &'static str { "kokoro" }
 
     fn generate(&mut self, text: &str) -> Result<TtsAudio> {
-        let phonemes = voice_g2p::english_to_phonemes(text)
-            .map_err(|e| anyhow::anyhow!("g2p: {e}"))?;
+        // Use espeak-ng directly for the full sentence — the voice-g2p pipeline
+        // drops unknown words and botches contractions.
+        let fallback = voice_g2p::espeak::EspeakFallback::new();
+        if !fallback.is_available() {
+            anyhow::bail!("espeak-ng not installed (brew install espeak-ng)");
+        }
+
+        // Phonemize each word via espeak and join
+        let mut phoneme_parts = Vec::new();
+        for word in text.split_whitespace() {
+            let clean = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
+            if clean.is_empty() { continue; }
+            match fallback.convert_word(clean) {
+                Some((ph, _)) => phoneme_parts.push(ph),
+                None => {
+                    // Last resort: try the full G2P pipeline for this word
+                    if let Ok(ph) = voice_g2p::english_to_phonemes(clean) {
+                        let ph = ph.trim().to_string();
+                        if !ph.is_empty() {
+                            phoneme_parts.push(ph);
+                        }
+                    }
+                }
+            }
+        }
+        let phonemes = phoneme_parts.join(" ");
+        eprintln!("kokoro espeak: {text:?} → {phonemes:?}");
+
         let audio = voice_tts::generate(&mut self.model, &phonemes, &self.voice, 1.0)
             .map_err(|e| anyhow::anyhow!("kokoro: {e}"))?;
         audio.eval().map_err(|e| anyhow::anyhow!("mlx eval: {e}"))?;
@@ -108,7 +188,7 @@ impl RemoteTtsBackend for OpenAiTtsBackend {
                     "model": "tts-1-hd",
                     "input": text,
                     "voice": "onyx",
-                    "response_format": "wav",
+                    "response_format": "pcm",
                 }))
                 .send()
                 .await?;
@@ -119,8 +199,16 @@ impl RemoteTtsBackend for OpenAiTtsBackend {
                 anyhow::bail!("OpenAI TTS {status}: {body}");
             }
 
-            let wav_bytes = resp.bytes().await?;
-            decode_wav(&wav_bytes)
+            // pcm format = raw 16-bit little-endian PCM at 24kHz
+            let pcm_bytes = resp.bytes().await?;
+            let samples: Vec<f32> = pcm_bytes
+                .chunks_exact(2)
+                .map(|chunk| {
+                    let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
+                    sample as f32 / 32768.0
+                })
+                .collect();
+            Ok(TtsAudio { samples, sample_rate: 24000 })
         })
     }
 }
@@ -141,10 +229,10 @@ impl RemoteTtsBackend for ElevenLabsTtsBackend {
             let resp = self.client
                 .post(&url)
                 .header("xi-api-key", &self.api_key)
+                .header("Accept", "audio/wav")
                 .json(&serde_json::json!({
                     "text": text,
                     "model_id": "eleven_turbo_v2_5",
-                    "output_format": "pcm_24000",
                 }))
                 .send()
                 .await?;
@@ -155,18 +243,95 @@ impl RemoteTtsBackend for ElevenLabsTtsBackend {
                 anyhow::bail!("ElevenLabs TTS {status}: {body}");
             }
 
-            let pcm_bytes = resp.bytes().await?;
-            let samples: Vec<f32> = pcm_bytes
-                .chunks_exact(2)
-                .map(|chunk| {
-                    let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
-                    sample as f32 / 32768.0
-                })
-                .collect();
-
-            Ok(TtsAudio { samples, sample_rate: 24000 })
+            let wav_bytes = resp.bytes().await?;
+            decode_wav(&wav_bytes)
         })
     }
+}
+
+// ==================== Unknown word detection via CMUdict ====================
+
+use std::collections::HashSet;
+use std::sync::OnceLock;
+
+static CMUDICT: OnceLock<HashSet<String>> = OnceLock::new();
+
+/// Must be called at startup. Panics if CMUdict can't be found.
+pub fn init_cmudict() {
+    CMUDICT.get_or_init(|| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let candidates = [
+            "data/cmudict.txt".to_string(),
+            format!("{home}/bearcove/hark/asr-synth/data/cmudict.txt"),
+        ];
+        let mut errors = Vec::new();
+        for p in &candidates {
+            match std::fs::read(p) {
+            Err(e) => { errors.push(format!("{p}: {e}")); continue; }
+            Ok(bytes) => { let content = String::from_utf8_lossy(&bytes);
+                let mut dict = HashSet::new();
+                for line in content.lines() {
+                    if line.starts_with(";;;") || line.is_empty() { continue; }
+                    if let Some(word) = line.split_whitespace().next() {
+                        let word = word.split('(').next().unwrap_or(word);
+                        dict.insert(word.to_lowercase());
+                    }
+                }
+                eprintln!("CMUdict loaded: {} words from {p}", dict.len());
+                return dict;
+            }}
+        }
+        panic!("CMUdict not found:\n{}", errors.join("\n"));
+    });
+}
+
+fn cmudict() -> &'static HashSet<String> {
+    CMUDICT.get().expect("CMUdict not initialized — call tts::init_cmudict() at startup")
+}
+
+/// Check which words in a sentence are NOT in CMUdict.
+/// These are likely technical terms that ASR will struggle with.
+/// Canonical word extraction: split text into clean words, stripping punctuation.
+/// Used everywhere — CMUdict lookup, unknown detection, frontend matching.
+pub fn extract_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+        .filter(|w| w.len() >= 2)
+        .collect()
+}
+
+/// Check if a string looks like a semver version (e.g. "1.2.3", "v0.1.0", "2.0.0-rc.1")
+fn is_semver(s: &str) -> bool {
+    let s = s.strip_prefix('v').unwrap_or(s);
+    let parts: Vec<&str> = s.split('.').collect();
+    parts.len() >= 2 && parts.iter().all(|p| {
+        // Each part is digits, or digits followed by -prerelease
+        let base = p.split('-').next().unwrap_or(p);
+        !base.is_empty() && base.chars().all(|c| c.is_ascii_digit())
+    })
+}
+
+pub fn detect_unknown_words(text: &str) -> Vec<String> {
+    let dict = cmudict();
+    let mut unknown = Vec::new();
+
+    for word in extract_words(text) {
+        let lower = word.to_lowercase();
+
+        if dict.contains(&lower) { continue; }
+        if lower.ends_with("'s") && dict.contains(&lower[..lower.len()-2]) { continue; }
+        if lower.ends_with('s') && dict.contains(&lower[..lower.len()-1]) { continue; }
+        if word.chars().all(|c| c.is_ascii_digit()) { continue; }
+        if lower.starts_with("0x") { continue; } // hex constants like 0xDEAD
+        if lower.chars().all(|c| c.is_ascii_hexdigit()) { continue; } // hex-only (short git commits etc.)
+        if is_semver(&lower) { continue; } // semver like 1.2.3, v0.1.0
+
+        unknown.push(word);
+    }
+
+    unknown.sort();
+    unknown.dedup();
+    unknown
 }
 
 // ==================== Helpers ====================
@@ -238,17 +403,17 @@ pub fn init(voice_path: &str, kokoro_voice: &str) -> TtsManager {
     let mut local: Vec<Mutex<Box<dyn LocalTtsBackend>>> = Vec::new();
     let mut remote: Vec<Box<dyn RemoteTtsBackend>> = Vec::new();
 
-    // Pocket-tts
-    match PocketTtsBackend::load(voice_path) {
+    // Pocket-tts HQ (full-weight only, skip quantized)
+    match PocketTtsHqBackend::load(voice_path) {
         Ok(b) => local.push(Mutex::new(Box::new(b))),
-        Err(e) => eprintln!("pocket-tts not available: {e}"),
+        Err(e) => eprintln!("pocket-tts-hq not available: {e}"),
     }
 
-    // Kokoro
-    match KokoroBackend::load(kokoro_voice) {
-        Ok(b) => local.push(Mutex::new(Box::new(b))),
-        Err(e) => eprintln!("Kokoro not available: {e}"),
-    }
+    // Kokoro — loaded on demand, not eagerly
+    // match KokoroBackend::load(kokoro_voice) {
+    //     Ok(b) => local.push(Mutex::new(Box::new(b))),
+    //     Err(e) => eprintln!("Kokoro not available: {e}"),
+    // }
 
     // OpenAI
     if std::env::var("OPENAI_API_KEY").is_ok() {
@@ -263,8 +428,9 @@ pub fn init(voice_path: &str, kokoro_voice: &str) -> TtsManager {
     // ElevenLabs
     if std::env::var("ELEVENLABS_API_KEY").is_ok() {
         let api_key = std::env::var("ELEVENLABS_API_KEY").unwrap();
+        // Default to "Brian" — a pre-made voice available on all plans
         let voice_id = std::env::var("ELEVENLABS_VOICE_ID")
-            .unwrap_or_else(|_| "21m00Tcm4TlvDq8ikWAM".to_string());
+            .unwrap_or_else(|_| "nPczCjzI2devNBz1zQrb".to_string());
         remote.push(Box::new(ElevenLabsTtsBackend {
             api_key,
             voice_id,
@@ -286,6 +452,19 @@ impl PocketTtsBackend {
             .map_err(|e| anyhow::anyhow!("loading voice '{voice_path}': {e}"))?;
         let sample_rate = model.sample_rate as u32;
         eprintln!("pocket-tts ready ({sample_rate} Hz)");
+        Ok(Self { model, voice_state, sample_rate })
+    }
+}
+
+impl PocketTtsHqBackend {
+    fn load(voice_path: &str) -> Result<Self> {
+        eprintln!("Loading pocket-tts (full precision)...");
+        let model = pocket_tts::TTSModel::load("b6369a24")?;
+        let voice_state = model
+            .get_voice_state(voice_path)
+            .map_err(|e| anyhow::anyhow!("loading voice '{voice_path}': {e}"))?;
+        let sample_rate = model.sample_rate as u32;
+        eprintln!("pocket-tts-hq ready ({sample_rate} Hz)");
         Ok(Self { model, voice_state, sample_rate })
     }
 }

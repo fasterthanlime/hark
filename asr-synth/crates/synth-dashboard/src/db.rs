@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS sentences (
     text TEXT NOT NULL,
     spoken TEXT NOT NULL,
     vocab_terms TEXT NOT NULL,
+    unknown_words TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'pending',
     wav_path TEXT,
     parakeet_output TEXT,
@@ -54,11 +55,15 @@ CREATE TABLE IF NOT EXISTS candidate_sentences (
     spoken TEXT NOT NULL,
     vocab_terms TEXT NOT NULL,
     source TEXT NOT NULL,
+    unknown_words TEXT NOT NULL DEFAULT '[]',
     imported_at TEXT NOT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_transcriptions_dedup
     ON transcriptions(timestamp, text);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sentences_text
+    ON sentences(text);
 "#;
 
 // --- Vocab ---
@@ -87,8 +92,11 @@ pub struct SentenceRow {
     pub text: String,
     pub spoken: String,
     pub vocab_terms: String, // JSON array
+    pub unknown_words: String, // JSON array
     pub status: String,
     pub wav_path: Option<String>,
+    pub alignment_json: Option<String>,
+    pub tts_backend: Option<String>,
     pub parakeet_output: Option<String>,
     pub qwen_output: Option<String>,
 }
@@ -143,6 +151,10 @@ impl Db {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .context("setting pragmas")?;
         conn.execute_batch(SCHEMA).context("creating schema")?;
+        // Migrations: add columns if missing (idempotent — errors ignored for already-existing columns)
+        let _ = conn.execute_batch("ALTER TABLE sentences ADD COLUMN unknown_words TEXT NOT NULL DEFAULT '[]';");
+        let _ = conn.execute_batch("ALTER TABLE sentences ADD COLUMN alignment_json TEXT;");
+        let _ = conn.execute_batch("ALTER TABLE sentences ADD COLUMN tts_backend TEXT;");
         Ok(Db { conn })
     }
 
@@ -235,6 +247,16 @@ impl Db {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Insert a vocab term discovered by G2P failure. No override, not reviewed.
+    pub fn insert_candidate_vocab(&self, term: &str, spoken_auto: &str) -> Result<bool> {
+        let now = now_str();
+        let result = self.conn.execute(
+            "INSERT OR IGNORE INTO vocab (term, spoken_auto, reviewed, created_at, updated_at) VALUES (?1, ?2, 0, ?3, ?3)",
+            params![term, spoken_auto, now],
+        )?;
+        Ok(result > 0)
+    }
+
     pub fn vocab_count(&self) -> Result<i64> {
         Ok(self.conn.query_row("SELECT COUNT(*) FROM vocab", [], |r| r.get(0))?)
     }
@@ -278,13 +300,24 @@ impl Db {
         let mut count = 0;
         for s in sentences {
             let vocab_json = serde_json::to_string(&s.vocab_terms)?;
+            let unknown_json = serde_json::to_string(&crate::tts::detect_unknown_words(&s.text))?;
             self.conn.execute(
-                "INSERT INTO sentences (text, spoken, vocab_terms, status, created_at) VALUES (?1, ?2, ?3, 'pending', ?4)",
-                params![s.text, s.spoken, vocab_json, now],
+                "INSERT INTO sentences (text, spoken, vocab_terms, unknown_words, status, created_at) VALUES (?1, ?2, ?3, ?4, 'pending', ?5)",
+                params![s.text, s.spoken, vocab_json, unknown_json, now],
             )?;
             count += 1;
         }
         Ok(count)
+    }
+
+    /// Insert a sentence, skipping duplicates.
+    pub fn insert_sentence_from_candidate(&self, text: &str, spoken: &str, vocab_terms: &str, unknown_words: &str) -> Result<bool> {
+        let now = now_str();
+        let n = self.conn.execute(
+            "INSERT OR IGNORE INTO sentences (text, spoken, vocab_terms, unknown_words, status, created_at) VALUES (?1, ?2, ?3, ?4, 'pending', ?5)",
+            params![text, spoken, vocab_terms, unknown_words, now],
+        )?;
+        Ok(n > 0)
     }
 
     pub fn list_sentences(
@@ -293,15 +326,14 @@ impl Db {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<SentenceRow>> {
+        let cols = "id, text, spoken, vocab_terms, unknown_words, status, wav_path, alignment_json, tts_backend, parakeet_output, qwen_output";
         let (sql, param_values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match status {
             Some(s) => (
-                "SELECT id, text, spoken, vocab_terms, status, wav_path, parakeet_output, qwen_output \
-                 FROM sentences WHERE status = ?1 ORDER BY id LIMIT ?2 OFFSET ?3".into(),
+                format!("SELECT {cols} FROM sentences WHERE status = ?1 ORDER BY id LIMIT ?2 OFFSET ?3"),
                 vec![Box::new(s.to_string()), Box::new(limit), Box::new(offset)],
             ),
             None => (
-                "SELECT id, text, spoken, vocab_terms, status, wav_path, parakeet_output, qwen_output \
-                 FROM sentences ORDER BY id LIMIT ?1 OFFSET ?2".into(),
+                format!("SELECT {cols} FROM sentences ORDER BY id LIMIT ?1 OFFSET ?2"),
                 vec![Box::new(limit), Box::new(offset)],
             ),
         };
@@ -313,10 +345,13 @@ impl Db {
                 text: row.get(1)?,
                 spoken: row.get(2)?,
                 vocab_terms: row.get(3)?,
-                status: row.get(4)?,
-                wav_path: row.get(5)?,
-                parakeet_output: row.get(6)?,
-                qwen_output: row.get(7)?,
+                unknown_words: row.get(4)?,
+                status: row.get(5)?,
+                wav_path: row.get(6)?,
+                alignment_json: row.get(7)?,
+                tts_backend: row.get(8)?,
+                parakeet_output: row.get(9)?,
+                qwen_output: row.get(10)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -338,6 +373,15 @@ impl Db {
         Ok(())
     }
 
+    /// Update sentence text, spoken form, and unknown words (for correcting transcription errors).
+    pub fn update_sentence_text(&self, id: i64, text: &str, spoken: &str, unknown_words: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sentences SET text = ?1, spoken = ?2, unknown_words = ?3, status = 'pending' WHERE id = ?4",
+            params![text, spoken, unknown_words, id],
+        )?;
+        Ok(())
+    }
+
     pub fn update_sentence_wav(&self, id: i64, wav_path: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE sentences SET wav_path = ?1 WHERE id = ?2",
@@ -354,12 +398,86 @@ impl Db {
         Ok(())
     }
 
+    /// Get a single sentence by ID.
+    pub fn get_sentence(&self, id: i64) -> Result<Option<SentenceRow>> {
+        let cols = "id, text, spoken, vocab_terms, unknown_words, status, wav_path, alignment_json, tts_backend, parakeet_output, qwen_output";
+        let mut stmt = self.conn.prepare(&format!("SELECT {cols} FROM sentences WHERE id = ?1"))?;
+        let mut rows = stmt.query_map(params![id], |row| {
+            Ok(SentenceRow {
+                id: row.get(0)?, text: row.get(1)?, spoken: row.get(2)?,
+                vocab_terms: row.get(3)?, unknown_words: row.get(4)?, status: row.get(5)?,
+                wav_path: row.get(6)?, alignment_json: row.get(7)?, tts_backend: row.get(8)?,
+                parakeet_output: row.get(9)?, qwen_output: row.get(10)?,
+            })
+        })?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Get IDs of pending sentences, prioritizing those with unknown words.
+    pub fn pending_sentence_ids(&self, limit: i64) -> Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM sentences WHERE status = 'pending' \
+             ORDER BY (CASE WHEN unknown_words != '[]' THEN 0 ELSE 1 END), RANDOM() LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find a vocab entry by term (exact, case-insensitive).
+    pub fn find_vocab_by_term(&self, term: &str) -> Result<Option<VocabRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, term, spoken_auto, spoken_override, reviewed FROM vocab WHERE LOWER(term) = LOWER(?1)"
+        )?;
+        let mut rows = stmt.query_map(params![term], |row| {
+            Ok(VocabRow {
+                id: row.get(0)?, term: row.get(1)?, spoken_auto: row.get(2)?,
+                spoken_override: row.get(3)?, reviewed: row.get::<_, i64>(4)? != 0,
+            })
+        })?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Auto-resolve an unknown word: set spoken_override = lowercase term if no override exists.
+    pub fn auto_resolve_unknown(&self, term: &str) -> Result<()> {
+        let now = now_str();
+        self.conn.execute(
+            "UPDATE vocab SET spoken_override = LOWER(term), updated_at = ?1 WHERE LOWER(term) = LOWER(?2) AND spoken_override IS NULL",
+            params![now, term],
+        )?;
+        Ok(())
+    }
+
+    /// Update precomputed TTS + alignment data for a sentence.
+    pub fn update_sentence_precomputed(
+        &self, id: i64, wav_path: &str, alignment_json: &str, backend: &str, spoken: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sentences SET wav_path = ?1, alignment_json = ?2, tts_backend = ?3, spoken = ?4 WHERE id = ?5",
+            params![wav_path, alignment_json, backend, spoken, id],
+        )?;
+        Ok(())
+    }
+
+    /// Count sentences by status.
+    pub fn sentence_count_by_status(&self) -> Result<(i64, i64, i64)> {
+        let approved: i64 = self.conn.query_row("SELECT COUNT(*) FROM sentences WHERE status = 'approved'", [], |r| r.get(0))?;
+        let rejected: i64 = self.conn.query_row("SELECT COUNT(*) FROM sentences WHERE status = 'rejected'", [], |r| r.get(0))?;
+        let total: i64 = self.conn.query_row("SELECT COUNT(*) FROM sentences", [], |r| r.get(0))?;
+        Ok((approved, rejected, total))
+    }
+
     // ==================== CANDIDATES ====================
 
-    pub fn insert_candidate(&self, text: &str, spoken: &str, vocab_terms: &str, source: &str) -> Result<bool> {
+    pub fn insert_candidate(&self, text: &str, spoken: &str, vocab_terms: &str, source: &str, unknown_words: &str) -> Result<bool> {
         let result = self.conn.execute(
-            "INSERT OR IGNORE INTO candidate_sentences (text, spoken, vocab_terms, source, imported_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![text, spoken, vocab_terms, source, now_str()],
+            "INSERT OR IGNORE INTO candidate_sentences (text, spoken, vocab_terms, source, unknown_words, imported_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![text, spoken, vocab_terms, source, unknown_words, now_str()],
         )?;
         Ok(result > 0)
     }
@@ -368,15 +486,23 @@ impl Db {
         Ok(self.conn.query_row("SELECT COUNT(*) FROM candidate_sentences", [], |r| r.get(0))?)
     }
 
-    /// Pick N random candidates that aren't already in the sentences table
-    pub fn pick_candidates(&self, count: i64) -> Result<Vec<(String, String, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT c.text, c.spoken, c.vocab_terms FROM candidate_sentences c
+    /// Pick N candidates that aren't already in the sentences table.
+    /// If `prioritize_unknown` is true, prefer sentences with unknown words.
+    pub fn pick_candidates(&self, count: i64, prioritize_unknown: bool) -> Result<Vec<(String, String, String, String)>> {
+        let sql = if prioritize_unknown {
+            // Sentences with unknown words first, then random
+            "SELECT c.text, c.spoken, c.vocab_terms, c.unknown_words FROM candidate_sentences c
              WHERE c.text NOT IN (SELECT text FROM sentences)
-             ORDER BY RANDOM() LIMIT ?1",
-        )?;
+             ORDER BY (CASE WHEN c.unknown_words != '[]' THEN 0 ELSE 1 END), RANDOM()
+             LIMIT ?1"
+        } else {
+            "SELECT c.text, c.spoken, c.vocab_terms, c.unknown_words FROM candidate_sentences c
+             WHERE c.text NOT IN (SELECT text FROM sentences)
+             ORDER BY RANDOM() LIMIT ?1"
+        };
+        let mut stmt = self.conn.prepare(sql)?;
         let rows = stmt.query_map(params![count], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
