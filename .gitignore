@@ -35,3 +35,8 @@ asr-synth/voices/*.m4a
 asr-synth/data/
 asr-synth/training/data/
 asr-synth/training/adapters/
+
+# env vars
+.env
+.envrc
+*.db*

@@ -1,0 +1,30 @@
+[package]
+name = "synth-dashboard"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "synth-dashboard"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.33", features = ["bundled"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+hound.workspace = true
+synth-textgen = { path = "../synth-textgen" }
+synth-pipeline = { path = "../synth-pipeline" }
+synth-train = { path = "../synth-train" }
+shellexpand = "3"
+
+# TTS backends — all compiled in, chosen at runtime
+pocket-tts = { version = "0.6", features = ["metal", "quantized"] }
+voice-tts = "0.1"
+voice-g2p = "0.1"
+mlx-rs = "0.25"
+reqwest = { version = "0.12", features = ["json", "blocking"] }

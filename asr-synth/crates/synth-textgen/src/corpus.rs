@@ -57,54 +57,88 @@ fn extract_from_file(path: &Path, terms: &mut HashSet<String>) {
         return;
     };
 
-    for word in content.split_whitespace() {
-        let clean = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
-        if clean.is_empty() {
-            continue;
-        }
+    use pulldown_cmark::{Event, Parser, Tag};
 
-        // Backtick-wrapped code terms (most valuable)
-        if word.starts_with('`') && word.ends_with('`') && word.len() > 2 {
-            let inner = &word[1..word.len() - 1];
-            let inner = inner.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
-            if is_interesting_term(inner) {
-                terms.insert(inner.to_string());
+    let parser = Parser::new(&content);
+    let mut in_code_block = false;
+
+    for event in parser {
+        match event {
+            Event::Start(Tag::CodeBlock(_)) => in_code_block = true,
+            Event::End(pulldown_cmark::TagEnd::CodeBlock) => in_code_block = false,
+
+            // Inline code spans — the most valuable source of terms
+            Event::Code(code) if !in_code_block => {
+                let clean = code.trim();
+                // Single token inline code like `serde`, `SHA-256`, `f32`
+                // Skip multi-word code spans and paths
+                if !clean.contains(' ') && !clean.contains('/') && !clean.contains('\\') {
+                    let trimmed = clean.trim_matches(|c: char| !c.is_alphanumeric() && c != '-');
+                    if is_interesting_term(trimmed) {
+                        terms.insert(trimmed.to_string());
+                    }
+                }
             }
-            continue;
-        }
 
-        // CamelCase or mixed-case identifiers
-        if is_interesting_term(clean) {
-            terms.insert(clean.to_string());
+            // Prose text — look for CamelCase identifiers
+            Event::Text(text) if !in_code_block => {
+                for word in text.split_whitespace() {
+                    let clean =
+                        word.trim_matches(|c: char| !c.is_alphanumeric());
+                    if is_interesting_term(clean) {
+                        terms.insert(clean.to_string());
+                    }
+                }
+            }
+
+            _ => {}
         }
     }
 }
 
+/// A term is interesting if ASR is likely to mangle it.
+/// We want: unusual words, acronyms, names with weird spellings.
+/// We do NOT want: regular English words joined by underscores/hyphens.
 fn is_interesting_term(s: &str) -> bool {
-    if s.len() < 3 || s.len() > 30 {
+    if s.len() < 2 || s.len() > 30 {
         return false;
     }
     // Skip pure numbers
     if s.chars().all(|c| c.is_ascii_digit()) {
         return false;
     }
-    // Skip common English words
-    if STOP_WORDS.contains(&s.to_lowercase().as_str()) {
-        return false;
-    }
     // Must contain at least one letter
     if !s.chars().any(|c| c.is_alphabetic()) {
         return false;
     }
-    // Skip anything that looks like a path, URL, or file reference
-    if s.contains('/') || s.contains('.') || s.contains(':') || s.contains('[')
-        || s.contains(']') || s.contains('(') || s.contains(')')
-        || s.contains('{') || s.contains('}') || s.contains('=')
-        || s.contains('"') || s.contains('\'') || s.contains('\\')
-        || s.contains(',') || s.contains(';') || s.contains('<')
-        || s.contains('>') || s.contains('|') || s.contains('!')
-        || s.contains('?') || s.contains('#') || s.contains('@')
-        || s.contains('$') || s.contains('%') || s.contains('+')
+    // Skip common English words
+    if STOP_WORDS.contains(&s.to_lowercase().as_str()) {
+        return false;
+    }
+    // Skip paths, URLs, punctuation-heavy things
+    if s.contains('/')
+        || s.contains('\\')
+        || s.contains('[')
+        || s.contains(']')
+        || s.contains('(')
+        || s.contains(')')
+        || s.contains('{')
+        || s.contains('}')
+        || s.contains('=')
+        || s.contains('"')
+        || s.contains('\'')
+        || s.contains(',')
+        || s.contains(';')
+        || s.contains('<')
+        || s.contains('>')
+        || s.contains('|')
+        || s.contains('#')
+        || s.contains('@')
+        || s.contains('$')
+        || s.contains('%')
+        || s.contains('+')
+        || s.contains('_')
+        || s.contains('.')
     {
         return false;
     }
@@ -114,98 +148,48 @@ fn is_interesting_term(s: &str) -> bool {
         return false;
     }
 
-    // Interesting if: contains underscore/hyphen, has mixed case, or has digits mixed with letters
-    let has_separator = s.contains('_') || s.contains('-');
+    // Skip CLI flags (--foo, --foo-bar)
+    if s.starts_with("--") || s.starts_with('-') && s.chars().nth(1).is_some_and(|c| c.is_alphabetic()) && s.chars().all(|c| c.is_alphanumeric() || c == '-') && s.chars().filter(|c| c.is_uppercase()).count() == 0 {
+        return false;
+    }
+
     let has_upper = s.chars().any(|c| c.is_uppercase());
     let has_lower = s.chars().any(|c| c.is_lowercase());
     let has_digit = s.chars().any(|c| c.is_ascii_digit());
     let is_mixed_case = has_upper && has_lower;
 
-    has_separator || is_mixed_case || has_digit
+    // Interesting if: mixed case (CamelCase), or digits mixed with letters
+    // Hyphenated regular words like "channel-health" are not interesting —
+    // ASR won't mangle them. Only keep hyphenated terms with digits (SHA-256).
+    let has_interesting_hyphen = s.contains('-') && has_digit;
+
+    is_mixed_case || has_digit || has_interesting_hyphen
 }
 
 /// Convert a written technical term to how a human would say it aloud.
 ///
+/// Conservative: only transforms things that genuinely sound different from how
+/// they're spelled. Does NOT lowercase — case changes aren't pronunciation changes.
+///
 /// Examples:
-///   `SHA-256`    → `shaw two fifty six`
-///   `--doc`      → `dash dash doc`
-///   `.asm`       → `dot asm`
-///   `serde`      → `serde`
-///   `gRPC`       → `g r p c`
-///   `OAuth`      → `o auth`
-///   `snake_case` → `snake case`
-///   `CamelCase`  → `camel case`
-fn to_spoken(term: &str) -> String {
-    // Check overrides first
-    let lower = term.to_lowercase();
+///   `SHA-256`    → `shaw two fifty six`  (override)
+///   `serde`      → `ser dee`             (override)
+///   `gRPC`       → `g r p c`            (override)
+///   `CamelCase`  → `CamelCase`          (no change — pronounceable as-is)
+///   `f32`        → `f thirty two`       (override)
+///   `ESNext`     → `ESNext`             (no change)
+pub fn to_spoken(term: &str) -> String {
+    // Check overrides first — this is the primary mechanism
     if let Some(&spoken) = PRONUNCIATION_OVERRIDES.iter().find_map(|(k, v)| {
         if k.eq_ignore_ascii_case(term) { Some(v) } else { None }
     }) {
         return spoken.to_string();
     }
 
-    let mut result = String::new();
-    let mut chars = term.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        match c {
-            '-' => {
-                if !result.is_empty() && !result.ends_with(' ') {
-                    result.push(' ');
-                }
-                // Check if it's a flag-style double dash
-                if chars.peek() == Some(&'-') {
-                    result.push_str("dash dash");
-                    chars.next();
-                } else if result.is_empty() || result.ends_with("dash ") {
-                    result.push_str("dash");
-                } else {
-                    // Hyphen in compound word: just use space
-                }
-                result.push(' ');
-            }
-            '_' => {
-                if !result.is_empty() && !result.ends_with(' ') {
-                    result.push(' ');
-                }
-            }
-            '.' => {
-                if !result.is_empty() && !result.ends_with(' ') {
-                    result.push(' ');
-                }
-                result.push_str("dot ");
-            }
-            c if c.is_uppercase() => {
-                // CamelCase split: insert space before uppercase if preceded by lowercase
-                if !result.is_empty() && !result.ends_with(' ') {
-                    let prev = result.chars().last().unwrap();
-                    if prev.is_lowercase() {
-                        result.push(' ');
-                    }
-                }
-                result.push(c.to_lowercase().next().unwrap());
-            }
-            c if c.is_ascii_digit() => {
-                // Collect full number
-                let mut num = String::new();
-                num.push(c);
-                while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
-                    num.push(chars.next().unwrap());
-                }
-                if !result.is_empty() && !result.ends_with(' ') {
-                    result.push(' ');
-                }
-                result.push_str(&number_to_words(&num));
-                result.push(' ');
-            }
-            c => {
-                result.push(c);
-            }
-        }
-    }
-
-    let spoken = result.split_whitespace().collect::<Vec<_>>().join(" ");
-    if spoken.is_empty() { lower } else { spoken }
+    // For everything else, return the term as-is.
+    // The spoken form is the same as the written form unless there's an override.
+    // Pronunciation corrections come from human review in the dashboard.
+    term.to_string()
 }
 
 fn number_to_words(num: &str) -> String {
@@ -251,45 +235,11 @@ fn number_to_words(num: &str) -> String {
     }
 }
 
-/// Manual pronunciation overrides for terms where the rules don't work
-const PRONUNCIATION_OVERRIDES: &[(&str, &str)] = &[
-    ("SHA-256", "shaw two fifty six"),
-    ("SHA-512", "shaw five twelve"),
-    ("SHA-1", "shaw one"),
-    ("gRPC", "g r p c"),
-    ("OAuth", "o auth"),
-    ("OAuth2", "o auth two"),
-    ("JWT", "j w t"),
-    ("GGUF", "g g u f"),
-    ("GGML", "g g m l"),
-    ("ONNX", "onyx"),
-    ("MLX", "m l x"),
-    ("LoRA", "laura"),
-    ("QLoRA", "q laura"),
-    ("SQLite", "s q lite"),
-    ("PostgreSQL", "postgres q l"),
-    ("WebSocket", "web socket"),
-    ("HuggingFace", "hugging face"),
-    ("ffmpeg", "f f mpeg"),
-    ("serde", "ser dee"),
-    ("tokio", "tokyo"),
-    ("axum", "axum"),
-    ("reqwest", "request"),
-    ("wgpu", "w g p u"),
-    ("ratatui", "rata t u i"),
-    ("i386", "i three eighty six"),
-    ("x86_64", "x eighty six sixty four"),
-    ("arm64", "arm sixty four"),
-    ("aarch64", "a arch sixty four"),
-    ("f32", "f thirty two"),
-    ("f64", "f sixty four"),
-    ("i32", "i thirty two"),
-    ("i64", "i sixty four"),
-    ("u8", "u eight"),
-    ("u16", "u sixteen"),
-    ("u32", "u thirty two"),
-    ("u64", "u sixty four"),
-    ("Blake3", "blake three"),
+/// Manual pronunciation overrides for terms where the spelling genuinely
+/// doesn't match the pronunciation. Everything else gets added via the dashboard.
+pub const PRONUNCIATION_OVERRIDES: &[(&str, &str)] = &[
+    ("serde", "sir day"),
+    ("SQLite", "sequel light"),
 ];
 
 const STOP_WORDS: &[&str] = &[

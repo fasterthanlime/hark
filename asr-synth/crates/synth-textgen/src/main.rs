@@ -34,7 +34,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let sentences = templates::generate(&vocab, args.count);
+    let sentences = templates::generate(&vocab, args.count, None, None);
     for s in &sentences {
         let json = serde_json::to_string(s)?;
         println!("{json}");
