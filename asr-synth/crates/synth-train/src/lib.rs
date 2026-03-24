@@ -281,18 +281,142 @@ pub fn train_streaming(
         .stderr(Stdio::piped())
         .spawn()?;
 
-    // MLX-LM writes progress to stderr
+    // MLX-LM writes progress to stderr using \r for progress bars.
+    // Read byte-by-byte and split on both \r and \n.
+    // For \r lines (progress updates), only emit the final update.
     if let Some(stderr) = child.stderr.take() {
-        let reader = std::io::BufReader::new(stderr);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                on_line(&line);
+        use std::io::Read;
+        let mut reader = std::io::BufReader::new(stderr);
+        let mut buf = Vec::new();
+        let mut byte = [0u8; 1];
+        while reader.read(&mut byte).unwrap_or(0) == 1 {
+            match byte[0] {
+                b'\n' => {
+                    let line = String::from_utf8_lossy(&buf).to_string();
+                    let line = line.trim();
+                    if !line.is_empty() { on_line(line); }
+                    buf.clear();
+                }
+                b'\r' => {
+                    // Carriage return = overwrite current line. Keep only the latest.
+                    buf.clear();
+                }
+                _ => buf.push(byte[0]),
             }
+        }
+        // Flush remaining
+        if !buf.is_empty() {
+            let line = String::from_utf8_lossy(&buf).to_string();
+            let line = line.trim();
+            if !line.is_empty() { on_line(line); }
         }
     }
 
     let status = child.wait()?;
     Ok(status)
+}
+
+/// Configuration for inference with the trained correction model
+pub struct InferenceConfig {
+    pub model: String,
+    pub adapters: String,
+    pub max_tokens: usize,
+    pub port: u16,
+}
+
+impl Default for InferenceConfig {
+    fn default() -> Self {
+        Self {
+            model: "Qwen/Qwen2.5-0.5B".into(),
+            adapters: "training/adapters".into(),
+            max_tokens: 256,
+            port: 8899,
+        }
+    }
+}
+
+/// Build the prompt for the correction model from ASR outputs
+pub fn build_correction_prompt(parakeet: &str, qwen: &str) -> String {
+    format!("<parakeet> {} <qwen> {} <correct>", parakeet, qwen)
+}
+
+/// An inference server that keeps the model loaded. Wraps mlx_lm.server.
+pub struct InferenceServer {
+    child: std::process::Child,
+    pub port: u16,
+    pub max_tokens: usize,
+}
+
+impl InferenceServer {
+    /// Start the mlx_lm.server subprocess. Blocks until the server is ready.
+    pub fn start(config: &InferenceConfig) -> Result<Self> {
+        use std::process::{Command, Stdio};
+
+        eprintln!("[inference] Starting mlx_lm.server on port {}...", config.port);
+        let child = Command::new("uvx")
+            .args([
+                "--from", "mlx-lm",
+                "mlx_lm.server",
+                "--model", &config.model,
+                "--adapter-path", &config.adapters,
+                "--port", &config.port.to_string(),
+                "--max-tokens", &config.max_tokens.to_string(),
+                "--temp", "0",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        // Wait for the server to be ready (poll /v1/models)
+        let url = format!("http://127.0.0.1:{}/v1/models", config.port);
+        let start = std::time::Instant::now();
+        loop {
+            if start.elapsed() > std::time::Duration::from_secs(120) {
+                anyhow::bail!("mlx_lm.server failed to start within 120s");
+            }
+            if let Ok(resp) = ureq::get(&url).call() {
+                if resp.status() == 200 { break; }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        eprintln!("[inference] Server ready on port {}", config.port);
+
+        Ok(Self { child, port: config.port, max_tokens: config.max_tokens })
+    }
+
+    /// Run inference on a single prompt. Returns the corrected text.
+    pub fn infer(&self, prompt: &str) -> Result<String> {
+        let url = format!("http://127.0.0.1:{}/v1/completions", self.port);
+        let body = serde_json::json!({
+            "prompt": prompt,
+            "max_tokens": self.max_tokens,
+            "temperature": 0.0,
+        });
+
+        let mut resp = ureq::post(&url)
+            .header("Content-Type", "application/json")
+            .send_json(&body)
+            .map_err(|e| anyhow::anyhow!("inference request failed: {e}"))?;
+
+        let json: serde_json::Value = resp.body_mut().read_json()
+            .map_err(|e| anyhow::anyhow!("inference response parse failed: {e}"))?;
+
+        let text = json["choices"][0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .replace("<|endoftext|>", "")
+            .replace("<|end_of_text|>", "");
+
+        Ok(text.trim().to_string())
+    }
+}
+
+impl Drop for InferenceServer {
+    fn drop(&mut self) {
+        eprintln!("[inference] Shutting down mlx_lm.server");
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 pub fn glob_md(root: &str) -> Result<Vec<std::path::PathBuf>> {

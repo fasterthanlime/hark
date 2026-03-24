@@ -21,20 +21,88 @@ pub fn resample_to_16k(samples: &[f32], from_rate: u32) -> Result<Vec<f32>> {
 }
 
 /// Replace one word in a spoken form string (case-insensitive match, preserving surrounding punctuation).
-pub fn replace_word_in_spoken(spoken: &str, word: &str, new_pronunciation: &str) -> String {
-    let word_lower = word.to_lowercase();
-    spoken.split_whitespace().map(|token| {
-        // Strip punctuation to compare
-        let clean: String = token.chars().filter(|c| c.is_alphanumeric() || *c == '\'').collect();
-        if clean.to_lowercase() == word_lower {
-            // Preserve leading/trailing punctuation from the original token
-            let lead: String = token.chars().take_while(|c| !c.is_alphanumeric()).collect();
-            let trail: String = token.chars().rev().take_while(|c| !c.is_alphanumeric()).collect::<String>().chars().rev().collect();
-            format!("{lead}{new_pronunciation}{trail}")
+/// Canonicalize a word for vocab lookup: strip non-alphanumeric (keep apostrophes), lowercase.
+fn canon(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric() || *c == '\'')
+        .collect::<String>()
+        .to_lowercase()
+}
+
+/// A token is either a word (alphanumeric + apostrophes) or trivia (everything else).
+#[derive(Debug)]
+enum Token<'a> {
+    Word(&'a str),
+    Trivia(&'a str),
+}
+
+/// Tokenize text into alternating Word and Trivia segments.
+/// "PR, please." → [Word("PR"), Trivia(", "), Word("please"), Trivia(".")]
+fn tokenize(text: &str) -> Vec<Token<'_>> {
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    let bytes = text.as_bytes();
+    while i < text.len() {
+        let ch = text[i..].chars().next().unwrap();
+        if ch.is_alphanumeric() || ch == '\'' {
+            // Word: consume alphanumeric + apostrophes
+            let start = i;
+            while i < text.len() {
+                let c = text[i..].chars().next().unwrap();
+                if c.is_alphanumeric() || c == '\'' {
+                    i += c.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            tokens.push(Token::Word(&text[start..i]));
         } else {
-            token.to_string()
+            // Trivia: consume everything else
+            let start = i;
+            while i < text.len() {
+                let c = text[i..].chars().next().unwrap();
+                if c.is_alphanumeric() || c == '\'' {
+                    break;
+                }
+                i += c.len_utf8();
+            }
+            tokens.push(Token::Trivia(&text[start..i]));
         }
-    }).collect::<Vec<_>>().join(" ")
+    }
+    let _ = bytes; // suppress unused warning
+    tokens
+}
+
+/// Build a spoken form from original text by applying vocab overrides.
+/// Tokenizes into Word/Trivia segments, looks up each word in the overrides map,
+/// and substitutes matches while preserving all trivia (punctuation, spaces) exactly.
+pub fn build_spoken_form(
+    text: &str,
+    overrides: &std::collections::HashMap<String, String>,
+) -> String {
+    // Pre-canonicalize override keys for O(1) lookup
+    let canon_map: std::collections::HashMap<String, &str> = overrides
+        .iter()
+        .map(|(term, spoken)| (canon(term), spoken.as_str()))
+        .collect();
+
+    let tokens = tokenize(text);
+    let mut result = String::with_capacity(text.len());
+
+    for token in &tokens {
+        match token {
+            Token::Word(w) => {
+                let key = canon(w);
+                if let Some(&replacement) = canon_map.get(&key) {
+                    result.push_str(replacement);
+                } else {
+                    result.push_str(w);
+                }
+            }
+            Token::Trivia(t) => result.push_str(t),
+        }
+    }
+    result
 }
 
 /// Raw audio output from a TTS backend
@@ -321,6 +389,11 @@ pub fn detect_unknown_words(text: &str) -> Vec<String> {
         if dict.contains(&lower) { continue; }
         if lower.ends_with("'s") && dict.contains(&lower[..lower.len()-2]) { continue; }
         if lower.ends_with('s') && dict.contains(&lower[..lower.len()-1]) { continue; }
+        // Check if it's a compound of two known words (e.g., "roadmap" = "road" + "map")
+        let is_compound = (3..lower.len()-2).any(|i| {
+            dict.contains(&lower[..i]) && dict.contains(&lower[i..])
+        });
+        if is_compound { continue; }
         if word.chars().all(|c| c.is_ascii_digit()) { continue; }
         if lower.starts_with("0x") { continue; } // hex constants like 0xDEAD
         if lower.chars().all(|c| c.is_ascii_hexdigit()) { continue; } // hex-only (short git commits etc.)

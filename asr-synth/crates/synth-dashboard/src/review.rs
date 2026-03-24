@@ -82,32 +82,74 @@ fn match_alignment(
                 if matched { break; }
             }
         }
-        // If still not matched, this word is "dropped" — no entry in aligned
-    }
-
-    // Build the full result, filling in dropped words from nearest neighbor
-    let mut result: Vec<serde_json::Value> = Vec::with_capacity(original_words.len());
-    let mut next_aligned = 0;
-
-    for (oi, orig_word) in original_words.iter().enumerate() {
-        if next_aligned < aligned.len() && aligned[next_aligned].0 == oi {
-            let (_, start, end) = aligned[next_aligned];
-            result.push(serde_json::json!({"word": orig_word, "start": start, "end": end}));
-            next_aligned += 1;
-        } else {
-            // Dropped — inherit time from nearest aligned neighbor
-            let time = if next_aligned > 0 {
-                let prev = &aligned[next_aligned - 1];
-                (prev.1, prev.2)
-            } else if next_aligned < aligned.len() {
-                let nxt = &aligned[next_aligned];
-                (nxt.1, nxt.2)
-            } else {
-                (0.0, 0.0)
-            };
-            result.push(serde_json::json!({"word": orig_word, "start": time.0, "end": time.1}));
+        if !matched {
+            eprintln!("[align] DROPPED word {oi}: '{}' (clean: '{}')", orig_word, orig_clean);
         }
     }
+
+    eprintln!("[align] {} original words, {} aligned, {} dropped",
+        original_words.len(), aligned.len(), original_words.len() - aligned.len());
+
+    // Build the full result. For dropped words, interpolate time slots between
+    // their surrounding aligned neighbors so each gets a visible column.
+    let mut result: Vec<serde_json::Value> = Vec::with_capacity(original_words.len());
+
+    // First pass: identify runs of dropped words between aligned anchors
+    // and assign interpolated time ranges.
+    let mut oi = 0;
+    let mut ai = 0; // index into aligned[]
+    while oi < original_words.len() {
+        if ai < aligned.len() && aligned[ai].0 == oi {
+            // This word is aligned — ensure minimum duration so findWordAt can match it
+            let start = aligned[ai].1;
+            let end = if aligned[ai].2 <= start { start + 0.05 } else { aligned[ai].2 };
+            result.push(serde_json::json!({"word": original_words[oi], "start": start, "end": end}));
+            ai += 1;
+            oi += 1;
+        } else {
+            // Run of dropped words: collect them until next aligned word (or end)
+            let run_start = oi;
+            while oi < original_words.len() && !(ai < aligned.len() && aligned[ai].0 == oi) {
+                oi += 1;
+            }
+            let run_len = oi - run_start;
+
+            // Place dropped words in unique time slots BEFORE the next aligned word.
+            // Each gets a 50ms window, counting backwards from next_start.
+            let prev_end = if ai > 0 { aligned[ai - 1].2 } else { 0.0 };
+            let next_start = if ai < aligned.len() { aligned[ai].1 } else { prev_end + 0.5 };
+            let slot = 0.05;
+            // Place them just before next_start, working backwards
+            let block_start = next_start - slot * run_len as f64;
+            for k in 0..run_len {
+                let start = block_start + slot * k as f64;
+                let end = block_start + slot * (k + 1) as f64;
+                // Clamp so we don't go before prev_end
+                let start = start.max(prev_end + 0.001 * (k as f64 + 1.0));
+                result.push(serde_json::json!({
+                    "word": original_words[run_start + k],
+                    "start": start,
+                    "end": end,
+                    "dropped": true,
+                }));
+            }
+        }
+    }
+
+    if result.len() != original_words.len() {
+        eprintln!("[align] BUG: result has {} entries but original has {} words!", result.len(), original_words.len());
+    }
+
+    // Log dropped words with their interpolated times
+    for (i, (word, entry)) in original_words.iter().zip(result.iter()).enumerate() {
+        let start = entry["start"].as_f64().unwrap_or(0.0);
+        let end = entry["end"].as_f64().unwrap_or(0.0);
+        let is_interpolated = end - start < 0.04;
+        if is_interpolated {
+            eprintln!("[align] interpolated [{i}] '{}' t={:.3}..{:.3}", word, start, end);
+        }
+    }
+
     result
 }
 
@@ -542,7 +584,7 @@ pub async fn api_review_pronunciation(
         }
     }
 
-    // Rebuild spoken form for current sentence and all queued sentences containing this word
+    // Rebuild spoken form from scratch for current + queued sentences using ALL overrides
     let ids_to_update = {
         let review = state.review.lock().unwrap();
         let mut ids = vec![id];
@@ -551,13 +593,13 @@ pub async fn api_review_pronunciation(
     };
     {
         let db = state.db.lock().unwrap();
+        let overrides = db.get_spoken_overrides().map_err(err)?;
         for sid in ids_to_update {
             if let Ok(Some(s)) = db.get_sentence(sid) {
-                let new_spoken = tts::replace_word_in_spoken(&s.spoken, &body.word, &body.spoken);
+                let new_spoken = tts::build_spoken_form(&s.text, &overrides);
                 eprintln!("[pronunciation] sentence {sid}: '{}' → '{}'", s.spoken, new_spoken);
                 if new_spoken != s.spoken {
                     let _ = db.update_sentence_spoken(sid, &new_spoken);
-                    let _ = db.update_sentence_status(sid, "pending");
                 }
             }
         }
@@ -622,12 +664,7 @@ pub async fn api_review_edit_text(
     {
         let db = state.db.lock().unwrap();
         let overrides = db.get_spoken_overrides().map_err(err)?;
-
-        // Start with the new text as spoken, then apply overrides
-        let mut spoken = new_text.clone();
-        for (term, spoken_form) in &overrides {
-            spoken = tts::replace_word_in_spoken(&spoken, term, spoken_form);
-        }
+        let spoken = tts::build_spoken_form(&new_text, &overrides);
 
         // Update text, spoken, and unknown words
         let unknown = crate::tts::detect_unknown_words(&new_text);
@@ -735,18 +772,6 @@ pub async fn api_review_asr(
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
         let wav_bytes = body.to_vec();
 
-        // Save human recording to disk for eval
-        if let Some(id) = current_id {
-            let human_wav_path = format!("{}/human_{}.wav", audio_dir, id);
-            if let Err(e) = std::fs::write(&human_wav_path, &wav_bytes) {
-                eprintln!("[human-asr] Failed to save recording: {e}");
-            } else {
-                let db = state2.db.lock().unwrap();
-                let _ = db.update_sentence_human_wav(id, &human_wav_path);
-                eprintln!("[human-asr] Saved recording to {human_wav_path}");
-            }
-        }
-
         // Decode human recording WAV
         let cursor = std::io::Cursor::new(wav_bytes);
         let mut reader = hound::WavReader::new(cursor)
@@ -763,13 +788,38 @@ pub async fn api_review_asr(
             }
         };
 
-        let mono = if spec.channels > 1 {
+        let mut mono: Vec<f32> = if spec.channels > 1 {
             samples_f32.chunks(spec.channels as usize)
                 .map(|ch| ch.iter().sum::<f32>() / ch.len() as f32)
                 .collect()
         } else {
             samples_f32
         };
+
+        // Normalize audio
+        let peak = mono.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        if peak > 0.001 {
+            let gain = 0.95 / peak;
+            for s in &mut mono { *s *= gain; }
+        }
+
+        // Save normalized recording to disk for eval
+        if let Some(id) = current_id {
+            let human_wav_path = format!("{}/human_{}.wav", audio_dir, id);
+            let mut audio = crate::tts::TtsAudio { samples: mono.clone(), sample_rate: spec.sample_rate };
+            match audio.to_wav() {
+                Ok(bytes) => {
+                    if let Err(e) = std::fs::write(&human_wav_path, &bytes) {
+                        eprintln!("[human-asr] Failed to save recording: {e}");
+                    } else {
+                        let db = state2.db.lock().unwrap();
+                        let _ = db.update_sentence_human_wav(id, &human_wav_path);
+                        eprintln!("[human-asr] Saved normalized recording to {human_wav_path}");
+                    }
+                }
+                Err(e) => eprintln!("[human-asr] Failed to encode WAV: {e}"),
+            }
+        }
 
         let samples_16k = crate::tts::resample_to_16k(&mono, spec.sample_rate)?;
 
@@ -787,35 +837,61 @@ pub async fn api_review_asr(
             }
         };
 
-        // Run forced aligner on TTS audio with the human ASR text, so the
-        // transcript grid can show time-aligned human ASR words against the TTS waveform
-        let (qwen_alignment, parakeet_alignment) = if let Some(id) = current_id {
-            let wav_path = format!("{}/{}.wav", audio_dir, id);
-            let tts_16k = load_wav_16k(&wav_path);
-            match tts_16k {
-                Ok(samples) => {
-                    let align = |text: &str| -> Vec<serde_json::Value> {
-                        if text.is_empty() { return vec![]; }
-                        match state2.aligner.align(&samples, text) {
-                            Ok(items) => items.iter().map(|item| serde_json::json!({
-                                "word": item.word, "start": item.start_time, "end": item.end_time,
-                            })).collect(),
-                            Err(e) => { eprintln!("[human-asr] Aligner failed: {e}"); vec![] }
-                        }
-                    };
-                    (align(&qwen), align(&parakeet))
-                }
-                Err(e) => { eprintln!("[human-asr] Failed to load TTS wav: {e}"); (vec![], vec![]) }
+        // Run forced aligner on the HUMAN recording for all alignments
+        let sentence = if let Some(id) = current_id {
+            let db = state2.db.lock().unwrap();
+            db.get_sentence(id).ok().flatten()
+        } else { None };
+
+        // Align spoken form against human audio
+        let spoken_text = sentence.as_ref().map(|s| s.spoken.replace('-', " ")).unwrap_or_default();
+        let written_text = sentence.as_ref().map(|s| s.text.clone()).unwrap_or_default();
+
+        let spoken_items = if !spoken_text.is_empty() {
+            state2.aligner.align(&samples_16k, &spoken_text).unwrap_or_default()
+        } else { vec![] };
+
+        let written_items = if !written_text.is_empty() {
+            state2.aligner.align(&samples_16k, &written_text).unwrap_or_default()
+        } else { vec![] };
+
+        let spoken_words: Vec<&str> = spoken_text.split_whitespace().collect();
+        let alignment = match_alignment(&spoken_words, &spoken_items);
+
+        let original_words: Vec<&str> = written_text.split_whitespace().collect();
+        let written_alignment = match_alignment(&original_words, &written_items);
+
+        // Align ASR text against human audio
+        let align_asr = |text: &str| -> Vec<serde_json::Value> {
+            if text.is_empty() { return vec![]; }
+            match state2.aligner.align(&samples_16k, text) {
+                Ok(items) => items.iter().map(|item| serde_json::json!({
+                    "word": item.word, "start": item.start_time, "end": item.end_time,
+                })).collect(),
+                Err(e) => { eprintln!("[human-asr] Aligner failed: {e}"); vec![] }
             }
-        } else {
-            (vec![], vec![])
         };
+        let qwen_alignment = align_asr(&qwen);
+        let parakeet_alignment = align_asr(&parakeet);
+
+        // Encode human audio as base64 for playback
+        use base64::Engine;
+        let human_wav_path = current_id.map(|id| format!("{}/human_{}.wav", audio_dir, id));
+        let audio_b64 = if let Some(ref path) = human_wav_path {
+            match std::fs::read(path) {
+                Ok(bytes) => Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
+                Err(_) => None,
+            }
+        } else { None };
 
         Ok(serde_json::json!({
             "qwen": qwen,
             "parakeet": parakeet,
             "qwen_alignment": qwen_alignment,
             "parakeet_alignment": parakeet_alignment,
+            "alignment": alignment,
+            "written_alignment": written_alignment,
+            "audio_b64": audio_b64,
         }))
     })
     .await

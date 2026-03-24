@@ -12,3 +12,4 @@ rand = "0.9"
 shellexpand = "3"
 synth-corrupt = { path = "../synth-corrupt" }
 pulldown-cmark = "0.12"
+ureq = "3"

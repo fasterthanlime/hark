@@ -121,7 +121,7 @@ pub struct CorpusStats {
 
 // --- Jobs ---
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: i64,
     pub job_type: String,
@@ -157,6 +157,18 @@ impl Db {
         let _ = conn.execute_batch("ALTER TABLE sentences ADD COLUMN alignment_json TEXT;");
         let _ = conn.execute_batch("ALTER TABLE sentences ADD COLUMN tts_backend TEXT;");
         let _ = conn.execute_batch("ALTER TABLE sentences ADD COLUMN human_wav_path TEXT;");
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS vocab_confusions (
+                id INTEGER PRIMARY KEY,
+                term TEXT NOT NULL,
+                qwen_heard TEXT NOT NULL,
+                parakeet_heard TEXT NOT NULL,
+                qwen_match INTEGER NOT NULL,
+                parakeet_match INTEGER NOT NULL,
+                tts_backend TEXT,
+                created_at TEXT NOT NULL
+            )"
+        ).ok();
         Ok(Db { conn })
     }
 
@@ -436,6 +448,11 @@ impl Db {
     }
 
     /// Find a vocab entry by term (exact, case-insensitive).
+    pub fn delete_vocab_by_term(&self, term: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM vocab WHERE LOWER(term) = LOWER(?1)", params![term])?;
+        Ok(())
+    }
+
     pub fn find_vocab_by_term(&self, term: &str) -> Result<Option<VocabRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, term, spoken_auto, spoken_override, reviewed FROM vocab WHERE LOWER(term) = LOWER(?1)"
@@ -517,6 +534,62 @@ impl Db {
             params![path, id],
         )?;
         Ok(())
+    }
+
+    // ==================== CONFUSIONS ====================
+
+    pub fn insert_confusion(&self, term: &str, qwen: &str, parakeet: &str, qwen_match: bool, parakeet_match: bool, backend: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO vocab_confusions (term, qwen_heard, parakeet_heard, qwen_match, parakeet_match, tts_backend, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![term, qwen, parakeet, qwen_match as i64, parakeet_match as i64, backend, now_str()],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_confusions(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM vocab_confusions", [])?;
+        Ok(())
+    }
+
+    /// Get vocab terms sorted by how often ASR gets them wrong
+    pub fn vocab_scan_results(&self) -> Result<Vec<(String, i64, i64, i64)>> {
+        // Returns (term, total_scans, qwen_errors, parakeet_errors)
+        let mut stmt = self.conn.prepare(
+            "SELECT term, COUNT(*) as total,
+                    SUM(CASE WHEN qwen_match = 0 THEN 1 ELSE 0 END) as qwen_err,
+                    SUM(CASE WHEN parakeet_match = 0 THEN 1 ELSE 0 END) as parakeet_err
+             FROM vocab_confusions
+             GROUP BY term
+             ORDER BY (qwen_err + parakeet_err) DESC, term"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Get all unique mishearings for a term
+    pub fn confusions_for_term(&self, term: &str) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT qwen_heard, parakeet_heard FROM vocab_confusions WHERE term = ?1 AND (qwen_match = 0 OR parakeet_match = 0)"
+        )?;
+        let rows = stmt.query_map(params![term], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn all_vocab_terms(&self) -> Result<Vec<(String, Option<String>)>> {
+        // Returns (term, spoken_override)
+        let mut stmt = self.conn.prepare("SELECT term, spoken_override FROM vocab ORDER BY term COLLATE NOCASE")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn confusion_count(&self) -> Result<i64> {
+        Ok(self.conn.query_row("SELECT COUNT(DISTINCT term) FROM vocab_confusions", [], |r| r.get(0))?)
     }
 
     // ==================== CANDIDATES ====================

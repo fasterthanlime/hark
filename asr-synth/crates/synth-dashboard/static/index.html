@@ -5,7 +5,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>hark ml</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%2358a6ff'/><path d='M6 16h3l2-8 3 16 3-12 2 8 3-10 2 6h2' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+    <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%2358a6ff'/><path d='M6 16h3l2-8 3 16 3-12 2 8 3-10 2 6h2' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Jost:ital,wght@0,100..900;1,100..900&display=swap"
@@ -570,41 +571,76 @@
         }
 
         .vocab-overlay {
-            position: fixed; inset: 0; z-index: 300;
-            display: flex; align-items: center; justify-content: center;
-            background: rgba(0,0,0,0.5);
+            position: fixed;
+            inset: 0;
+            z-index: 300;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.5);
         }
+
         .vocab-editor {
             background: var(--surface);
             border: 1px solid var(--accent);
             border-radius: 12px;
             padding: 24px 32px;
-            min-width: 400px; max-width: 500px;
+            min-width: 400px;
+            max-width: 500px;
             box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
             text-align: center;
         }
+
         .vocab-editor .term {
-            font-size: 22px; font-weight: 600; margin-bottom: 16px;
+            font-size: 22px;
+            font-weight: 600;
+            margin-bottom: 16px;
         }
+
         .vocab-editor .status {
-            font-size: 13px; color: var(--text-muted); margin-bottom: 12px; min-height: 1.5em;
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+            min-height: 1.5em;
         }
+
         .vocab-editor .spoken-display {
-            font-size: 18px; margin-bottom: 12px; min-height: 1.5em;
-            color: var(--accent); font-weight: 500;
+            font-size: 18px;
+            margin-bottom: 12px;
+            min-height: 1.5em;
+            color: var(--accent);
+            font-weight: 500;
         }
+
         .vocab-editor .row {
-            display: flex; gap: 8px; align-items: center; justify-content: center;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            justify-content: center;
         }
+
         .vocab-editor input {
-            flex: 1; padding: 8px 12px; background: var(--bg);
-            border: 1px solid var(--border); border-radius: 6px;
-            color: var(--text); font-family: 'Jost', sans-serif;
-            font-size: 15px; outline: none; text-align: center;
+            flex: 1;
+            padding: 8px 12px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-family: 'Jost', sans-serif;
+            font-size: 15px;
+            outline: none;
+            text-align: center;
         }
-        .vocab-editor input:focus { border-color: var(--accent); }
+
+        .vocab-editor input:focus {
+            border-color: var(--accent);
+        }
+
         .vocab-editor .actions {
-            display: flex; gap: 8px; justify-content: center; margin-top: 16px;
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+            margin-top: 16px;
         }
 
         .record-btn {
@@ -643,6 +679,298 @@
             50% {
                 opacity: 0.6;
             }
+        }
+
+        /* ==================== PIPELINE ==================== */
+        .pipeline-wrap {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        .pipeline-header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+
+        .pipeline-header h2 {
+            font-size: 28px;
+            font-weight: 300;
+            letter-spacing: 6px;
+            text-transform: uppercase;
+            color: var(--text);
+            margin-bottom: 4px;
+        }
+
+        .pipeline-header .subtitle {
+            font-size: 12px;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+
+        .pipeline-stages {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+            position: relative;
+        }
+
+        .pipeline-connector {
+            width: 2px;
+            height: 24px;
+            margin: 0 auto;
+            position: relative;
+            overflow: visible;
+        }
+
+        .pipeline-connector::before {
+            content: '';
+            position: absolute;
+            left: 50%;
+            top: 0;
+            width: 2px;
+            height: 100%;
+            transform: translateX(-50%);
+            background: linear-gradient(to bottom, rgba(88, 166, 255, 0.4), rgba(88, 166, 255, 0.1));
+        }
+
+        .pipeline-connector.active::before {
+            background: linear-gradient(to bottom, rgba(88, 166, 255, 0.8), rgba(88, 166, 255, 0.3));
+            box-shadow: 0 0 8px rgba(88, 166, 255, 0.3);
+        }
+
+        .stage-card {
+            position: relative;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px 24px;
+            background: var(--surface);
+            transition: all 0.3s ease;
+            overflow: hidden;
+        }
+
+        .stage-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--border), transparent);
+            transition: all 0.3s ease;
+        }
+
+        .stage-card.ready::before {
+            background: linear-gradient(90deg, transparent, var(--accent), transparent);
+            box-shadow: 0 0 12px rgba(88, 166, 255, 0.2);
+        }
+
+        .stage-card.complete::before {
+            background: linear-gradient(90deg, transparent, var(--success), transparent);
+            box-shadow: 0 0 12px rgba(63, 185, 80, 0.2);
+        }
+
+        .stage-card.running::before {
+            background: linear-gradient(90deg, transparent, var(--accent), transparent);
+            animation: pipeline-scan 2s ease-in-out infinite;
+        }
+
+        .stage-card.dimmed {
+            opacity: 0.4;
+        }
+
+        @keyframes pipeline-scan {
+
+            0%,
+            100% {
+                opacity: 0.5;
+            }
+
+            50% {
+                opacity: 1;
+                box-shadow: 0 0 20px rgba(88, 166, 255, 0.3);
+            }
+        }
+
+        .stage-top {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 8px;
+        }
+
+        .stage-icon {
+            width: 40px;
+            height: 40px;
+            flex-shrink: 0;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(88, 166, 255, 0.08);
+            border: 1px solid rgba(88, 166, 255, 0.15);
+        }
+
+        .stage-card.complete .stage-icon {
+            background: rgba(63, 185, 80, 0.08);
+            border-color: rgba(63, 185, 80, 0.15);
+        }
+
+        .stage-icon svg {
+            width: 20px;
+            height: 20px;
+        }
+
+        .stage-title {
+            flex: 1;
+        }
+
+        .stage-title h3 {
+            font-size: 15px;
+            font-weight: 600;
+            margin: 0;
+            letter-spacing: 0.5px;
+        }
+
+        .stage-title .stage-num {
+            font-size: 10px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+
+        .stage-status-badge {
+            font-size: 11px;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-weight: 500;
+            letter-spacing: 0.5px;
+        }
+
+        .stage-status-badge.idle {
+            background: rgba(139, 148, 158, 0.1);
+            color: var(--text-muted);
+        }
+
+        .stage-status-badge.ready {
+            background: rgba(88, 166, 255, 0.1);
+            color: var(--accent);
+            border: 1px solid rgba(88, 166, 255, 0.2);
+        }
+
+        .stage-status-badge.done {
+            background: rgba(63, 185, 80, 0.1);
+            color: var(--success);
+            border: 1px solid rgba(63, 185, 80, 0.2);
+        }
+
+        .stage-status-badge.active {
+            background: rgba(88, 166, 255, 0.15);
+            color: var(--accent);
+            border: 1px solid rgba(88, 166, 255, 0.3);
+            animation: pipeline-pulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pipeline-pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.6;
+            }
+        }
+
+        .stage-desc {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+            line-height: 1.5;
+        }
+
+        .stage-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .stage-controls label {
+            font-size: 11px;
+            color: var(--text-muted);
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        .stage-controls input,
+        .stage-controls select {
+            padding: 5px 8px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            color: var(--text);
+            font-family: 'Jost', sans-serif;
+            font-size: 13px;
+            transition: border-color 0.2s;
+        }
+
+        .stage-controls input:focus,
+        .stage-controls select:focus {
+            border-color: var(--accent);
+            outline: none;
+        }
+
+        .stage-launch-btn {
+            padding: 6px 16px;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            border: 1px solid var(--accent);
+            background: rgba(88, 166, 255, 0.1);
+            color: var(--accent);
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: 'Jost', sans-serif;
+        }
+
+        .stage-launch-btn:hover:not(:disabled) {
+            background: rgba(88, 166, 255, 0.2);
+            box-shadow: 0 0 12px rgba(88, 166, 255, 0.15);
+        }
+
+        .stage-launch-btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
+        .stage-log {
+            margin-top: 12px;
+            max-height: 220px;
+            overflow: auto;
+            font-size: 11px;
+            font-family: 'SF Mono', 'Menlo', monospace;
+            padding: 10px 12px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(88, 166, 255, 0.1);
+            border-radius: 4px;
+            white-space: pre-wrap;
+            color: rgba(88, 166, 255, 0.7);
+            line-height: 1.6;
+        }
+
+        .pipeline-error {
+            padding: 10px 14px;
+            background: rgba(248, 81, 73, 0.08);
+            border: 1px solid rgba(248, 81, 73, 0.2);
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 13px;
+            color: var(--danger);
         }
     </style>
 </head>
@@ -1174,8 +1502,9 @@
             }, [unknownWords, original, unknownSet]);
 
             // Get all four alignments (timed word lists)
-            const spokenAlign = alignment || [];  // spoken form (vocab overrides applied)
-            const refAlign = writtenAlignment || alignment || []; // written form
+            // When human recording exists, all alignments are against the human audio
+            const spokenAlign = humanAsr?.alignment || alignment || [];
+            const refAlign = humanAsr?.written_alignment || writtenAlignment || alignment || [];
             const qAlign = humanAsr?.qwen_alignment || asr?.qwen_alignment || [];
             const pAlign = humanAsr?.parakeet_alignment || asr?.parakeet_alignment || [];
 
@@ -1193,13 +1522,26 @@
                 }
                 const times = [...boundaries].sort((a, b) => a - b);
 
-                // For each time slot, find active word from each list
+                // For each time slot, find the word with the tightest fit.
+                // This ensures dropped words (tiny 50ms slots) win over real words
+                // that happen to overlap at boundaries.
                 const findWordAt = (list, t) => {
+                    let best = null, bestDur = Infinity;
                     for (const w of list) {
-                        const mid = (w.start + w.end) / 2;
-                        if (t >= w.start - 0.01 && t < w.end + 0.01) return w;
+                        if (t >= w.start && t < w.end) {
+                            const dur = w.end - w.start;
+                            if (dur < bestDur) { best = w; bestDur = dur; }
+                        }
                     }
-                    return null;
+                    if (best) return best;
+                    // Tolerance-based fallback
+                    for (const w of list) {
+                        if (t >= w.start - 0.01 && t < w.end + 0.01) {
+                            const dur = w.end - w.start;
+                            if (dur < bestDur) { best = w; bestDur = dur; }
+                        }
+                    }
+                    return best;
                 };
 
                 // Walk time slots and build columns (each column = a unique combination change)
@@ -1241,17 +1583,30 @@
                 };
             }, [groups]);
 
-            // Map alignment index → column index for active word tracking
-            const activeColIdx = useMemo(() => {
-                if (activeWordIndex == null || !refAlign[activeWordIndex]) return -1;
-                const activeObj = refAlign[activeWordIndex];
-                for (let ci = 0; ci < groups.length; ci++) {
-                    if (groups[ci].ref === activeObj) return ci;
+            // Map alignment index → column RANGE for active word tracking.
+            // activeWordIndex is an index into spokenAlign (from the Waveform),
+            // so we find that spoken word's column range, then extend to cover all
+            // rows that overlap with those columns.
+            const activeColRange = useMemo(() => {
+                if (activeWordIndex == null || !spokenAlign[activeWordIndex]) return null;
+                const activeObj = spokenAlign[activeWordIndex];
+                // Find the spoken row span that contains this word
+                for (const span of rowSpans.spoken) {
+                    if (span.wordObj === activeObj) {
+                        return {start: span.colStart, end: span.colStart + span.colSpan};
+                    }
                 }
-                return -1;
-            }, [activeWordIndex, refAlign, groups]);
+                return null;
+            }, [activeWordIndex, spokenAlign, rowSpans.spoken]);
 
-            const isSpanActive = (s) => activeColIdx >= 0 && activeColIdx >= s.colStart && activeColIdx < s.colStart + s.colSpan;
+            const activeColIdx = activeColRange ? activeColRange.start : -1; // for scroll target
+
+            const isSpanActive = (s) => {
+                if (!activeColRange) return false;
+                // Check if span overlaps with active range
+                const spanEnd = s.colStart + s.colSpan;
+                return s.colStart < activeColRange.end && spanEnd > activeColRange.start;
+            };
             const activeBg = 'rgba(88,166,255,0.15)';
 
             // Auto-scroll to active column
@@ -1264,10 +1619,10 @@
             if (!groups.length) return null;
 
             return (
-                <div style={{fontFamily: 'Jost,sans-serif', fontSize: 14}}>
+                <div style={{fontFamily: 'Jost, sans-serif', fontSize: 17, display: 'flex', alignItems: 'center', flexDirection: 'column'}}>
                     {/* Legend on top */}
                     <div style={{display: 'flex', gap: 16, marginBottom: 4, fontSize: 11}}>
-                        <span style={{color: '#d2a8ff', fontSize: '0.85em'}}>Spoken</span>
+                        <span style={{color: '#d2a8ff'}}>Spoken</span>
                         <span style={{color: 'var(--text-muted)'}}>Original</span>
                         <span style={{color: qColor}}>Qwen</span>
                         <span style={{color: pColor}}>Parakeet</span>
@@ -1278,22 +1633,21 @@
                             display: 'inline-grid',
                             gridTemplateColumns: `repeat(${groups.length}, max-content)`,
                             gridTemplateRows: 'auto auto auto auto',
-                            gap: '1px 5px',
+                            gap: '1px 0',
                             padding: '.5em .2em',
                             whiteSpace: 'nowrap',
                         }}>
-                            {/* Row 1: Spoken (vocab overrides) — only show words that differ from written */}
+                            {/* Row 1: Spoken (vocab overrides) — always show, dim if same as written */}
                             {rowSpans.spoken.map((s, i) => {
+                                const isLast = s.colStart + s.colSpan >= groups.length;
                                 if (!s.word) return <div key={`s${i}`} style={{gridRow: 1, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}} />;
-                                // Check if spoken word differs from the written word at this position
-                                let differsFromRef = true;
+                                let sameAsRef = false;
                                 for (let c = s.colStart; c < s.colStart + s.colSpan; c++) {
                                     const r = groups[c]?.ref;
-                                    if (r && cleanWord(s.word) === cleanWord(r.word)) { differsFromRef = false; break; }
+                                    if (r && cleanWord(s.word) === cleanWord(r.word)) {sameAsRef = true; break;}
                                 }
-                                if (!differsFromRef) return <div key={`s${i}`} style={{gridRow: 1, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}} />;
-                                return <div key={`s${i}`} style={{gridRow: 1, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em', background: isSpanActive(s) ? activeBg : undefined, borderRadius: isSpanActive(s) ? 3 : undefined}}>
-                                    <span style={{color: '#d2a8ff', fontSize: '0.85em'}}>{s.word}</span>
+                                return <div key={`s${i}`} style={{gridRow: 1, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em', padding: '0 4px', borderRight: !isLast ? '1px solid rgba(48,54,61,0.4)' : undefined, background: isSpanActive(s) ? activeBg : undefined, borderRadius: isSpanActive(s) ? 3 : undefined}}>
+                                    <span style={{color: '#d2a8ff', opacity: sameAsRef ? 0.2 : 1}}>{s.word}</span>
                                 </div>;
                             })}
                             {/* Row 2: Original (written text) */}
@@ -1303,11 +1657,22 @@
                                 const c = cleanWord(s.word);
                                 const isUnknown = unknownSet.has(c);
                                 const num = unknownNum.get(c);
+                                // Check if this unknown word has an override (spoken differs from written)
+                                let hasOverride = false;
+                                if (isUnknown) {
+                                    for (let ci = s.colStart; ci < s.colStart + s.colSpan; ci++) {
+                                        const sp = groups[ci]?.spoken;
+                                        const rf = groups[ci]?.ref;
+                                        if (sp && rf && cleanWord(sp.word) !== cleanWord(rf.word)) { hasOverride = true; break; }
+                                    }
+                                }
+                                const outlineColor = hasOverride ? 'var(--success)' : 'var(--warning)';
                                 const style = {
                                     ...(isActive ? {color: '#fff'} : {}),
-                                    ...(isUnknown ? {outline: '1px solid var(--warning)', outlineOffset: '1px', borderRadius: '3px', cursor: 'pointer'} : {}),
+                                    ...(isUnknown ? {outline: `1px solid ${outlineColor}`, outlineOffset: '1px', borderRadius: '3px', cursor: 'pointer'} : {}),
                                 };
-                                return <div key={`r${i}`} data-col={s.colStart} style={{gridRow: 2, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em', background: isActive ? activeBg : undefined, borderRadius: isActive ? 3 : undefined}}>
+                                const isLast = s.colStart + s.colSpan >= groups.length;
+                                return <div key={`r${i}`} data-col={s.colStart} style={{gridRow: 2, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em', padding: '0 4px', borderRight: !isLast ? '1px solid rgba(48,54,61,0.4)' : undefined, background: isActive ? activeBg : undefined, borderRadius: isActive ? 3 : undefined}}>
                                     <span style={style} onClick={isUnknown && onWordClick ? () => onWordClick(s.word) : undefined}>
                                         {s.word}{num && num <= 9 ? <span className="unknown-num-badge" style={{marginLeft: 2, verticalAlign: 'super'}}>{num}</span> : null}
                                     </span>
@@ -1315,26 +1680,28 @@
                             })}
                             {/* Row 3: Qwen */}
                             {rowSpans.q.map((s, i) => {
+                                const isLast = s.colStart + s.colSpan >= groups.length;
                                 if (!s.word) return <div key={`q${i}`} style={{gridRow: 3, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}} />;
                                 let isMatch = false;
                                 for (let c = s.colStart; c < s.colStart + s.colSpan; c++) {
                                     const r = groups[c]?.ref;
-                                    if (r && cleanWord(s.word) === cleanWord(r.word)) { isMatch = true; break; }
+                                    if (r && cleanWord(s.word) === cleanWord(r.word)) {isMatch = true; break;}
                                 }
-                                return <div key={`q${i}`} style={{gridRow: 3, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em', background: isSpanActive(s) ? activeBg : undefined, borderRadius: isSpanActive(s) ? 3 : undefined}}>
-                                    <span style={isMatch ? dimStyle : {color: qColor}}>{s.word}</span>
+                                return <div key={`q${i}`} style={{gridRow: 3, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em', padding: '0 4px', borderRight: !isLast ? '1px solid rgba(48,54,61,0.4)' : undefined, background: isSpanActive(s) ? activeBg : undefined, borderRadius: isSpanActive(s) ? 3 : undefined}}>
+                                    <span style={{color: qColor, opacity: isMatch ? 0.2 : 1}}>{s.word}</span>
                                 </div>;
                             })}
                             {/* Row 4: Parakeet */}
                             {rowSpans.p.map((s, i) => {
+                                const isLast = s.colStart + s.colSpan >= groups.length;
                                 if (!s.word) return <div key={`p${i}`} style={{gridRow: 4, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}} />;
                                 let isMatch = false;
                                 for (let c = s.colStart; c < s.colStart + s.colSpan; c++) {
                                     const r = groups[c]?.ref;
-                                    if (r && cleanWord(s.word) === cleanWord(r.word)) { isMatch = true; break; }
+                                    if (r && cleanWord(s.word) === cleanWord(r.word)) {isMatch = true; break;}
                                 }
-                                return <div key={`p${i}`} style={{gridRow: 4, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em', background: isSpanActive(s) ? activeBg : undefined, borderRadius: isSpanActive(s) ? 3 : undefined}}>
-                                    <span style={isMatch ? dimStyle : {color: pColor}}>{s.word}</span>
+                                return <div key={`p${i}`} style={{gridRow: 4, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em', padding: '0 4px', borderRight: !isLast ? '1px solid rgba(48,54,61,0.4)' : undefined, background: isSpanActive(s) ? activeBg : undefined, borderRadius: isSpanActive(s) ? 3 : undefined}}>
+                                    <span style={{color: pColor, opacity: isMatch ? 0.2 : 1}}>{s.word}</span>
                                 </div>;
                             })}
                         </div>
@@ -1457,12 +1824,12 @@
             const previewNewTerm = () => {
                 const text = newOverride.trim() || newTerm.trim();
                 if (!text) return;
-                fetchTtsBuffer(text).then(buf => playBuffer(buf)).catch(() => {});
+                fetchTtsBuffer(text).then(buf => playBuffer(buf)).catch(() => { });
                 setNewPreviewed(true);
             };
             const addTerm = async () => {
                 if (!newTerm.trim()) return;
-                if (!newPreviewed) { previewNewTerm(); return; }
+                if (!newPreviewed) {previewNewTerm(); return;}
                 await api('/api/vocab', {method: 'POST', body: JSON.stringify({term: newTerm.trim(), spoken_override: newOverride.trim() || undefined})});
                 setNewTerm(''); setNewOverride(''); setNewPreviewed(false); load();
             };
@@ -1478,9 +1845,9 @@
                     </div>
                     <div className="search-bar" style={{display: 'flex', gap: 8, alignItems: 'center', marginTop: 8}}>
                         <input placeholder="New term..." value={newTerm} onChange={e => setNewTerm(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter') addTerm(); }} />
-                        <input placeholder="Override (optional)" value={newOverride} onChange={e => { setNewOverride(e.target.value); setNewPreviewed(false); }}
-                            onKeyDown={e => { if (e.key === 'Enter') addTerm(); }} />
+                            onKeyDown={e => {if (e.key === 'Enter') addTerm();}} />
+                        <input placeholder="Override (optional)" value={newOverride} onChange={e => {setNewOverride(e.target.value); setNewPreviewed(false);}}
+                            onKeyDown={e => {if (e.key === 'Enter') addTerm();}} />
                         <button className="btn btn-sm btn-primary" onClick={addTerm} disabled={!newTerm.trim()}>{newPreviewed ? 'Save' : 'Preview'}</button>
                     </div>
                     {loading ? <p>Loading...</p> : vocab.length === 0 ? (
@@ -1524,6 +1891,7 @@
         function SentencesPage() {
             const [importing, setImporting] = useState(false);
             const [importResult, setImportResult] = useState(null);
+            const [importSource, setImportSource] = useState('hark');
             const [stats, setStats] = useState(null);
 
             const loadStats = () => api('/api/stats').then(setStats);
@@ -1533,7 +1901,7 @@
                 setImporting(true);
                 setImportResult(null);
                 try {
-                    const res = await api('/api/candidates/import', {method: 'POST'});
+                    const res = await api(`/api/candidates/import?source=${importSource}`, {method: 'POST'});
                     setImportResult(res);
                     loadStats();
                 } catch (e) {alert('Import failed: ' + e.message);}
@@ -1559,9 +1927,16 @@
                         </div>
                     )}
 
-                    <div style={{display: 'flex', gap: 12, flexWrap: 'wrap'}}>
+                    <div style={{display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center'}}>
+                        <select value={importSource} onChange={e => setImportSource(e.target.value)}
+                            style={{padding: '6px 10px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontFamily: 'Jost,sans-serif', fontSize: 14}}>
+                            <option value="hark">Hark transcriptions</option>
+                            <option value="claude">Claude history</option>
+                            <option value="codex">Codex history</option>
+                            <option value="all">All sources</option>
+                        </select>
                         <button className="btn btn-primary" onClick={importSources} disabled={importing}>
-                            {importing ? 'Scanning...' : 'Import Sources'}
+                            {importing ? 'Scanning...' : 'Import'}
                         </button>
                         {(pending > 0 || candidates > 0) && (
                             <a href="#/sentences/review" className="btn btn-success">Start Review</a>
@@ -1884,6 +2259,12 @@
                             if (res.ok) {
                                 const asr = await res.json();
                                 setHumanAsr(asr);
+                                // Switch to human audio for playback
+                                if (asr.audio_b64) {
+                                    const buf = await decodeAudioB64(asr.audio_b64);
+                                    setAudioBuf(buf);
+                                    playFrom(buf, 0);
+                                }
                             }
                             setTranscribing(false);
                         } catch (e) {console.error(e); setTranscribing(false);}
@@ -1905,7 +2286,7 @@
             // --- Derived state from server data ---
             const sentence = data?.sentence;
             const unknownWords = sentence?.unknown_words || [];
-            const alignment = data?.alignment || null;
+            const alignment = humanAsr?.alignment || data?.alignment || null;
             const backends = data?.backends || [];
             const activeBackend = data?.backend || 'pocket-hq';
             const progress = data?.progress || {};
@@ -1928,8 +2309,8 @@
                 const handler = (e) => {
                     if (e.target.tagName === 'INPUT') return;
                     if (busy && e.key !== 'r' && e.key !== 'R') return;
-                    if (e.key === 'ArrowRight') {e.preventDefault(); act('approve');}
-                    else if (e.key === 'ArrowLeft') {e.preventDefault(); act('reject');}
+                    if (e.key === 'ArrowRight' || e.key === 'o') {e.preventDefault(); act('approve');}
+                    else if (e.key === 'ArrowLeft' || e.key === 'n') {e.preventDefault(); act('reject');}
                     else if (e.key === ' ') {e.preventDefault(); togglePlayback();}
                     else if ((e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey && !e.altKey) {e.preventDefault(); toggleSentenceRecording();}
                     else if ((e.key === 's' || e.key === 'S') && !e.metaKey && !e.ctrlKey && !e.altKey && !editingWord) {e.preventDefault(); switchBackend('pocket-hq');}
@@ -2032,13 +2413,13 @@
 
                     <div className="review-actions">
                         <button className="review-action-btn reject" onClick={() => act('reject')} disabled={!!busy}>
-                            Reject<kbd>&larr;</kbd>
+                            Reject<kbd>n</kbd>
                         </button>
                         <button className="review-action-btn replay" onClick={togglePlayback}>
                             {playing ? 'Pause' : 'Play'}<kbd>space</kbd>
                         </button>
                         <button className="review-action-btn approve" onClick={() => act('approve')} disabled={!!busy}>
-                            Approve<kbd>&rarr;</kbd>
+                            Approve<kbd>o</kbd>
                         </button>
                     </div>
 
@@ -2051,15 +2432,15 @@
                     {error && <div className="error-toast">{error}</div>}
 
                     {editingWord && (
-                        <div className="vocab-overlay" onClick={e => { if (e.target === e.currentTarget) { stopPreview(); stopRecording(); setEditingWord(null); } }}>
+                        <div className="vocab-overlay" onClick={e => {if (e.target === e.currentTarget) {stopPreview(); stopRecording(); setEditingWord(null);} }}>
                             <div className="vocab-editor">
                                 <div className="term">{editingWord}</div>
                                 <div className="status">
-                                    {recording ? <span style={{color:'var(--danger)'}}>Recording... press Enter to stop</span>
-                                        : transcribing ? <span style={{color:'var(--accent)'}}>Transcribing...</span>
-                                        : editPreviewed ? 'Press Enter to save, Escape to cancel'
-                                        : editSpoken ? 'Press Enter to preview'
-                                        : 'Say the pronunciation or type it'}
+                                    {recording ? <span style={{color: 'var(--danger)'}}>Recording... press Enter to stop</span>
+                                        : transcribing ? <span style={{color: 'var(--accent)'}}>Transcribing...</span>
+                                            : editPreviewed ? 'Press Enter to save, Escape to cancel'
+                                                : editSpoken ? 'Press Enter to preview'
+                                                    : 'Say the pronunciation or type it'}
                                 </div>
                                 <div className="spoken-display">{editSpoken || '\u00A0'}</div>
                                 <div className="row">
@@ -2068,11 +2449,14 @@
                                         onKeyDown={e => {
                                             if (e.key === 'Enter') {
                                                 e.preventDefault();
-                                                if (recording) { stopRecording(); }
-                                                else if (editPreviewed) { saveVocabOverride(); }
-                                                else { previewVocabWord(); setEditPreviewed(true); }
+                                                if (recording && !editManualRef.current) {stopRecording();}
+                                                else {
+                                                    if (recording) stopRecording(); // stop in background, don't wait
+                                                    if (editPreviewed) {saveVocabOverride();}
+                                                    else {previewVocabWord(); setEditPreviewed(true);}
+                                                }
                                             }
-                                            if (e.key === 'Escape') { stopPreview(); stopRecording(); setEditingWord(null); }
+                                            if (e.key === 'Escape') {stopPreview(); stopRecording(); setEditingWord(null);}
                                         }} />
                                     <button className={`record-btn ${recording ? 'active' : ''}`}
                                         onClick={recording ? stopRecording : startRecording}
@@ -2081,7 +2465,7 @@
                                     </button>
                                 </div>
                                 <div className="actions">
-                                    <button className="btn btn-sm" onClick={() => { previewVocabWord(); setEditPreviewed(true); }}>Preview</button>
+                                    <button className="btn btn-sm" onClick={() => {previewVocabWord(); setEditPreviewed(true);}}>Preview</button>
                                     <button className="btn btn-sm btn-primary" onClick={saveVocabOverride} disabled={!editSpoken}>Save</button>
                                     <button className="btn btn-sm" onClick={() => {stopPreview(); stopRecording(); setEditingWord(null);}}>Cancel</button>
                                 </div>
@@ -2093,6 +2477,138 @@
         }
 
         // ==================== PIPELINE ====================
+
+        // SVG icons for each stage
+        const PipelineIcons = {
+            corpus: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 2a3 3 0 0 0-3 3v4a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" /><path d="M19 10v1a7 7 0 0 1-14 0v-1" /><line x1="12" y1="18" x2="12" y2="22" />
+                <path d="M8 22h8" opacity="0.5" />
+            </svg>,
+            prepare: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
+                <circle cx="6.5" cy="6.5" r="1" fill="currentColor" stroke="none" opacity="0.5" /><circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none" opacity="0.5" />
+            </svg>,
+            train: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="6" cy="6" r="2" /><circle cx="18" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="18" r="2" /><circle cx="12" cy="12" r="2.5" strokeWidth="2" />
+                <line x1="7.5" y1="7.5" x2="10" y2="10" opacity="0.4" /><line x1="16.5" y1="7.5" x2="14" y2="10" opacity="0.4" />
+                <line x1="7.5" y1="16.5" x2="10" y2="14" opacity="0.4" /><line x1="16.5" y1="16.5" x2="14" y2="14" opacity="0.4" />
+            </svg>,
+            eval: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+            </svg>,
+        };
+
+        function LiveCorrection() {
+            const [input, setInput] = useState('');
+            const [correcting, setCorrecting] = useState(false);
+            const [result, setResult] = useState(null);
+            const [recording, setRecording] = useState(false);
+            const [transcribing, setTranscribing] = useState(false);
+            const mediaRef = useRef(null);
+
+            const correct = async (parakeet, qwen) => {
+                setCorrecting(true);
+                try {
+                    const res = await api('/api/correct', {
+                        method: 'POST', body: JSON.stringify({parakeet, qwen}),
+                    });
+                    setResult({parakeet, qwen, corrected: res.corrected});
+                } catch (e) { setResult({parakeet, qwen, corrected: `(error: ${e.message})`}); }
+                setCorrecting(false);
+            };
+
+            const startRec = async () => {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+                    const mr = new MediaRecorder(stream, {mimeType: 'audio/webm'});
+                    const chunks = [];
+                    mr.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+                    mr.onstop = async () => {
+                        stream.getTracks().forEach(t => t.stop());
+                        setRecording(false);
+                        setTranscribing(true);
+                        try {
+                            const blob = new Blob(chunks, {type: 'audio/webm'});
+                            const arrayBuf = await blob.arrayBuffer();
+                            const decoded = await audioCtx.decodeAudioData(arrayBuf);
+                            const wavBytes = audioBufferToWav(decoded);
+                            // Run both ASR models
+                            const res = await fetch('/api/asr/dual', {
+                                method: 'POST', headers: {'Content-Type': 'audio/wav'}, body: wavBytes,
+                            });
+                            if (res.ok) {
+                                const asr = await res.json();
+                                setTranscribing(false);
+                                await correct(asr.parakeet || '', asr.qwen || '');
+                            } else { setTranscribing(false); }
+                        } catch (e) { console.error(e); setTranscribing(false); }
+                    };
+                    mediaRef.current = mr;
+                    mr.start();
+                    setRecording(true);
+                    setResult(null);
+                } catch (e) { console.error(e); }
+            };
+
+            const stopRec = () => {
+                if (mediaRef.current && mediaRef.current.state !== 'inactive') mediaRef.current.stop();
+                setRecording(false);
+            };
+
+            const manualCorrect = () => {
+                if (!input.trim()) return;
+                // Treat the input as both parakeet and qwen (simulating identical ASR output)
+                correct(input.trim(), input.trim());
+            };
+
+            return (
+                <div className="stage-card ready" style={{marginTop: 24}}>
+                    <div className="stage-top">
+                        <div className="stage-icon" style={{color: 'var(--accent)'}}>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                            </svg>
+                        </div>
+                        <div className="stage-title">
+                            <div className="stage-num">Live</div>
+                            <h3>Correction Demo</h3>
+                        </div>
+                    </div>
+                    <div className="stage-desc">
+                        Speak or type text to see the correction model in action. Records your voice, runs both ASR models, then corrects the output.
+                    </div>
+                    <div className="stage-controls" style={{flexDirection: 'column', alignItems: 'stretch', gap: 12}}>
+                        <div style={{display: 'flex', gap: 8, alignItems: 'center'}}>
+                            <button className="stage-launch-btn" onClick={recording ? stopRec : startRec}
+                                style={recording ? {borderColor: 'var(--danger)', color: 'var(--danger)', background: 'rgba(248,81,73,0.1)'} : {}}>
+                                {recording ? 'Stop' : transcribing ? 'Transcribing\u2026' : correcting ? 'Correcting\u2026' : 'Record'}
+                            </button>
+                            <span style={{color: 'var(--text-muted)', fontSize: 11}}>or</span>
+                            <input value={input} onChange={e => setInput(e.target.value)} placeholder="Type ASR text to correct..."
+                                style={{flex: 1}} onKeyDown={e => { if (e.key === 'Enter') manualCorrect(); }} />
+                            <button className="stage-launch-btn" onClick={manualCorrect} disabled={!input.trim() || correcting}>
+                                Correct
+                            </button>
+                        </div>
+                        {result && (
+                            <div style={{padding: '12px 16px', background: 'rgba(0,0,0,0.3)', borderRadius: 6, border: '1px solid rgba(88,166,255,0.1)', fontSize: 13, lineHeight: 1.8}}>
+                                {result.parakeet !== result.qwen ? (<>
+                                    <div><span style={{color: '#7ee787', opacity: 0.6, fontSize: 11, letterSpacing: '0.5px', textTransform: 'uppercase'}}>Parakeet</span> {result.parakeet}</div>
+                                    <div><span style={{color: '#58a6ff', opacity: 0.6, fontSize: 11, letterSpacing: '0.5px', textTransform: 'uppercase'}}>Qwen</span> {result.qwen}</div>
+                                </>) : (
+                                    <div><span style={{opacity: 0.6, fontSize: 11, letterSpacing: '0.5px', textTransform: 'uppercase'}}>Input</span> {result.parakeet}</div>
+                                )}
+                                <div style={{marginTop: 4, paddingTop: 4, borderTop: '1px solid rgba(88,166,255,0.1)'}}>
+                                    <span style={{color: 'var(--success)', fontSize: 11, letterSpacing: '0.5px', textTransform: 'uppercase'}}>Corrected</span>{' '}
+                                    <span style={{fontWeight: 600}}>{result.corrected}</span>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
         function PipelinePage() {
             const [status, setStatus] = useState(null);
             const [runningJob, setRunningJob] = useState(null);
@@ -2100,37 +2616,30 @@
             const [error, setError] = useState(null);
             const pollRef = useRef(null);
 
-            // Corpus config
-            const [corpusBackend, setCorpusBackend] = useState('openai');
-            // Train config
+            const [corpusBackend, setCorpusBackend] = useState('pocket-hq');
             const [trainIters, setTrainIters] = useState(1000);
             const [trainBatch, setTrainBatch] = useState(1);
             const [trainLayers, setTrainLayers] = useState(4);
             const [trainModel, setTrainModel] = useState('Qwen/Qwen2.5-0.5B');
-            // Prepare config
             const [identityCount, setIdentityCount] = useState(95000);
+            // Vocab scan config
+            const [scanBatch, setScanBatch] = useState(20);
+            const [scanLimit, setScanLimit] = useState(250);
 
             const loadStatus = () => api('/api/pipeline/status').then(s => {
                 setStatus(s);
-                if (s.running_job && !runningJob) {
-                    setRunningJob(s.running_job);
-                }
+                if (s.running_job && !runningJob) setRunningJob(s.running_job);
             });
-            useEffect(() => { loadStatus(); }, []);
+            useEffect(() => {loadStatus();}, []);
 
-            // Poll running job
             useEffect(() => {
                 if (!runningJob) return;
                 const poll = async () => {
                     try {
                         const job = await api(`/api/jobs/${runningJob.id}`);
                         setJobLog(job.log);
-                        if (job.status !== 'running') {
-                            setRunningJob(null);
-                            setJobLog('');
-                            loadStatus();
-                        }
-                    } catch (e) {}
+                        if (job.status !== 'running') {setRunningJob(null); setJobLog(''); loadStatus();}
+                    } catch (e) { }
                 };
                 poll();
                 pollRef.current = setInterval(poll, 2000);
@@ -2140,123 +2649,312 @@
             const startJob = async (type, config = {}) => {
                 setError(null);
                 try {
-                    const res = await api(`/api/jobs/${type}`, {
-                        method: 'POST', body: JSON.stringify(config),
-                    });
-                    if (res.job_id) {
-                        setRunningJob({id: res.job_id, job_type: type});
-                    } else if (res.error) {
-                        setError(res.error);
-                    }
-                } catch (e) { setError(e.message); }
+                    const res = await api(`/api/jobs/${type}`, {method: 'POST', body: JSON.stringify(config)});
+                    if (res.job_id) setRunningJob({id: res.job_id, job_type: type});
+                    else if (res.error) setError(res.error);
+                } catch (e) {setError(e.message);}
+            };
+
+            const stopJob = async () => {
+                try {
+                    await api('/api/jobs/stop', {method: 'POST'});
+                } catch (e) {setError(e.message);}
             };
 
             const logRef = useRef(null);
-            useEffect(() => {
-                if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-            }, [jobLog]);
+            useEffect(() => {if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;}, [jobLog]);
 
-            if (!status) return <div className="container"><p>Loading...</p></div>;
+            if (!status) return <div className="pipeline-wrap"><p style={{textAlign: 'center', color: 'var(--text-muted)'}}>Initializing pipeline...</p></div>;
 
             const isRunning = !!runningJob;
-            const runningType = runningJob?.job_type;
+            const rt = runningJob?.job_type;
+
+            const stageState = (type, exists, prereq) => {
+                if (rt === type) return 'running';
+                if (exists) return 'complete';
+                if (prereq) return 'ready';
+                return 'idle';
+            };
+            const s1 = stageState('corpus', status.corpus_exists, status.approved_count > 0);
+            const s2 = stageState('prepare', status.training_data_exists, status.corpus_exists);
+            const s3 = stageState('train', status.adapters_exist, status.training_data_exists);
+            const s4 = stageState('eval', false, status.adapters_exist && status.corpus_exists);
+
+            const cardClass = (state, type) => {
+                let c = 'stage-card';
+                if (state === 'complete') c += ' complete';
+                else if (state === 'running') c += ' running';
+                else if (state === 'ready') c += ' ready';
+                if (rt && rt !== type) c += ' dimmed';
+                return c;
+            };
+
+            const badgeClass = (state) => {
+                if (state === 'running') return 'stage-status-badge active';
+                if (state === 'complete') return 'stage-status-badge done';
+                if (state === 'ready') return 'stage-status-badge ready';
+                return 'stage-status-badge idle';
+            };
+
+            const badgeText = (state, completeText) => {
+                if (state === 'running') return 'Processing';
+                if (state === 'complete') return completeText;
+                if (state === 'ready') return 'Ready';
+                return 'Waiting';
+            };
+
+            return (
+                <div className="pipeline-wrap">
+                    <div className="pipeline-header">
+                        <h2>Training Pipeline</h2>
+                        <div className="subtitle">ASR Error Correction Model</div>
+                    </div>
+
+                    {error && <div className="pipeline-error">{error}</div>}
+                    {isRunning && (
+                        <div style={{textAlign: 'right', marginBottom: 8}}>
+                            <button className="stage-launch-btn" style={{borderColor: 'var(--warning)', color: 'var(--warning)', background: 'rgba(210,153,34,0.1)'}} onClick={stopJob}>Stop</button>
+                        </div>
+                    )}
+
+                    <div className="pipeline-stages">
+                        {/* Stage 0: Vocab Scan */}
+                        <div className={cardClass(status.vocab_scanned > 0 ? 'complete' : (rt === 'vocab-scan' ? 'running' : 'ready'), 'vocab-scan')}>
+                            <div className="stage-top">
+                                <div className="stage-icon" style={{color: status.vocab_scanned > 0 ? 'var(--success)' : 'var(--accent)'}}>
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                                        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                                    </svg>
+                                </div>
+                                <div className="stage-title">
+                                    <div className="stage-num">Stage 00</div>
+                                    <h3>Vocab Scan</h3>
+                                </div>
+                                <span className={status.vocab_scanned > 0 ? 'stage-status-badge done' : (rt === 'vocab-scan' ? 'stage-status-badge active' : 'stage-status-badge ready')}>
+                                    {status.vocab_scanned > 0 ? `${status.vocab_scanned} terms scanned` : rt === 'vocab-scan' ? 'Scanning' : 'Ready'}
+                                </span>
+                            </div>
+                            <div className="stage-desc">
+                                TTS each vocab term in batches, run ASR, identify which terms get misheard. Prioritizes override work and builds the confusion table for synthetic corpus generation.
+                            </div>
+                            <div className="stage-controls">
+                                <label>TTS</label>
+                                <select value={corpusBackend} onChange={e => setCorpusBackend(e.target.value)}>
+                                    {(status.backends || []).map(b => <option key={b} value={b}>{b}</option>)}
+                                </select>
+                                <label>Batch</label>
+                                <input type="number" value={scanBatch} onChange={e => setScanBatch(parseInt(e.target.value) || 50)} style={{width: 50}} />
+                                <label>Limit</label>
+                                <input type="number" value={scanLimit} onChange={e => setScanLimit(parseInt(e.target.value) || 0)} style={{width: 60}} placeholder="0=all" />
+                                <div style={{flex:1}} />
+                                <button className="stage-launch-btn" disabled={isRunning}
+                                    onClick={() => startJob('vocab-scan', {tts_backend: corpusBackend, batch_size: scanBatch, limit: scanLimit || undefined})}>
+                                    {rt === 'vocab-scan' ? 'Scanning\u2026' : status.vocab_scanned > 0 ? 'Re-scan' : 'Scan'}
+                                </button>
+                            </div>
+                            {rt === 'vocab-scan' && jobLog && <pre ref={logRef} className="stage-log">{jobLog}</pre>}
+                            {status.vocab_scanned > 0 && rt !== 'vocab-scan' && (
+                                <div style={{marginTop: 8}}>
+                                    <a href="#/pipeline/scan" style={{fontSize: 12, color: 'var(--accent)'}}>View scan results →</a>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className={`pipeline-connector${status.vocab_scanned > 0 ? ' active' : ''}`} />
+
+                        {/* Stage 1: Corpus */}
+                        <div className={cardClass(s1, 'corpus')}>
+                            <div className="stage-top">
+                                <div className="stage-icon" style={{color: s1 === 'complete' ? 'var(--success)' : 'var(--accent)'}}>{PipelineIcons.corpus}</div>
+                                <div className="stage-title">
+                                    <div className="stage-num">Stage 01</div>
+                                    <h3>Generate Corpus</h3>
+                                </div>
+                                <span className={badgeClass(s1)}>{badgeText(s1, `${status.corpus_lines} pairs`)}</span>
+                            </div>
+                            <div className="stage-desc">
+                                Synthesize speech via TTS, transcribe with dual ASR models. Each approved sentence becomes an (original, qwen, parakeet) training triple.
+                            </div>
+                            <div className="stage-controls">
+                                <label>TTS</label>
+                                <select value={corpusBackend} onChange={e => setCorpusBackend(e.target.value)}>
+                                    {(status.backends || []).map(b => <option key={b} value={b}>{b}</option>)}
+                                </select>
+                                <span style={{fontSize: 11, color: 'var(--text-muted)'}}>{status.approved_count} approved</span>
+                                <div style={{flex: 1}} />
+                                <button className="stage-launch-btn" disabled={isRunning || status.approved_count === 0}
+                                    onClick={() => startJob('corpus', {tts_backend: corpusBackend})}>
+                                    {rt === 'corpus' ? 'Running\u2026' : 'Generate'}
+                                </button>
+                            </div>
+                            {rt === 'corpus' && jobLog && <pre ref={logRef} className="stage-log">{jobLog}</pre>}
+                        </div>
+
+                        <div className={`pipeline-connector${s1 === 'complete' || s1 === 'running' ? ' active' : ''}`} />
+
+                        {/* Stage 2: Prepare */}
+                        <div className={cardClass(s2, 'prepare')}>
+                            <div className="stage-top">
+                                <div className="stage-icon" style={{color: s2 === 'complete' ? 'var(--success)' : 'var(--accent)'}}>{PipelineIcons.prepare}</div>
+                                <div className="stage-title">
+                                    <div className="stage-num">Stage 02</div>
+                                    <h3>Prepare Training Data</h3>
+                                </div>
+                                <span className={badgeClass(s2)}>{badgeText(s2, `${status.train_count?.toLocaleString()} examples`)}</span>
+                            </div>
+                            <div className="stage-desc">
+                                Generate identity examples from conversation history, merge with corpus triples, split into train / valid / test partitions.
+                            </div>
+                            <div className="stage-controls">
+                                <label>Identity</label>
+                                <input type="number" value={identityCount} onChange={e => setIdentityCount(parseInt(e.target.value) || 95000)} style={{width: 80}} />
+                                <div style={{flex: 1}} />
+                                <button className="stage-launch-btn" disabled={isRunning || !status.corpus_exists}
+                                    onClick={() => startJob('prepare', {identity_count: identityCount})}>
+                                    {rt === 'prepare' ? 'Running\u2026' : 'Prepare'}
+                                </button>
+                            </div>
+                            {rt === 'prepare' && jobLog && <pre ref={logRef} className="stage-log">{jobLog}</pre>}
+                        </div>
+
+                        <div className={`pipeline-connector${s2 === 'complete' || s2 === 'running' ? ' active' : ''}`} />
+
+                        {/* Stage 3: Train */}
+                        <div className={cardClass(s3, 'train')}>
+                            <div className="stage-top">
+                                <div className="stage-icon" style={{color: s3 === 'complete' ? 'var(--success)' : 'var(--accent)'}}>{PipelineIcons.train}</div>
+                                <div className="stage-title">
+                                    <div className="stage-num">Stage 03</div>
+                                    <h3>Train LoRA Adapters</h3>
+                                </div>
+                                <span className={badgeClass(s3)}>{badgeText(s3, 'Adapters ready')}</span>
+                            </div>
+                            <div className="stage-desc">
+                                Fine-tune with Low-Rank Adaptation on Apple Silicon via MLX-LM. Prompt format: &lt;parakeet&gt; ... &lt;qwen&gt; ... &lt;correct&gt;
+                            </div>
+                            <div className="stage-controls">
+                                <label>Model</label>
+                                <input value={trainModel} onChange={e => setTrainModel(e.target.value)} style={{width: 170}} />
+                                <label>Iters</label>
+                                <input type="number" value={trainIters} onChange={e => setTrainIters(parseInt(e.target.value) || 1000)} style={{width: 60}} />
+                                <label>Batch</label>
+                                <input type="number" value={trainBatch} onChange={e => setTrainBatch(parseInt(e.target.value) || 1)} style={{width: 40}} />
+                                <label>Layers</label>
+                                <input type="number" value={trainLayers} onChange={e => setTrainLayers(parseInt(e.target.value) || 4)} style={{width: 40}} />
+                                <div style={{flex: 1}} />
+                                <button className="stage-launch-btn" disabled={isRunning || !status.training_data_exists}
+                                    onClick={() => startJob('train', {model: trainModel, iters: trainIters, batch_size: trainBatch, num_layers: trainLayers})}>
+                                    {rt === 'train' ? 'Running\u2026' : 'Train'}
+                                </button>
+                            </div>
+                            {rt === 'train' && jobLog && <pre ref={logRef} className="stage-log" style={{maxHeight: 300}}>{jobLog}</pre>}
+                        </div>
+
+                        <div className={`pipeline-connector${s3 === 'complete' ? ' active' : ''}`} />
+
+                        {/* Stage 4: Eval */}
+                        <div className={cardClass(status.last_eval ? 'complete' : s4, 'eval')}>
+                            <div className="stage-top">
+                                <div className="stage-icon" style={{color: status.last_eval ? 'var(--success)' : s4 === 'ready' ? 'var(--accent)' : 'var(--text-muted)'}}>{PipelineIcons.eval}</div>
+                                <div className="stage-title">
+                                    <div className="stage-num">Stage 04</div>
+                                    <h3>Evaluate</h3>
+                                </div>
+                                {status.last_eval ? (
+                                    <span className="stage-status-badge done">{status.last_eval.correct}/{status.last_eval.total} correct ({status.last_eval.accuracy?.toFixed(1)}%)</span>
+                                ) : (
+                                    <span className={badgeClass(s4)}>{badgeText(s4, 'Done')}</span>
+                                )}
+                            </div>
+                            <div className="stage-desc">
+                                Run the correction model on approved sentences. Compares corrected output against ground truth to measure accuracy.
+                            </div>
+                            {status.last_eval && (
+                                <div style={{display: 'flex', gap: 16, margin: '8px 0', fontSize: 13}}>
+                                    <div style={{padding: '8px 16px', background: 'rgba(63,185,80,0.08)', border: '1px solid rgba(63,185,80,0.15)', borderRadius: 6}}>
+                                        <div style={{fontSize: 20, fontWeight: 600, color: 'var(--success)'}}>{status.last_eval.accuracy?.toFixed(1)}%</div>
+                                        <div style={{fontSize: 11, color: 'var(--text-muted)', letterSpacing: '0.5px', textTransform: 'uppercase'}}>Sentence accuracy</div>
+                                    </div>
+                                    <div style={{padding: '8px 16px', background: 'rgba(88,166,255,0.08)', border: '1px solid rgba(88,166,255,0.15)', borderRadius: 6}}>
+                                        <div style={{fontSize: 20, fontWeight: 600, color: 'var(--accent)'}}>{status.last_eval.word_accuracy?.toFixed(1)}%</div>
+                                        <div style={{fontSize: 11, color: 'var(--text-muted)', letterSpacing: '0.5px', textTransform: 'uppercase'}}>Word accuracy</div>
+                                    </div>
+                                    <div style={{padding: '8px 16px', background: 'rgba(139,148,158,0.08)', border: '1px solid rgba(139,148,158,0.15)', borderRadius: 6}}>
+                                        <div style={{fontSize: 20, fontWeight: 600}}>{status.last_eval.total}</div>
+                                        <div style={{fontSize: 11, color: 'var(--text-muted)', letterSpacing: '0.5px', textTransform: 'uppercase'}}>Evaluated</div>
+                                    </div>
+                                </div>
+                            )}
+                            <div className="stage-controls">
+                                <span style={{fontSize: 11, color: 'var(--text-muted)'}}>{status.human_recordings} human recordings</span>
+                                <div style={{flex:1}} />
+                                <button className="stage-launch-btn" disabled={isRunning || !status.adapters_exist || !status.corpus_exists}
+                                    onClick={() => startJob('eval', {})}>
+                                    {rt === 'eval' ? 'Running\u2026' : status.last_eval ? 'Re-evaluate' : 'Evaluate'}
+                                </button>
+                            </div>
+                            {rt === 'eval' && jobLog && <pre ref={logRef} className="stage-log" style={{maxHeight: 400}}>{jobLog}</pre>}
+                        </div>
+
+                        {/* Live Correction Demo */}
+                        {status.adapters_exist && <LiveCorrection />}
+                    </div>
+                </div>
+            );
+        }
+
+        // ==================== SCAN RESULTS ====================
+        function ScanResultsPage() {
+            const [results, setResults] = useState([]);
+            const [loading, setLoading] = useState(true);
+            useEffect(() => {
+                api('/api/pipeline/scan-results').then(setResults).finally(() => setLoading(false));
+            }, []);
+
+            if (loading) return <div className="container"><p>Loading...</p></div>;
+
+            const totalTerms = results.length;
+            const errorTerms = results.filter(r => r.qwen_errors > 0 || r.parakeet_errors > 0).length;
 
             return (
                 <div className="container">
-                    <h2>Pipeline</h2>
-
-                    {error && <div style={{padding: '8px 12px', background: 'rgba(255,0,0,0.1)', border: '1px solid var(--danger)', borderRadius: 6, marginBottom: 16, fontSize: 13, color: 'var(--danger)'}}>{error}</div>}
-
-                    {/* Stage 1: Generate Corpus */}
-                    <div className="card" style={{opacity: runningType && runningType !== 'corpus' ? 0.5 : 1}}>
-                        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-                            <h3 style={{margin: 0}}>1. Generate Corpus</h3>
-                            {status.corpus_exists && <span className="badge badge-completed">{status.corpus_lines} sentences</span>}
-                        </div>
-                        <p style={{color: 'var(--text-muted)', fontSize: 13, margin: '8px 0'}}>
-                            Synthesize TTS audio for approved sentences, run ASR, produce training pairs.
-                        </p>
-                        <div style={{display: 'flex', gap: 8, alignItems: 'center'}}>
-                            <select value={corpusBackend} onChange={e => setCorpusBackend(e.target.value)}
-                                style={{padding: '4px 8px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)', fontFamily: 'Jost,sans-serif', fontSize: 13}}>
-                                {(status.backends || []).map(b => <option key={b} value={b}>{b}</option>)}
-                            </select>
-                            <button className="btn btn-primary btn-sm" disabled={isRunning || status.approved_count === 0}
-                                onClick={() => startJob('corpus', {tts_backend: corpusBackend})}>
-                                {runningType === 'corpus' ? 'Running...' : 'Generate'}
-                            </button>
-                            <span style={{fontSize: 13, color: 'var(--text-muted)'}}>{status.approved_count} approved sentences</span>
-                        </div>
-                        {runningType === 'corpus' && jobLog && (
-                            <pre ref={logRef} style={{marginTop: 12, maxHeight: 200, overflow: 'auto', fontSize: 11, padding: 8, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, whiteSpace: 'pre-wrap'}}>{jobLog}</pre>
-                        )}
+                    <div style={{display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24}}>
+                        <a href="#/pipeline" className="btn btn-sm">&larr; Pipeline</a>
+                        <h2 style={{margin: 0}}>Vocab Scan Results</h2>
+                        <span style={{fontSize: 13, color: 'var(--text-muted)'}}>{errorTerms} / {totalTerms} terms with ASR errors</span>
                     </div>
-
-                    {/* Stage 2: Prepare Training Data */}
-                    <div className="card" style={{opacity: runningType && runningType !== 'prepare' ? 0.5 : 1}}>
-                        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-                            <h3 style={{margin: 0}}>2. Prepare Training Data</h3>
-                            {status.training_data_exists && <span className="badge badge-completed">{status.train_count.toLocaleString()} examples</span>}
+                    {results.length === 0 ? (
+                        <div className="empty-state"><h3>No scan results yet</h3><p>Run a vocab scan from the Pipeline page.</p></div>
+                    ) : (
+                        <div className="card" style={{padding: 0, overflow: 'hidden'}}>
+                            <table>
+                                <thead><tr>
+                                    <th>Term</th>
+                                    <th style={{color: '#58a6ff'}}>Qwen heard</th>
+                                    <th style={{color: '#7ee787'}}>Parakeet heard</th>
+                                </tr></thead>
+                                <tbody>{results.map(r => {
+                                    const hasErrors = r.qwen_errors > 0 || r.parakeet_errors > 0;
+                                    if (!hasErrors) return null;
+                                    const qHeard = [...new Set(r.qwen_heard || [])].filter(h => h.toLowerCase() !== r.term.toLowerCase());
+                                    const pHeard = [...new Set(r.parakeet_heard || [])].filter(h => h.toLowerCase() !== r.term.toLowerCase());
+                                    return (
+                                        <tr key={r.term}>
+                                            <td style={{fontWeight: 600}}>{r.term}</td>
+                                            <td>{qHeard.length > 0
+                                                ? qHeard.map((h, i) => <span key={i} style={{color: '#58a6ff', marginRight: 8}}>{h}</span>)
+                                                : <span style={{color: 'var(--text-muted)'}}>—</span>}
+                                            </td>
+                                            <td>{pHeard.length > 0
+                                                ? pHeard.map((h, i) => <span key={i} style={{color: '#7ee787', marginRight: 8}}>{h}</span>)
+                                                : <span style={{color: 'var(--text-muted)'}}>—</span>}
+                                            </td>
+                                        </tr>
+                                    );
+                                })}</tbody>
+                            </table>
                         </div>
-                        <p style={{color: 'var(--text-muted)', fontSize: 13, margin: '8px 0'}}>
-                            Generate identity examples, combine with corpus, split into train/valid/test.
-                        </p>
-                        <div style={{display: 'flex', gap: 8, alignItems: 'center'}}>
-                            <label style={{fontSize: 12, color: 'var(--text-muted)'}}>Identity examples:</label>
-                            <input type="number" value={identityCount} onChange={e => setIdentityCount(parseInt(e.target.value) || 95000)}
-                                style={{width: 80, padding: '4px 8px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)', fontFamily: 'Jost,sans-serif', fontSize: 13}} />
-                            <button className="btn btn-primary btn-sm" disabled={isRunning || !status.corpus_exists}
-                                onClick={() => startJob('prepare', {identity_count: identityCount})}>
-                                {runningType === 'prepare' ? 'Running...' : 'Prepare'}
-                            </button>
-                        </div>
-                        {runningType === 'prepare' && jobLog && (
-                            <pre ref={logRef} style={{marginTop: 12, maxHeight: 200, overflow: 'auto', fontSize: 11, padding: 8, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, whiteSpace: 'pre-wrap'}}>{jobLog}</pre>
-                        )}
-                    </div>
-
-                    {/* Stage 3: Train LoRA */}
-                    <div className="card" style={{opacity: runningType && runningType !== 'train' ? 0.5 : 1}}>
-                        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-                            <h3 style={{margin: 0}}>3. Train LoRA</h3>
-                            {status.adapters_exist && <span className="badge badge-completed">Adapters ready</span>}
-                        </div>
-                        <p style={{color: 'var(--text-muted)', fontSize: 13, margin: '8px 0'}}>
-                            Fine-tune {trainModel} with LoRA adapters using MLX-LM.
-                        </p>
-                        <div style={{display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap'}}>
-                            <label style={{fontSize: 12, color: 'var(--text-muted)'}}>Model:</label>
-                            <input value={trainModel} onChange={e => setTrainModel(e.target.value)}
-                                style={{width: 180, padding: '4px 8px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)', fontFamily: 'Jost,sans-serif', fontSize: 13}} />
-                            <label style={{fontSize: 12, color: 'var(--text-muted)'}}>Iters:</label>
-                            <input type="number" value={trainIters} onChange={e => setTrainIters(parseInt(e.target.value) || 1000)}
-                                style={{width: 60, padding: '4px 8px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)', fontFamily: 'Jost,sans-serif', fontSize: 13}} />
-                            <label style={{fontSize: 12, color: 'var(--text-muted)'}}>Batch:</label>
-                            <input type="number" value={trainBatch} onChange={e => setTrainBatch(parseInt(e.target.value) || 1)}
-                                style={{width: 40, padding: '4px 8px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)', fontFamily: 'Jost,sans-serif', fontSize: 13}} />
-                            <label style={{fontSize: 12, color: 'var(--text-muted)'}}>Layers:</label>
-                            <input type="number" value={trainLayers} onChange={e => setTrainLayers(parseInt(e.target.value) || 4)}
-                                style={{width: 40, padding: '4px 8px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)', fontFamily: 'Jost,sans-serif', fontSize: 13}} />
-                            <button className="btn btn-primary btn-sm" disabled={isRunning || !status.training_data_exists}
-                                onClick={() => startJob('train', {model: trainModel, iters: trainIters, batch_size: trainBatch, num_layers: trainLayers})}>
-                                {runningType === 'train' ? 'Running...' : 'Train'}
-                            </button>
-                        </div>
-                        {runningType === 'train' && jobLog && (
-                            <pre ref={logRef} style={{marginTop: 12, maxHeight: 300, overflow: 'auto', fontSize: 11, padding: 8, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, whiteSpace: 'pre-wrap'}}>{jobLog}</pre>
-                        )}
-                    </div>
-
-                    {/* Stage 4: Eval (future) */}
-                    <div className="card" style={{opacity: 0.5}}>
-                        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-                            <h3 style={{margin: 0}}>4. Evaluate</h3>
-                            <span className="badge badge-pending">{status.human_recordings} recordings</span>
-                        </div>
-                        <p style={{color: 'var(--text-muted)', fontSize: 13, margin: '8px 0'}}>
-                            Run the trained model on human voice recordings to measure correction accuracy. Record sentences during review to build the eval set.
-                        </p>
-                    </div>
+                    )}
                 </div>
             );
         }
@@ -2298,6 +2996,7 @@
             if (hash === '#/sentences/review') page = <SentenceReview />;
             else if (hash.startsWith('#/vocab')) page = <VocabPage />;
             else if (hash.startsWith('#/sentences')) page = <SentencesPage />;
+            else if (hash === '#/pipeline/scan') page = <ScanResultsPage />;
             else if (hash.startsWith('#/pipeline')) page = <PipelinePage />;
             else if (hash.startsWith('#/jobs')) page = <JobsPage />;
             else page = <Overview />;

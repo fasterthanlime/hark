@@ -11,6 +11,7 @@ use axum::{
     Json, Router,
 };
 use db::Db;
+use parakeet_rs::Transcriber;
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 
@@ -27,6 +28,7 @@ pub struct AppState {
     review: Mutex<review::ReviewSession>,
     precompute_notify: std::sync::Arc<tokio::sync::Notify>,
     audio_dir: String,
+    job_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Deserialize)]
@@ -206,11 +208,18 @@ async fn api_sentences_list(
 
 /// Scan sources, extract vocab, find sentences, detect unknown words, store directly as sentences.
 /// Single pass — no intermediate candidates step.
+#[derive(Deserialize)]
+struct ImportParams {
+    source: Option<String>, // "all" (default), "hark", "claude", "codex"
+}
+
 async fn api_candidates_import(
     State(state): State<Arc<AppState>>,
+    Query(params): Query<ImportParams>,
 ) -> Result<Response, AppError> {
     let docs_root = state.docs_root.clone();
     let state2 = state.clone();
+    let source = params.source.unwrap_or_else(|| "all".to_string());
 
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         eprintln!("[import] extracting vocab from {docs_root}...");
@@ -222,9 +231,25 @@ async fn api_candidates_import(
             db.get_spoken_overrides()?
         };
 
-        eprintln!("[import] scanning history for sentences...");
+        let sources = {
+            let hark = shellexpand::tilde("~/Library/Application Support/hark/transcription_log.jsonl").to_string();
+            let claude = shellexpand::tilde("~/.claude/history.jsonl").to_string();
+            let codex = shellexpand::tilde("~/.codex/history.jsonl").to_string();
+            let files = match source.as_str() {
+                "hark" => vec![hark],
+                "claude" => vec![claude],
+                "codex" => vec![codex],
+                _ => vec![claude, codex, hark],
+            };
+            synth_textgen::templates::TextSources {
+                blog_dir: None,
+                history_files: files,
+            }
+        };
+
+        eprintln!("[import] scanning {:?} for sentences...", sources.history_files);
         let sentences = synth_textgen::templates::generate(
-            &vocab, usize::MAX, Some(&overrides), None,
+            &vocab, usize::MAX, Some(&overrides), Some(&sources),
         );
         eprintln!("[import] {} sentences found", sentences.len());
 
@@ -475,6 +500,46 @@ async fn api_asr_transcribe(
     Ok(Json(serde_json::json!({ "text": result })).into_response())
 }
 
+/// Run both ASR models on uploaded audio. Returns {qwen, parakeet}.
+async fn api_asr_dual(
+    State(state): State<Arc<AppState>>,
+    body: axum::body::Bytes,
+) -> Result<Response, AppError> {
+    let state2 = state.clone();
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
+        let cursor = std::io::Cursor::new(body.to_vec());
+        let mut reader = hound::WavReader::new(cursor)
+            .map_err(|e| anyhow::anyhow!("WAV decode: {e}"))?;
+        let spec = reader.spec();
+        let samples_f32: Vec<f32> = match spec.sample_format {
+            hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
+            hound::SampleFormat::Int => {
+                let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
+                reader.samples::<i32>().filter_map(|s| s.ok()).map(|s| s as f32 / max).collect()
+            }
+        };
+        let mono: Vec<f32> = if spec.channels > 1 {
+            samples_f32.chunks(spec.channels as usize)
+                .map(|ch| ch.iter().sum::<f32>() / ch.len() as f32).collect()
+        } else { samples_f32 };
+        let samples_16k = tts::resample_to_16k(&mono, spec.sample_rate)?;
+
+        let qwen = state2.asr.transcribe_samples(&samples_16k, qwen3_asr::TranscribeOptions::default())
+            .map(|r| r.text).unwrap_or_default();
+        let parakeet = {
+            let mut p = state2.parakeet.lock().unwrap();
+            p.transcribe_samples(samples_16k.to_vec(), 16000, 1, None)
+                .map(|r| r.text).unwrap_or_default()
+        };
+        Ok((qwen, parakeet))
+    })
+    .await
+    .map_err(|e| err(e))?
+    .map_err(err)?;
+
+    Ok(Json(serde_json::json!({"qwen": result.0, "parakeet": result.1})).into_response())
+}
+
 // ==================== FORCED ALIGNMENT ====================
 
 async fn api_align(
@@ -606,7 +671,7 @@ struct Cli {
     docs_root: String,
 
     /// Voice reference WAV for pocket-tts
-    #[arg(long, default_value = "voices/amos.wav")]
+    #[arg(long, default_value = "voices/amos2_short.wav")]
     voice: String,
 
     /// Kokoro voice name (e.g. "am_puck", "am_adam", "af_heart")
@@ -703,6 +768,7 @@ async fn main() -> anyhow::Result<()> {
         review: Mutex::new(review::ReviewSession::new()),
         precompute_notify: precompute_notify.clone(),
         audio_dir: audio_dir.clone(),
+        job_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
 
     // Start background pre-computation loop
@@ -728,6 +794,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/g2p/scan", post(api_g2p_scan))
         // ASR
         .route("/api/asr/transcribe", post(api_asr_transcribe))
+        .route("/api/asr/dual", post(api_asr_dual))
         // Forced alignment
         .route("/api/align", post(api_align))
         // Review (server-side orchestrated)
@@ -747,7 +814,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/jobs/corpus", post(jobs::api_start_corpus_job))
         .route("/api/jobs/prepare", post(jobs::api_start_prepare_job))
         .route("/api/jobs/train", post(jobs::api_start_train_job))
+        .route("/api/jobs/eval", post(jobs::api_start_eval_job))
+        .route("/api/jobs/vocab-scan", post(jobs::api_start_vocab_scan))
+        .route("/api/jobs/stop", post(jobs::api_stop_job))
         .route("/api/pipeline/status", get(jobs::api_pipeline_status))
+        .route("/api/pipeline/scan-results", get(jobs::api_scan_results))
+        .route("/api/correct", post(jobs::api_correct))
         .with_state(state);
 
     let addr = format!("127.0.0.1:{}", cli.port);

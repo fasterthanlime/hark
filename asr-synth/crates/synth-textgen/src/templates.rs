@@ -29,6 +29,7 @@ impl Default for TextSources {
             history_files: vec![
                 shellexpand::tilde("~/.claude/history.jsonl").to_string(),
                 shellexpand::tilde("~/.codex/history.jsonl").to_string(),
+                shellexpand::tilde("~/Library/Application Support/hark/transcription_log.jsonl").to_string(),
             ],
         }
     }
@@ -249,6 +250,7 @@ fn extract_history_sentences(
             && !text.contains("[Pasted")
             && !text.contains("[Image")
             && !text.starts_with('/')
+            && !text.starts_with("> ")
             && !text.contains('`')
             && !text.contains("${")
             && !text.contains("::")
@@ -293,6 +295,20 @@ fn flush_paragraph(
         let sentence = sentence.trim();
         if sentence.len() < 10 || sentence.len() > 120 {
             continue;
+        }
+
+        // Filter profanity and non-dictated slang
+        {
+            let lower = sentence.to_lowercase();
+            const BANNED_WORDS: &[&str] = &[
+                "fuck", "shit", "jesus", "christ", "damn",
+                "idk", "omg", "lol", "lmao", "rofl", "wtf", "stfu", "smh",
+                "tbh", "imo", "imho", "afaik", "fwiw",
+            ];
+            let has_banned = BANNED_WORDS.iter().any(|w| {
+                lower.split(|c: char| !c.is_alphanumeric()).any(|tok| tok == *w)
+            });
+            if has_banned { continue; }
         }
 
         // Find vocab terms in this sentence

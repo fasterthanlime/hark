@@ -4600,6 +4600,7 @@ dependencies = [
  "serde_json",
  "shellexpand",
  "synth-corrupt",
+ "ureq 3.3.0",
 ]
 
 [[package]]
