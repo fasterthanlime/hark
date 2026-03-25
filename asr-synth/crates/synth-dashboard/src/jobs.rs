@@ -16,6 +16,141 @@ use parakeet_rs::Transcriber;
 
 use std::sync::atomic::Ordering;
 
+// ==================== Domain Types ====================
+
+/// The canonical written form of a term (e.g. "serde", "facet-json")
+#[derive(Debug, Clone)]
+struct WrittenTerm(String);
+
+/// The spoken/pronounced form of a term (e.g. "sir day", "facet json")
+#[derive(Debug, Clone)]
+struct SpokenTerm(String);
+
+/// A sentence as it should be written (contains the WrittenTerm)
+#[derive(Debug, Clone)]
+struct WrittenSentence(String);
+
+/// A sentence as it should be spoken (contains the SpokenTerm for TTS)
+#[derive(Debug, Clone)]
+struct SpokenSentence(String);
+
+/// Build a written sentence containing the term, and its spoken counterpart.
+fn make_sentence_pair(
+    chain: &MarkovChain,
+    term: &WrittenTerm,
+    spoken: &SpokenTerm,
+    rng: &mut impl Rng,
+) -> (WrittenSentence, SpokenSentence) {
+    let sentence = chain.generate_with(&term.0, 15, rng);
+    let spoken_sentence = {
+        let lower = sentence.to_lowercase();
+        let lower_term = term.0.to_lowercase();
+        if let Some(pos) = lower.find(&lower_term) {
+            format!("{}{}{}", &sentence[..pos], &spoken.0, &sentence[pos + term.0.len()..])
+        } else {
+            sentence.clone()
+        }
+    };
+    (WrittenSentence(sentence), SpokenSentence(spoken_sentence))
+}
+
+/// Result of running one corpus pass through the pipeline.
+struct CorpusPassResult {
+    /// The written sentence (ground truth text)
+    sentence: WrittenSentence,
+    /// The spoken sentence (what TTS said)
+    spoken_sentence: SpokenSentence,
+    /// Full Qwen ASR transcription
+    qwen_full: String,
+    /// Full Parakeet ASR transcription
+    parakeet_full: String,
+    /// Forced alignment of the written sentence against audio
+    orig_alignment: Vec<qwen3_asr::ForcedAlignItem>,
+    /// Forced alignment of Qwen transcription against audio
+    qwen_alignment: Vec<qwen3_asr::ForcedAlignItem>,
+    /// Forced alignment of Parakeet transcription against audio
+    parakeet_alignment: Vec<qwen3_asr::ForcedAlignItem>,
+    /// Consensus extraction result
+    extraction: ConsensusResult,
+    /// Whether the term was found in the original alignment
+    term_found: bool,
+    /// Time range of the term in the original alignment
+    term_range: (f64, f64),
+}
+
+/// Run the ASR + alignment + extraction pipeline on pre-generated audio.
+/// `written` is the sentence as written (for alignment ground truth).
+/// `term` is the written form of the vocab term (for finding the time range).
+async fn run_corpus_pass(
+    state: &Arc<AppState>,
+    full_16k: &[f32],
+    written: &WrittenSentence,
+    term: &WrittenTerm,
+) -> anyhow::Result<CorpusPassResult> {
+    // Dual ASR
+    let state_q = state.clone();
+    let samples_q = full_16k.to_vec();
+    let qwen_task = tokio::task::spawn_blocking(move || -> String {
+        state_q.asr
+            .transcribe_samples(&samples_q, qwen3_asr::TranscribeOptions::default().with_language("english"))
+            .map(|r| r.text)
+            .unwrap_or_default()
+    });
+    let state_p = state.clone();
+    let samples_p = full_16k.to_vec();
+    let parakeet_task = tokio::task::spawn_blocking(move || -> String {
+        let mut p = state_p.parakeet.lock().unwrap();
+        p.transcribe_samples(samples_p, 16000, 1, None)
+            .map(|r| r.text)
+            .unwrap_or_default()
+    });
+    let (qwen_full, parakeet_full) = tokio::join!(qwen_task, parakeet_task);
+    let qwen_full = qwen_full.unwrap_or_default();
+    let parakeet_full = parakeet_full.unwrap_or_default();
+
+    // Alignment — always align against the WRITTEN sentence (ground truth)
+    let orig_alignment = state.aligner.align(full_16k, &written.0).unwrap_or_default();
+
+    // Find the WRITTEN term in the original alignment
+    let term_lower = term.0.to_lowercase();
+    let term_found_range = find_term_time_range(&orig_alignment, &term_lower);
+    let (term_start, term_end) = term_found_range
+        .unwrap_or((0.0, full_16k.len() as f64 / 16000.0));
+
+    let qwen_alignment = state.aligner.align(full_16k, &qwen_full).unwrap_or_default();
+    let parakeet_alignment = state.aligner.align(full_16k, &parakeet_full).unwrap_or_default();
+
+    let extraction = extract_with_consensus(
+        &orig_alignment, &qwen_alignment, &parakeet_alignment,
+        term_start, term_end,
+    );
+
+    Ok(CorpusPassResult {
+        sentence: written.clone(),
+        spoken_sentence: SpokenSentence(String::new()), // filled by caller
+        qwen_full,
+        parakeet_full,
+        orig_alignment,
+        qwen_alignment,
+        parakeet_alignment,
+        extraction,
+        term_found: term_found_range.is_some(),
+        term_range: (term_start, term_end),
+    })
+}
+
+fn fmt_alignment(items: &[qwen3_asr::ForcedAlignItem]) -> String {
+    serde_json::to_string(&items.iter().map(|a| {
+        serde_json::json!({"w": a.word, "s": (a.start_time * 1000.0).round() / 1000.0, "e": (a.end_time * 1000.0).round() / 1000.0})
+    }).collect::<Vec<_>>()).unwrap_or_default()
+}
+
+fn fmt_alignment_json(items: &[qwen3_asr::ForcedAlignItem]) -> serde_json::Value {
+    serde_json::json!(items.iter().map(|a| {
+        serde_json::json!({"w": a.word, "s": (a.start_time * 1000.0).round() / 1000.0, "e": (a.end_time * 1000.0).round() / 1000.0})
+    }).collect::<Vec<_>>())
+}
+
 // ==================== Markov Chain ====================
 
 /// Word-level bigram Markov chain for generating sentences containing a target word.
@@ -589,7 +724,9 @@ async fn run_corpus_job(
     // Pre-generate all (term, sentence, spoken) tuples
     struct PassItem {
         term: String,
+        /// The written sentence (ground truth for alignment)
         sentence: String,
+        /// The spoken sentence (for TTS)
         spoken: String,
         item_idx: usize,
         pass_idx: usize,
@@ -599,18 +736,11 @@ async fn run_corpus_job(
     for item in &work {
         if pass_items.len() >= passes_to_run { break; }
         let passes_this = item.passes_needed.min(passes_to_run - pass_items.len());
+        let written = WrittenTerm(item.term.clone());
+        let spoken_term = SpokenTerm(item.spoken.clone());
         for pass_idx in 0..passes_this {
-            let sentence = chain.generate_with(&item.term, 15, &mut rng);
-            let spoken = {
-                let lower = sentence.to_lowercase();
-                let lower_term = item.term.to_lowercase();
-                if let Some(pos) = lower.find(&lower_term) {
-                    format!("{}{}{}", &sentence[..pos], &item.spoken, &sentence[pos + item.term.len()..])
-                } else {
-                    sentence.clone()
-                }
-            };
-            pass_items.push(PassItem { term: item.term.clone(), sentence, spoken, item_idx, pass_idx });
+            let (ws, ss) = make_sentence_pair(&chain, &written, &spoken_term, &mut rng);
+            pass_items.push(PassItem { term: item.term.clone(), sentence: ws.0, spoken: ss.0, item_idx, pass_idx });
         }
         item_idx += 1;
     }
@@ -673,52 +803,29 @@ async fn run_corpus_job(
             Err(_) => { errors += 1; count += 1; continue; }
         };
 
-        // ASR (dual, parallel)
+        // ASR + alignment + extraction via shared pipeline
         let t0 = std::time::Instant::now();
-        let state_q = state.clone();
-        let samples_q = full_16k.clone();
-        let qwen_task = tokio::task::spawn_blocking(move || -> String {
-            state_q.asr
-                .transcribe_samples(&samples_q, qwen3_asr::TranscribeOptions::default().with_language("english"))
-                .map(|r| r.text)
-                .unwrap_or_default()
-        });
-        let state_p = state.clone();
-        let samples_p = full_16k.clone();
-        let parakeet_task = tokio::task::spawn_blocking(move || -> String {
-            let mut p = state_p.parakeet.lock().unwrap();
-            p.transcribe_samples(samples_p, 16000, 1, None)
-                .map(|r| r.text)
-                .unwrap_or_default()
-        });
-        let (qwen_full, parakeet_full) = tokio::join!(qwen_task, parakeet_task);
-        let qwen_full = qwen_full.unwrap_or_default();
-        let parakeet_full = parakeet_full.unwrap_or_default();
+        let written_term = WrittenTerm(pi.term.clone());
+        let written_sentence = WrittenSentence(pi.sentence.clone());
+        let result = match run_corpus_pass(state, &full_16k, &written_sentence, &written_term).await {
+            Ok(r) => r,
+            Err(e) => {
+                let db = state.db.lock().unwrap();
+                let _ = db.append_job_log(job_id, &format!("PIPELINE FAILED: {e}"));
+                errors += 1;
+                count += 1;
+                continue;
+            }
+        };
         asr_ms += t0.elapsed().as_millis() as u64;
 
-        // Alignment
-        let t0 = std::time::Instant::now();
-        let orig_align = state.aligner.align(&full_16k, &sentence).unwrap_or_default();
-        let term_lower = term.to_lowercase();
-        let (term_start, term_end) = find_term_time_range(&orig_align, &term_lower)
-            .unwrap_or((0.0, full_16k.len() as f64 / 16000.0));
-        let qwen_align = state.aligner.align(&full_16k, &qwen_full).unwrap_or_default();
-        let parakeet_align = state.aligner.align(&full_16k, &parakeet_full).unwrap_or_default();
-        align_ms += t0.elapsed().as_millis() as u64;
-
-        let cons = extract_with_consensus(&orig_align, &qwen_align, &parakeet_align, term_start, term_end);
-
-        if cons.clean {
-            let fmt = |items: &[qwen3_asr::ForcedAlignItem]| -> String {
-                serde_json::to_string(&items.iter().map(|a| {
-                    serde_json::json!({"w": a.word, "s": (a.start_time * 1000.0).round() / 1000.0, "e": (a.end_time * 1000.0).round() / 1000.0})
-                }).collect::<Vec<_>>()).unwrap_or_default()
-            };
+        if result.extraction.clean {
+            let cons = &result.extraction;
             let cons_time_json = serde_json::to_string(&[cons.cons_range.0, cons.cons_range.1]).ok();
             let db = state.db.lock().unwrap();
             let _ = db.insert_corpus_pair(
                 &pi.term, &cons.original, &cons.qwen, &cons.parakeet, &pi.sentence, &pi.spoken,
-                Some(&fmt(&orig_align)), Some(&fmt(&qwen_align)), Some(&fmt(&parakeet_align)),
+                Some(&fmt_alignment(&result.orig_alignment)), Some(&fmt_alignment(&result.qwen_alignment)), Some(&fmt_alignment(&result.parakeet_alignment)),
                 cons_time_json.as_deref(),
             );
         }
@@ -1594,104 +1701,59 @@ pub struct TestTermBody {
 }
 
 /// Run one corpus pass for a single term and return the full result (without saving to DB).
-/// Useful for debugging extraction quality before committing to a full corpus run.
 pub async fn api_test_term(
     State(state): State<Arc<AppState>>,
     Json(body): Json<TestTermBody>,
 ) -> Result<Response, AppError> {
-    let term = body.term.trim().to_string();
+    let written = WrittenTerm(body.term.trim().to_string());
     let tts_backend = body.tts_backend.unwrap_or_else(|| "pocket-hq".to_string());
 
-    // Look up the vocab entry
     let vocab = {
         let db = state.db.lock().unwrap();
-        db.find_vocab_by_term(&term).map_err(err)?.ok_or_else(|| err(format!("Term '{}' not found", term)))?
+        db.find_vocab_by_term(&written.0).map_err(err)?
+            .ok_or_else(|| err(format!("Term '{}' not found", written.0)))?
     };
-    let spoken = vocab.spoken().to_string();
+    let spoken = SpokenTerm(vocab.spoken().to_string());
 
-    // Build a sentence with the Markov chain
     let all_texts = {
         let db = state.db.lock().unwrap();
         db.all_sentence_texts().map_err(err)?
     };
     let chain = MarkovChain::build(&all_texts);
     let mut rng = rand::rngs::StdRng::from_os_rng();
-    let sentence = chain.generate_with(&term, 15, &mut rng);
+    let (written_sentence, spoken_sentence) = make_sentence_pair(&chain, &written, &spoken, &mut rng);
 
-    // Replace term with spoken form in sentence
-    let spoken_sentence = {
-        let lower = sentence.to_lowercase();
-        let lower_term = term.to_lowercase();
-        if let Some(pos) = lower.find(&lower_term) {
-            format!("{}{}{}", &sentence[..pos], &spoken, &sentence[pos + term.len()..])
-        } else {
-            sentence.clone()
-        }
-    };
-
-    // TTS
-    let mut audio = state.tts.generate(&tts_backend, &spoken_sentence).await.map_err(|e| err(e))?;
+    // TTS uses the SPOKEN sentence
+    let mut audio = state.tts.generate(&tts_backend, &spoken_sentence.0).await.map_err(|e| err(e))?;
     audio.normalize();
     let full_16k = tts::resample_to_16k(&audio.samples, audio.sample_rate).map_err(err)?;
 
-    // ASR (dual)
-    let state_q = state.clone();
-    let samples_q = full_16k.clone();
-    let qwen_task = tokio::task::spawn_blocking(move || -> String {
-        state_q.asr
-            .transcribe_samples(&samples_q, qwen3_asr::TranscribeOptions::default().with_language("english"))
-            .map(|r| r.text)
-            .unwrap_or_default()
-    });
-    let state_p = state.clone();
-    let samples_p = full_16k.clone();
-    let parakeet_task = tokio::task::spawn_blocking(move || -> String {
-        let mut p = state_p.parakeet.lock().unwrap();
-        p.transcribe_samples(samples_p, 16000, 1, None)
-            .map(|r| r.text)
-            .unwrap_or_default()
-    });
-    let (qwen_full, parakeet_full) = tokio::join!(qwen_task, parakeet_task);
-    let qwen_full = qwen_full.unwrap_or_default();
-    let parakeet_full = parakeet_full.unwrap_or_default();
+    // Pipeline uses the WRITTEN term and WRITTEN sentence
+    let mut result = run_corpus_pass(&state, &full_16k, &written_sentence, &written).await.map_err(err)?;
+    result.spoken_sentence = spoken_sentence;
 
-    // Alignment
-    let orig_align = state.aligner.align(&full_16k, &sentence).unwrap_or_default();
-    let term_lower = term.to_lowercase();
-    let spoken_lower = spoken.to_lowercase();
-    let (term_start, term_end) = find_term_time_range(&orig_align, &spoken_lower)
-        .unwrap_or((0.0, full_16k.len() as f64 / 16000.0));
-    let qwen_align = state.aligner.align(&full_16k, &qwen_full).unwrap_or_default();
-    let parakeet_align = state.aligner.align(&full_16k, &parakeet_full).unwrap_or_default();
-
-    let cons = extract_with_consensus(&orig_align, &qwen_align, &parakeet_align, term_start, term_end);
-
-    let fmt = |items: &[qwen3_asr::ForcedAlignItem]| -> serde_json::Value {
-        serde_json::json!(items.iter().map(|a| {
-            serde_json::json!({"w": a.word, "s": (a.start_time * 1000.0).round() / 1000.0, "e": (a.end_time * 1000.0).round() / 1000.0})
-        }).collect::<Vec<_>>())
-    };
-
+    let ex = &result.extraction;
     Ok(Json(serde_json::json!({
-        "term": term,
-        "spoken": spoken,
-        "sentence": sentence,
-        "spoken_sentence": spoken_sentence,
-        "qwen_full": qwen_full,
-        "parakeet_full": parakeet_full,
+        "term": written.0,
+        "spoken": spoken.0,
+        "sentence": result.sentence.0,
+        "spoken_sentence": result.spoken_sentence.0,
+        "qwen_full": result.qwen_full,
+        "parakeet_full": result.parakeet_full,
+        "term_found": result.term_found,
         "extraction": {
-            "original": cons.original,
-            "qwen": cons.qwen,
-            "parakeet": cons.parakeet,
-            "clean": cons.clean,
-            "cons_range": [cons.cons_range.0, cons.cons_range.1],
+            "original": ex.original,
+            "qwen": ex.qwen,
+            "parakeet": ex.parakeet,
+            "clean": ex.clean,
+            "cons_range": [ex.cons_range.0, ex.cons_range.1],
         },
         "alignments": {
-            "original": fmt(&orig_align),
-            "qwen": fmt(&qwen_align),
-            "parakeet": fmt(&parakeet_align),
+            "original": fmt_alignment_json(&result.orig_alignment),
+            "qwen": fmt_alignment_json(&result.qwen_alignment),
+            "parakeet": fmt_alignment_json(&result.parakeet_alignment),
         },
-        "term_range": [term_start, term_end],
+        "term_range": [result.term_range.0, result.term_range.1],
     })).into_response())
 }
 
