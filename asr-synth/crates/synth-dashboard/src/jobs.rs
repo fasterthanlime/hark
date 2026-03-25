@@ -550,8 +550,14 @@ async fn run_corpus_job(
     let mut count = 0usize;
     let mut errors = 0usize;
     let mut items_done = 0usize;
+    let job_start = std::time::Instant::now();
+    let mut tts_ms = 0u64;
+    let mut asr_ms = 0u64;
+    let mut align_ms = 0u64;
 
-    let update_stats = |state: &Arc<AppState>, job_id: i64, count: usize, items_done: usize, errors: usize| {
+    let update_stats = |state: &Arc<AppState>, job_id: i64, count: usize, items_done: usize, errors: usize,
+                        tts_ms: u64, asr_ms: u64, align_ms: u64, elapsed_ms: u64| {
+        let pairs_per_sec = if elapsed_ms > 0 { count as f64 / (elapsed_ms as f64 / 1000.0) } else { 0.0 };
         let db = state.db.lock().unwrap();
         let _ = db.update_job_result(job_id, &serde_json::json!({
             "pairs_written": count,
@@ -559,6 +565,10 @@ async fn run_corpus_job(
             "items_done": items_done,
             "items_total": work.len(),
             "errors": errors,
+            "pairs_per_sec": (pairs_per_sec * 10.0).round() / 10.0,
+            "tts_sec": (tts_ms as f64 / 1000.0 * 10.0).round() / 10.0,
+            "asr_sec": (asr_ms as f64 / 1000.0 * 10.0).round() / 10.0,
+            "align_sec": (align_ms as f64 / 1000.0 * 10.0).round() / 10.0,
         }).to_string());
     };
 
@@ -605,7 +615,8 @@ async fn run_corpus_job(
             // Don't apply bulk overrides — only the target term was replaced above.
             // Applying overrides to the whole sentence risks corrupting common words.
 
-            // TTS the full Markov sentence
+            // TTS
+            let t0 = std::time::Instant::now();
             let audio = match state.tts.generate(tts_backend, &spoken).await {
                 Ok(mut a) => { a.normalize(); a }
                 Err(e) => {
@@ -615,8 +626,9 @@ async fn run_corpus_job(
                     continue;
                 }
             };
+            tts_ms += t0.elapsed().as_millis() as u64;
 
-            // Resample full sentence to 16kHz
+            // Resample
             let full_16k = match tts::resample_to_16k(&audio.samples, audio.sample_rate) {
                 Ok(s) => s,
                 Err(e) => {
@@ -627,13 +639,8 @@ async fn run_corpus_job(
                 }
             };
 
-            // 1) Align the ORIGINAL sentence against the audio → find the term's time range
-            let orig_align = state.aligner.align(&full_16k, &sentence).unwrap_or_default();
-            let term_lower = item.term.to_lowercase();
-            let (term_start, term_end) = find_term_time_range(&orig_align, &term_lower)
-                .unwrap_or((0.0, full_16k.len() as f64 / 16000.0));
-
-            // 2) Run dual ASR on the FULL audio
+            // ASR (dual, parallel)
+            let t0 = std::time::Instant::now();
             let state_q = state.clone();
             let samples_q = full_16k.clone();
             let qwen_task = tokio::task::spawn_blocking(move || -> String {
@@ -650,14 +657,20 @@ async fn run_corpus_job(
                     .map(|r| r.text)
                     .unwrap_or_default()
             });
-
             let (qwen_full, parakeet_full) = tokio::join!(qwen_task, parakeet_task);
             let qwen_full = qwen_full.unwrap_or_default();
             let parakeet_full = parakeet_full.unwrap_or_default();
+            asr_ms += t0.elapsed().as_millis() as u64;
 
-            // 3) Align each ASR output against the audio
+            // Alignment (3x: original + both ASR outputs)
+            let t0 = std::time::Instant::now();
+            let orig_align = state.aligner.align(&full_16k, &sentence).unwrap_or_default();
+            let term_lower = item.term.to_lowercase();
+            let (term_start, term_end) = find_term_time_range(&orig_align, &term_lower)
+                .unwrap_or((0.0, full_16k.len() as f64 / 16000.0));
             let qwen_align = state.aligner.align(&full_16k, &qwen_full).unwrap_or_default();
             let parakeet_align = state.aligner.align(&full_16k, &parakeet_full).unwrap_or_default();
+            align_ms += t0.elapsed().as_millis() as u64;
 
             // 4) Tri-boundary consensus extraction
             let cons = extract_with_consensus(&orig_align, &qwen_align, &parakeet_align, term_start, term_end);
@@ -702,7 +715,7 @@ async fn run_corpus_job(
             // Update live stats
             if count % 5 == 0 {
                 file.flush()?;
-                update_stats(state, job_id, count, items_done, errors);
+                update_stats(state, job_id, count, items_done, errors, tts_ms, asr_ms, align_ms, job_start.elapsed().as_millis() as u64);
             }
         }
 
@@ -710,7 +723,7 @@ async fn run_corpus_job(
     }
 
     file.flush()?;
-    update_stats(state, job_id, count, items_done, errors);
+    update_stats(state, job_id, count, items_done, errors, tts_ms, asr_ms, align_ms, job_start.elapsed().as_millis() as u64);
 
     {
         let db = state.db.lock().unwrap();

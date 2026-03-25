@@ -759,6 +759,10 @@ struct Cli {
     #[arg(long, default_value = "am_puck")]
     kokoro_voice: String,
 
+    /// Number of parallel pocket-tts workers (share weights, separate state)
+    #[arg(long, default_value = "2")]
+    tts_workers: usize,
+
     /// Qwen3 ASR model directory (GGUF quantized)
     #[arg(long, default_value = "~/Library/Caches/qwen3-asr/Alkd--qwen3-asr-gguf--qwen3_asr_1_7b_q8_0_gguf")]
     qwen_model: String,
@@ -810,7 +814,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Load all available TTS backends
-    let tts_manager = tts::init(&cli.voice, &cli.kokoro_voice);
+    let tts_manager = tts::init(&cli.voice, &cli.kokoro_voice, cli.tts_workers);
     eprintln!("TTS backends: {:?}", tts_manager.available_backends());
 
     // Load Parakeet TDT

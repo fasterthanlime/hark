@@ -477,18 +477,15 @@ impl TtsManager {
     }
 }
 
-/// Number of parallel pocket-tts workers (share weights, separate state).
-const POCKET_TTS_WORKERS: usize = 4;
-
 /// Build a TtsManager with all available backends
-pub fn init(voice_path: &str, _kokoro_voice: &str) -> TtsManager {
+pub fn init(voice_path: &str, _kokoro_voice: &str, tts_workers: usize) -> TtsManager {
     let mut local: Vec<Box<dyn LocalTtsBackend>> = Vec::new();
     let mut remote: Vec<Box<dyn RemoteTtsBackend>> = Vec::new();
 
     // Pocket-tts HQ pool — N workers sharing one model
-    match PocketTtsPool::load(voice_path, POCKET_TTS_WORKERS) {
+    match PocketTtsPool::load(voice_path, tts_workers) {
         Ok(pool) => {
-            eprintln!("pocket-tts-hq ready ({} workers, {} Hz)", POCKET_TTS_WORKERS, pool.sample_rate);
+            eprintln!("pocket-tts-hq ready ({tts_workers} workers, {} Hz)", pool.sample_rate);
             local.push(Box::new(pool));
         }
         Err(e) => eprintln!("pocket-tts-hq not available: {e}"),
