@@ -1006,13 +1006,12 @@ async fn main() -> anyhow::Result<()> {
             let count_map: std::collections::HashMap<String, i64> = term_counts.into_iter()
                 .map(|(t, c)| (t.to_lowercase(), c)).collect();
 
-            // Pick terms with < 3 sentences, up to 10 terms
+            // Pick the 10 terms with fewest sentences
             let mut needing: Vec<(String, String, Option<String>, i64)> = vocab.iter()
                 .map(|v| {
                     let count = count_map.get(&v.term.to_lowercase()).copied().unwrap_or(0);
                     (v.term.clone(), v.spoken().to_string(), v.description.clone(), count)
                 })
-                .filter(|(_, _, _, c)| *c < 3)
                 .collect();
             needing.sort_by_key(|(_, _, _, c)| *c);
             needing.truncate(10);
