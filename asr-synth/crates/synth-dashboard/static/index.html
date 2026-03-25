@@ -2603,79 +2603,82 @@
             const isRunning = !!runningJob;
             const rt = runningJob?.job_type;
 
+            const corpusRunning = rt === 'corpus';
+            const prepareRunning = rt === 'prepare';
+            const canGenerate = !isRunning && (status.approved_count > 0 || (status.vocab_reviewed || 0) > 0);
+            const inputStyle = {padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',fontFamily:'Jost,sans-serif',fontSize:13};
+
             return (
                 <div className="container">
                     <h2>Corpus</h2>
-                    <p style={{color: 'var(--text-muted)', marginBottom: 16}}>
-                        Generate training data from approved sentences: TTS → ASR → training pairs, then prepare train/valid/test splits.
-                    </p>
-                    {error && <div className="pipeline-error">{error}</div>}
-                    {isRunning && <div style={{textAlign:'right',marginBottom:8}}><button className="stage-launch-btn" style={{borderColor:'var(--warning)',color:'var(--warning)',background:'rgba(210,153,34,0.1)'}} onClick={stopJob} disabled={stopping}>{stopping ? 'Stopping...' : 'Stop'}</button></div>}
+                    {error && <div className="pipeline-error" style={{marginBottom:12}}>{error}</div>}
 
                     <div className="card" style={{marginBottom: 16}}>
-                        <h3>1. Generate Corpus</h3>
-                        <p style={{color: 'var(--text-muted)', fontSize: 13, marginBottom: 12}}>
-                            {status.approved_count} sentences + {status.vocab_reviewed || 0} vocab × {corpusPasses} passes → TTS → dual ASR → training pairs.
-                            {status.corpus_exists && <span style={{color: 'var(--success)'}}>{' '}
-                                <a href="#" style={{color:'var(--success)'}} onClick={async e => {
+                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                            <h3 style={{margin:0,flex:1}}>1. Generate Corpus</h3>
+                            {status.corpus_exists && <>
+                                <a href="#" style={{color:'var(--success)',fontSize:13,fontWeight:600}} onClick={async e => {
                                     e.preventDefault();
                                     const d = await api('/api/pipeline/corpus');
-                                    setCorpusData(d.pairs); setCorpusFilter('');
+                                    setCorpusData(d.pairs); setCorpusFilter(''); setExpandedTerm(null);
                                     dialogRef.current?.showModal();
-                                }}>{status.corpus_lines} pairs in corpus</a>.{' '}
+                                }}>{status.corpus_lines} pairs</a>
                                 <a href="#" style={{color:'var(--text-muted)',fontSize:11}} onClick={async e => {
                                     e.preventDefault();
                                     if (confirm('Delete all corpus pairs?')) { await api('/api/pipeline/reset-corpus', {method:'POST'}); load(); }
-                                }}>Reset</a>
-                            </span>}
-                            {' '}Runs incrementally.
-                        </p>
+                                }}>reset</a>
+                            </>}
+                        </div>
+
+                        <div className="stats-grid" style={{marginBottom:12}}>
+                            <div className="stat-card"><div className="value">{liveStats?.pairs_total ?? status.corpus_lines ?? 0}</div><div className="label">Total Pairs</div></div>
+                            <div className="stat-card"><div className="value">{status.vocab_reviewed || 0}</div><div className="label">Vocab Reviewed</div></div>
+                            {liveStats && <div className="stat-card"><div className="value">{liveStats.pairs_written}</div><div className="label">This Run</div></div>}
+                            {liveStats && <div className="stat-card"><div className="value">{liveStats.items_done}/{liveStats.items_total}</div><div className="label">Terms Done</div></div>}
+                            {liveStats?.errors > 0 && <div className="stat-card"><div className="value" style={{color:'var(--error)'}}>{liveStats.errors}</div><div className="label">Errors</div></div>}
+                        </div>
+
                         <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                             <label style={{fontSize:12,color:'var(--text-muted)'}}>TTS</label>
-                            <select value={backend} onChange={e => setBackend(e.target.value)}
-                                style={{padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',fontFamily:'Jost,sans-serif',fontSize:13}}>
+                            <select value={backend} onChange={e => setBackend(e.target.value)} disabled={corpusRunning} style={inputStyle}>
                                 {(status.backends||[]).map(b => <option key={b} value={b}>{b}</option>)}
                             </select>
                             <label style={{fontSize:12,color:'var(--text-muted)',marginLeft:8}}>Passes</label>
-                            <input type="number" value={corpusPasses} onChange={e => setCorpusPasses(+e.target.value || 25)}
-                                style={{width:50,padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',fontFamily:'Jost,sans-serif',fontSize:13}} />
+                            <input type="number" value={corpusPasses} onChange={e => setCorpusPasses(+e.target.value || 25)} disabled={corpusRunning}
+                                style={{...inputStyle,width:50}} />
                             <label style={{fontSize:12,color:'var(--text-muted)',marginLeft:8}}>Batch</label>
-                            <input type="number" value={corpusLimit} onChange={e => setCorpusLimit(+e.target.value || 200)}
-                                style={{width:60,padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',fontFamily:'Jost,sans-serif',fontSize:13}} />
+                            <input type="number" value={corpusLimit} onChange={e => setCorpusLimit(+e.target.value || 200)} disabled={corpusRunning}
+                                style={{...inputStyle,width:60}} />
                             <div style={{flex:1}} />
-                            <button className="btn btn-primary btn-sm" disabled={isRunning || (status.approved_count === 0 && !(status.vocab_reviewed > 0))}
-                                onClick={() => startJob('corpus', {tts_backend: backend, limit: corpusLimit, passes: corpusPasses})}>
-                                {rt === 'corpus' ? 'Running...' : 'Generate'}
-                            </button>
+                            {corpusRunning
+                                ? <button className="btn btn-sm" style={{borderColor:'var(--warning)',color:'var(--warning)',background:'rgba(210,153,34,0.1)'}}
+                                    onClick={stopJob} disabled={stopping}>{stopping ? 'Stopping...' : 'Stop'}</button>
+                                : <button className="btn btn-primary btn-sm" disabled={!canGenerate}
+                                    onClick={() => startJob('corpus', {tts_backend: backend, limit: corpusLimit, passes: corpusPasses})}>Generate</button>
+                            }
                         </div>
-                        {rt === 'corpus' && liveStats && (
-                            <div className="stats-grid" style={{marginTop:12}}>
-                                <div className="stat-card"><div className="value">{liveStats.pairs_total}</div><div className="label">Total Pairs</div></div>
-                                <div className="stat-card"><div className="value">{liveStats.pairs_written}</div><div className="label">This Run</div></div>
-                                <div className="stat-card"><div className="value">{liveStats.items_done}/{liveStats.items_total}</div><div className="label">Items</div></div>
-                                {liveStats.errors > 0 && <div className="stat-card"><div className="value" style={{color:'var(--error)'}}>{liveStats.errors}</div><div className="label">Errors</div></div>}
-                            </div>
-                        )}
-                        {rt === 'corpus' && jobLog && <pre ref={logRef} className="stage-log" style={{marginTop:8}}>{jobLog}</pre>}
+
+                        {jobLog && corpusRunning && <pre ref={logRef} className="stage-log" style={{marginTop:10,maxHeight:150}}>{jobLog}</pre>}
                     </div>
 
                     <div className="card">
-                        <h3>2. Prepare Training Data</h3>
-                        <p style={{color: 'var(--text-muted)', fontSize: 13, marginBottom: 12}}>
-                            Combine corpus with identity examples, split into train/valid/test.
-                            {status.training_data_exists && <span style={{color: 'var(--success)'}}> {status.train_count?.toLocaleString()} examples ready.</span>}
-                        </p>
+                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                            <h3 style={{margin:0,flex:1}}>2. Prepare Training Data</h3>
+                            {status.training_data_exists && <span style={{color:'var(--success)',fontSize:13,fontWeight:600}}>{status.train_count?.toLocaleString()} examples</span>}
+                        </div>
                         <div style={{display:'flex',gap:8,alignItems:'center'}}>
                             <label style={{fontSize:12,color:'var(--text-muted)'}}>Identity examples</label>
-                            <input type="number" value={identityCount} onChange={e => setIdentityCount(parseInt(e.target.value)||95000)}
-                                style={{width:80,padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',fontFamily:'Jost,sans-serif',fontSize:13}} />
+                            <input type="number" value={identityCount} onChange={e => setIdentityCount(parseInt(e.target.value)||95000)} disabled={prepareRunning}
+                                style={{...inputStyle,width:80}} />
                             <div style={{flex:1}} />
-                            <button className="btn btn-primary btn-sm" disabled={isRunning || !status.corpus_exists}
-                                onClick={() => startJob('prepare', {identity_count: identityCount})}>
-                                {rt === 'prepare' ? 'Running...' : 'Prepare'}
-                            </button>
+                            {prepareRunning
+                                ? <button className="btn btn-sm" style={{borderColor:'var(--warning)',color:'var(--warning)',background:'rgba(210,153,34,0.1)'}}
+                                    onClick={stopJob} disabled={stopping}>{stopping ? 'Stopping...' : 'Stop'}</button>
+                                : <button className="btn btn-primary btn-sm" disabled={isRunning || !status.corpus_exists}
+                                    onClick={() => startJob('prepare', {identity_count: identityCount})}>Prepare</button>
+                            }
                         </div>
-                        {rt === 'prepare' && jobLog && <pre ref={logRef} className="stage-log" style={{marginTop:8}}>{jobLog}</pre>}
+                        {jobLog && prepareRunning && <pre ref={logRef} className="stage-log" style={{marginTop:10,maxHeight:150}}>{jobLog}</pre>}
                     </div>
 
                     <dialog ref={dialogRef} style={{
