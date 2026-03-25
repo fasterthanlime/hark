@@ -1764,9 +1764,7 @@
         function Nav() {
             const hash = useHash();
             const links = [
-                ['#/', 'Import'],
-                ['#/vocab', 'Vocab'],
-                ['#/review', 'Review'],
+                ['#/', 'Vocab'],
                 ['#/author', 'Author'],
                 ['#/corpus', 'Corpus'],
                 ['#/train', 'Train'],
@@ -4298,7 +4296,7 @@
             else if (hash.startsWith('#/train')) page = <TrainPage />;
             else if (hash.startsWith('#/eval')) page = <EvalPage />;
             else if (hash.startsWith('#/jobs')) page = <JobsPage />;
-            else page = <ImportPage />;
+            else page = <VocabPage />;
             return (<><Nav />{page}</>);
         }
 
