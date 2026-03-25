@@ -185,8 +185,9 @@ fn extract_asr_at_time_range(
     // Collect words whose time range overlaps with [start, end]
     let mut words = Vec::new();
     for item in &asr_align {
-        // Check overlap: word overlaps if it doesn't end before start or begin after end
-        if item.end_time > start + 0.02 && item.start_time < end - 0.02 {
+        // Check overlap: word overlaps if its midpoint is within the range (±small margin)
+        let mid = (item.start_time + item.end_time) / 2.0;
+        if mid >= start - 0.05 && mid <= end + 0.05 {
             words.push(item.word.as_str());
         }
     }
@@ -440,8 +441,8 @@ async fn run_corpus_job(
                 }
             };
 
-            // Apply any other vocab overrides to the rest of the sentence
-            let spoken = apply_overrides_to_sentence(&spoken, &overrides);
+            // Don't apply bulk overrides — only the target term was replaced above.
+            // Applying overrides to the whole sentence risks corrupting common words.
 
             // TTS the full Markov sentence
             let audio = match state.tts.generate(tts_backend, &spoken).await {
