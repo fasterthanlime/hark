@@ -786,6 +786,9 @@ async fn main() -> anyhow::Result<()> {
     // Open DB and run migrations
     let db = Db::open(std::path::Path::new(&cli.db))?;
 
+    // Clean up orphaned running jobs from previous process
+    db.fail_orphaned_jobs()?;
+
     // Seed pronunciation overrides
     let seeded = db.seed_overrides()?;
     if seeded > 0 {

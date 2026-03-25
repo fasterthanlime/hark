@@ -828,6 +828,18 @@ impl Db {
         Ok(())
     }
 
+    /// Mark any jobs stuck in "running" as failed (orphaned from a previous process).
+    pub fn fail_orphaned_jobs(&self) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE jobs SET status = 'failed', finished_at = ?1 WHERE status = 'running'",
+            params![now_str()],
+        )?;
+        if n > 0 {
+            eprintln!("[db] Cleaned up {n} orphaned running job(s)");
+        }
+        Ok(())
+    }
+
     pub fn finish_job(&self, job_id: i64, status: &str, result: Option<&str>) -> Result<()> {
         self.conn.execute(
             "UPDATE jobs SET status = ?1, result = ?2, finished_at = ?3 WHERE id = ?4",
