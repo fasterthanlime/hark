@@ -1429,8 +1429,10 @@ pub async fn api_start_eval_job(
         let mut timeouts = 0usize;
         let mut total_evaluated = 0usize;
 
+        let mut cancelled = false;
         for (i, (term, original, qwen, parakeet)) in triplets.iter().enumerate() {
             if state2.job_cancel.load(Ordering::Relaxed) {
+                cancelled = true;
                 let db = state2.db.lock().unwrap();
                 let _ = db.append_job_log(job_id, "Stopped by user.");
                 break;
@@ -1503,7 +1505,8 @@ pub async fn api_start_eval_job(
                 else { format!(" (expected \"{}\")", original) }
             ));
         }
-        // server is dropped here, killing the subprocess
+        // Kill the server immediately — don't wait for graceful shutdown
+        drop(server);
 
         let correct = fixed + kept;
         let accuracy = if total_evaluated > 0 { correct as f64 / total_evaluated as f64 * 100.0 } else { 0.0 };

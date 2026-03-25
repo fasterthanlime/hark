@@ -370,7 +370,7 @@ impl InferenceServer {
         });
 
         let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
             .build()
             .new_agent();
 
@@ -389,6 +389,15 @@ impl InferenceServer {
             .replace("<|end_of_text|>", "");
 
         Ok(text.trim().to_string())
+    }
+}
+
+impl InferenceServer {
+    /// Force-kill the server process immediately.
+    pub fn kill(&mut self) {
+        eprintln!("[inference] Killing mlx_lm.server");
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
