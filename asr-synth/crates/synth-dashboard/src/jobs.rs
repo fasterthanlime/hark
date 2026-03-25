@@ -800,26 +800,46 @@ async fn run_corpus_job(
         let _ = db.append_job_log(job_id, &format!("Generated {} Markov sentences, starting pipeline...", pass_items.len()));
     }
 
-    // Pipeline: TTS producer runs ahead, consumer does ASR+alignment as audio arrives.
-    // Bounded channel with PIPELINE_AHEAD slots — TTS can run that many ahead of ASR.
-    const PIPELINE_AHEAD: usize = 4;
+    // Pipeline: TTS producer fires concurrent requests, consumer does ASR+alignment.
+    // Concurrency limit controls how many TTS requests are in flight at once.
+    const TTS_CONCURRENCY: usize = 8;
     let pass_items = std::sync::Arc::new(pass_items);
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, Result<tts::TtsAudio, anyhow::Error>, u64)>(PIPELINE_AHEAD);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, Result<tts::TtsAudio, anyhow::Error>, u64)>(TTS_CONCURRENCY * 2);
 
-    // TTS producer task
+    // TTS producer: spawn up to TTS_CONCURRENCY tasks at a time
     let cancel = state.job_cancel.clone();
     let tts_backend_owned = tts_backend.to_string();
     let state_tts = state.clone();
     let items_ref = pass_items.clone();
     let producer = tokio::spawn(async move {
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(TTS_CONCURRENCY));
+        let mut handles = Vec::new();
+
         for (idx, pi) in items_ref.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) { break; }
-            let t0 = std::time::Instant::now();
-            let result = state_tts.tts.generate(&tts_backend_owned, &pi.spoken).await;
-            let ms = t0.elapsed().as_millis() as u64;
-            if tx.send((idx, result, ms)).await.is_err() {
-                break;
-            }
+            let permit = match semaphore.clone().acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+            let tx = tx.clone();
+            let state_tts = state_tts.clone();
+            let backend = tts_backend_owned.clone();
+            let spoken = pi.spoken.clone();
+            let cancel = cancel.clone();
+
+            handles.push(tokio::spawn(async move {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) { return; }
+                let t0 = std::time::Instant::now();
+                let result = state_tts.tts.generate(&backend, &spoken).await;
+                let ms = t0.elapsed().as_millis() as u64;
+                let _ = tx.send((idx, result, ms)).await;
+                drop(permit);
+            }));
+        }
+
+        // Wait for all in-flight TTS tasks to complete
+        for h in handles {
+            let _ = h.await;
         }
     });
 
