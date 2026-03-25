@@ -2576,7 +2576,7 @@
                     const job = await api(`/api/jobs/${runningJob.id}`);
                     setJobLog(job.log);
                     if (job.result) try { setLiveStats(JSON.parse(job.result)); } catch {}
-                    if (job.status !== 'running') { setRunningJob(null); setJobLog(''); setLiveStats(null); load(); }
+                    if (job.status !== 'running') { setRunningJob(null); setLiveStats(null); load(); }
                 };
                 poll(); pollRef.current = setInterval(poll, 2000);
                 return () => clearInterval(pollRef.current);
@@ -2872,7 +2872,7 @@
                 const poll = async () => {
                     const job = await api(`/api/jobs/${runningJob.id}`);
                     setJobLog(job.log);
-                    if (job.status !== 'running') { setRunningJob(null); setJobLog(''); load(); }
+                    if (job.status !== 'running') { setRunningJob(null); load(); }
                 };
                 poll(); pollRef.current = setInterval(poll, 2000);
                 return () => clearInterval(pollRef.current);
@@ -2897,33 +2897,39 @@
                     <p style={{color: 'var(--text-muted)', marginBottom: 16}}>
                         Fine-tune {model} with LoRA adapters using MLX-LM.
                     </p>
-                    {error && <div className="pipeline-error">{error}</div>}
-                    {isRunning && <div style={{textAlign:'right',marginBottom:8}}><button className="stage-launch-btn" style={{borderColor:'var(--warning)',color:'var(--warning)',background:'rgba(210,153,34,0.1)'}} onClick={stopJob}>Stop</button></div>}
+                    {error && <div className="pipeline-error" style={{marginBottom:12}}>{error}</div>}
 
-                    {status.adapters_exist && <div style={{marginBottom:16}}><span className="badge badge-completed">Adapters ready</span></div>}
+                    {status.adapters_exist && (
+                        <div className="stats-grid" style={{marginBottom:16}}>
+                            <div className="stat-card"><div className="value" style={{color:'var(--success)'}}>Ready</div><div className="label">Adapters</div></div>
+                            {status.last_train?.adapter_mb && <div className="stat-card"><div className="value">{status.last_train.adapter_mb}MB</div><div className="label">Size</div></div>}
+                            {status.last_train?.val_loss && <div className="stat-card"><div className="value">{Number(status.last_train.val_loss).toFixed(4)}</div><div className="label">Val Loss</div></div>}
+                        </div>
+                    )}
 
                     <div className="card">
                         <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                             <label style={{fontSize:12,color:'var(--text-muted)'}}>Model</label>
-                            <input value={model} onChange={e => setModel(e.target.value)}
+                            <input value={model} onChange={e => setModel(e.target.value)} disabled={isRunning}
                                 style={{width:180,padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',fontFamily:'Jost,sans-serif',fontSize:13}} />
                             <label style={{fontSize:12,color:'var(--text-muted)'}}>Iters</label>
-                            <input type="number" value={iters} onChange={e => setIters(parseInt(e.target.value)||1000)}
+                            <input type="number" value={iters} onChange={e => setIters(parseInt(e.target.value)||1000)} disabled={isRunning}
                                 style={{width:60,padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',fontFamily:'Jost,sans-serif',fontSize:13}} />
                             <label style={{fontSize:12,color:'var(--text-muted)'}}>Batch</label>
-                            <input type="number" value={batch} onChange={e => setBatch(parseInt(e.target.value)||1)}
+                            <input type="number" value={batch} onChange={e => setBatch(parseInt(e.target.value)||1)} disabled={isRunning}
                                 style={{width:40,padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',fontFamily:'Jost,sans-serif',fontSize:13}} />
                             <label style={{fontSize:12,color:'var(--text-muted)'}}>Layers</label>
-                            <input type="number" value={layers} onChange={e => setLayers(parseInt(e.target.value)||4)}
+                            <input type="number" value={layers} onChange={e => setLayers(parseInt(e.target.value)||4)} disabled={isRunning}
                                 style={{width:40,padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',fontFamily:'Jost,sans-serif',fontSize:13}} />
                             <div style={{flex:1}} />
-                            <button className="btn btn-primary" disabled={isRunning || !status.training_data_exists}
-                                onClick={() => startJob({model, iters, batch_size: batch, num_layers: layers})}>
-                                {isRunning ? 'Training...' : 'Train'}
-                            </button>
+                            {isRunning
+                                ? <button className="btn" style={{borderColor:'var(--warning)',color:'var(--warning)',background:'rgba(210,153,34,0.1)'}} onClick={stopJob}>Stop</button>
+                                : <button className="btn btn-primary" disabled={!status.training_data_exists}
+                                    onClick={() => startJob({model, iters, batch_size: batch, num_layers: layers})}>Train</button>
+                            }
                         </div>
                         {!status.training_data_exists && <p style={{color:'var(--text-muted)',fontSize:13,marginTop:8}}>Prepare training data first on the Corpus tab.</p>}
-                        {isRunning && jobLog && <pre ref={logRef} className="stage-log" style={{marginTop:12,maxHeight:400}}>{jobLog}</pre>}
+                        {jobLog && <pre ref={logRef} className="stage-log" style={{marginTop:12,maxHeight:400}}>{jobLog}</pre>}
                     </div>
                 </div>
             );
@@ -2950,7 +2956,7 @@
                 const poll = async () => {
                     const job = await api(`/api/jobs/${runningJob.id}`);
                     setJobLog(job.log);
-                    if (job.status !== 'running') { setRunningJob(null); setJobLog(''); load(); }
+                    if (job.status !== 'running') { setRunningJob(null); load(); }
                 };
                 poll(); pollRef.current = setInterval(poll, 2000);
                 return () => clearInterval(pollRef.current);
@@ -3179,7 +3185,7 @@
                     try {
                         const job = await api(`/api/jobs/${runningJob.id}`);
                         setJobLog(job.log);
-                        if (job.status !== 'running') {setRunningJob(null); setJobLog(''); loadStatus();}
+                        if (job.status !== 'running') {setRunningJob(null); loadStatus();}
                     } catch (e) { }
                 };
                 poll();

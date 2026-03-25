@@ -838,10 +838,45 @@ pub async fn api_start_train_job(
         });
 
         let db = state2.db.lock().unwrap();
+
+        // Compute adapter size on disk
+        let adapter_size = std::fs::read_dir("training/adapters")
+            .ok()
+            .map(|entries| {
+                entries.filter_map(|e| e.ok())
+                    .filter_map(|e| e.metadata().ok().map(|m| m.len()))
+                    .sum::<u64>()
+            })
+            .unwrap_or(0);
+        let adapter_mb = adapter_size as f64 / (1024.0 * 1024.0);
+
+        // Parse final validation loss from the job log
+        let log = db.get_job(job_id).ok().flatten()
+            .map(|j| j.log).unwrap_or_default();
+        let val_loss = log.lines().rev()
+            .find_map(|line| {
+                // MLX-LM outputs lines like "Val loss 2.345, Val took 1.2s"
+                let lower = line.to_lowercase();
+                if lower.contains("val") && lower.contains("loss") {
+                    lower.split_whitespace()
+                        .filter_map(|w| w.trim_matches(',').parse::<f64>().ok())
+                        .next()
+                } else {
+                    None
+                }
+            });
+
         match result {
             Ok(status) if status.success() => {
-                let _ = db.append_job_log(job_id, "Training completed successfully");
-                let _ = db.finish_job(job_id, "completed", Some(&serde_json::json!({"exit_code": 0}).to_string()));
+                let _ = db.append_job_log(job_id, &format!(
+                    "Training completed. Adapters: {adapter_mb:.1}MB{}",
+                    val_loss.map(|v| format!(", final val loss: {v:.4}")).unwrap_or_default()
+                ));
+                let _ = db.finish_job(job_id, "completed", Some(&serde_json::json!({
+                    "exit_code": 0,
+                    "adapter_mb": (adapter_mb * 10.0).round() / 10.0,
+                    "val_loss": val_loss,
+                }).to_string()));
             }
             Ok(status) => {
                 let code = status.code().unwrap_or(-1);
@@ -1482,7 +1517,7 @@ pub async fn api_reset_corpus() -> Result<Response, AppError> {
 pub async fn api_pipeline_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Response, AppError> {
-    let (approved_count, vocab_reviewed, human_recordings, running_job, last_eval, vocab_scanned) = {
+    let (approved_count, vocab_reviewed, human_recordings, running_job, last_eval, last_train, vocab_scanned) = {
         let db = state.db.lock().unwrap();
         let (approved, _, _) = db.sentence_count_by_status().map_err(err)?;
         let (reviewed, _, _) = db.vocab_review_counts().unwrap_or((0, 0, 0));
@@ -1495,7 +1530,12 @@ pub async fn api_pipeline_status(
             .next()
             .and_then(|j| j.result.as_ref())
             .and_then(|r| serde_json::from_str::<serde_json::Value>(r).ok());
-        (approved, reviewed, human, running, eval, scanned)
+        let train = jobs.iter()
+            .filter(|j| j.job_type == "train" && j.status == "completed")
+            .next()
+            .and_then(|j| j.result.as_ref())
+            .and_then(|r| serde_json::from_str::<serde_json::Value>(r).ok());
+        (approved, reviewed, human, running, eval, train, scanned)
     };
 
     // Check filesystem for corpus / training data / adapters
@@ -1545,6 +1585,7 @@ pub async fn api_pipeline_status(
         "backends": backends,
         "running_job": running_json,
         "last_eval": last_eval,
+        "last_train": last_train,
     }))
     .into_response())
 }
