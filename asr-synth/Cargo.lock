@@ -4494,6 +4494,7 @@ dependencies = [
  "parakeet-rs",
  "pocket-tts",
  "qwen3-asr",
+ "rand 0.9.2",
  "reqwest",
  "rubato 0.15.0",
  "rusqlite",

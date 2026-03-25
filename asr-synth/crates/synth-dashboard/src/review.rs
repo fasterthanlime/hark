@@ -160,6 +160,12 @@ pub struct ReviewSession {
     pub queue: VecDeque<i64>,
     pub backend: String,
     pub precomputed: HashMap<i64, PrecomputedData>,
+    // Vocab review
+    pub vocab_queue: VecDeque<i64>,  // shuffled once, stable order
+    pub vocab_precomputed: HashMap<i64, PrecomputedData>,
+    /// Which vocab ID the precompute loop is currently computing (if any).
+    /// Used by /current to avoid redundant concurrent computation.
+    pub vocab_computing: Option<i64>,
 }
 
 pub struct PrecomputedData {
@@ -180,6 +186,9 @@ impl ReviewSession {
             queue: VecDeque::new(),
             backend: "pocket-hq".to_string(),
             precomputed: HashMap::new(),
+            vocab_queue: VecDeque::new(),
+            vocab_precomputed: HashMap::new(),
+            vocab_computing: None,
         }
     }
 }
@@ -195,17 +204,40 @@ pub fn compute_for_sentence(
 ) -> anyhow::Result<PrecomputedData> {
     // Generate TTS — replace hyphens with spaces for better pronunciation
     let spoken_owned = sentence.spoken.replace('-', " ");
-    let spoken_text = if sentence.spoken != sentence.text {
-        &spoken_owned
+
+    // For very short text (single words, acronyms), wrap in a carrier phrase
+    // so TTS has context for pronunciation, then crop to just the target word(s)
+    let word_count = spoken_owned.split_whitespace().count();
+    let carrier = word_count <= 3;
+    let tts_text = if carrier {
+        format!("The word is: {}.", spoken_owned)
     } else {
-        // Even if spoken == text, normalize hyphens for TTS
-        &spoken_owned
+        spoken_owned.clone()
     };
 
     // TTS is async for remote backends — we need a runtime handle
     let rt = tokio::runtime::Handle::current();
-    let mut audio = rt.block_on(state.tts.generate(backend, spoken_text))?;
+    let mut audio = rt.block_on(state.tts.generate(backend, &tts_text))?;
     audio.normalize();
+
+    // If we used a carrier phrase, align the full text and crop to just the target word(s)
+    if carrier {
+        let full_16k = tts::resample_to_16k(&audio.samples, audio.sample_rate)?;
+        let carrier_items = state.aligner.align(&full_16k, &tts_text).unwrap_or_default();
+        // "The word is [target]." — skip first 3 words ("The", "word", "is")
+        let skip = 3;
+        if carrier_items.len() > skip {
+            let start_time = carrier_items[skip].start_time;
+            let end_time = carrier_items.last().map(|i| i.end_time).unwrap_or(start_time + 1.0);
+            // Add small padding
+            let start_sample = ((start_time - 0.05).max(0.0) * audio.sample_rate as f64) as usize;
+            let end_sample = ((end_time + 0.1) * audio.sample_rate as f64).min(audio.samples.len() as f64) as usize;
+            if start_sample < end_sample && end_sample <= audio.samples.len() {
+                audio.samples = audio.samples[start_sample..end_sample].to_vec();
+            }
+        }
+    }
+
     let wav_bytes = audio.to_wav()?;
 
     // Save WAV to disk
@@ -215,6 +247,7 @@ pub fn compute_for_sentence(
 
     // Resample to 16kHz for aligner
     let samples_16k = tts::resample_to_16k(&audio.samples, audio.sample_rate)?;
+    let spoken_text = &spoken_owned;
 
     // Run forced alignment on spoken text (for waveform playback sync)
     let spoken_items = state.aligner.align(&samples_16k, spoken_text)
@@ -430,6 +463,67 @@ pub fn spawn_precompute_loop(state: Arc<AppState>, notify: Arc<Notify>, audio_di
     });
 }
 
+pub fn spawn_vocab_precompute_loop(state: Arc<AppState>, notify: Arc<Notify>, audio_dir: String) {
+    tokio::spawn(async move {
+        loop {
+            notify.notified().await;
+
+            let backend = {
+                let review = state.review.lock().unwrap();
+                review.backend.clone()
+            };
+
+            // Get next few from the stable queue that aren't precomputed yet
+            ensure_vocab_queue(&state);
+            let ids = {
+                let review = state.review.lock().unwrap();
+                review.vocab_queue.iter()
+                    .filter(|id| !review.vocab_precomputed.contains_key(id))
+                    .take(3)
+                    .copied()
+                    .collect::<Vec<_>>()
+            };
+
+            for id in ids {
+                let vocab = {
+                    let db = state.db.lock().unwrap();
+                    db.get_vocab(id).ok().flatten()
+                };
+                let Some(vocab) = vocab else { continue };
+                if vocab.reviewed { continue; }
+
+                // Mark this ID as being computed so /current can wait instead of racing
+                {
+                    let mut review = state.review.lock().unwrap();
+                    review.vocab_computing = Some(id);
+                }
+
+                let sentence = vocab_to_sentence(&vocab);
+                let state2 = state.clone();
+                let backend2 = backend.clone();
+                let audio_dir2 = audio_dir.clone();
+
+                let result = tokio::task::spawn_blocking(move || {
+                    compute_for_sentence(&state2, &sentence, &backend2, &audio_dir2)
+                }).await;
+
+                {
+                    let mut review = state.review.lock().unwrap();
+                    review.vocab_computing = None;
+                    match result {
+                        Ok(Ok(data)) => {
+                            eprintln!("[vocab-precompute] {} ready", vocab.term);
+                            review.vocab_precomputed.insert(id, data);
+                        }
+                        Ok(Err(e)) => eprintln!("[vocab-precompute] {} failed: {e}", vocab.term),
+                        Err(e) => eprintln!("[vocab-precompute] {} task failed: {e}", vocab.term),
+                    }
+                }
+            }
+        }
+    });
+}
+
 // ==================== API Endpoints ====================
 
 pub async fn api_review_current(
@@ -516,8 +610,9 @@ pub async fn api_review_approve(
         review.precomputed.remove(&id);
     }
 
-    // Return the next sentence
-    api_review_current(State(state)).await
+    // Trigger precompute and return immediately — frontend fetches next separately
+    state.precompute_notify.notify_one();
+    Ok(Json(serde_json::json!({"ok": true})).into_response())
 }
 
 pub async fn api_review_reject(
@@ -543,7 +638,8 @@ pub async fn api_review_reject(
         review.precomputed.remove(&id);
     }
 
-    api_review_current(State(state)).await
+    state.precompute_notify.notify_one();
+    Ok(Json(serde_json::json!({"ok": true})).into_response())
 }
 
 #[derive(Deserialize)]
@@ -902,6 +998,242 @@ pub async fn api_review_asr(
 }
 
 /// Load a WAV file from disk and resample to 16kHz mono.
+// ==================== Vocab Review ====================
+
+/// Convert a VocabRow into a fake SentenceRow for the review compute pipeline
+fn vocab_to_sentence(vocab: &crate::db::VocabRow) -> crate::db::SentenceRow {
+    crate::db::SentenceRow {
+        id: vocab.id,
+        text: vocab.term.clone(),
+        spoken: vocab.spoken().to_string(),
+        vocab_terms: "[]".to_string(),
+        unknown_words: serde_json::json!([vocab.term]).to_string(),
+        status: if vocab.reviewed { "approved" } else { "pending" }.to_string(),
+        wav_path: None,
+        alignment_json: None,
+        tts_backend: None,
+        parakeet_output: None,
+        qwen_output: None,
+        human_wav_path: None,
+    }
+}
+
+pub async fn api_vocab_review_current(
+    State(state): State<Arc<AppState>>,
+) -> Result<Response, AppError> {
+    // Get next from stable queue
+    let Some(vocab_id) = next_vocab_id(&state) else {
+        return Ok(Json(serde_json::json!({"sentence": null, "ready": true})).into_response());
+    };
+
+    let vocab = {
+        let db = state.db.lock().unwrap();
+        db.get_vocab(vocab_id).map_err(err)?.ok_or_else(|| err(anyhow::anyhow!("vocab gone")))?
+    };
+
+    // Check precompute cache — if the precompute loop is actively computing
+    // this item, wait for it instead of starting a competing computation
+    let data = 'resolve: {
+        // First check: already cached?
+        if let Some(data) = state.review.lock().unwrap().vocab_precomputed.remove(&vocab_id) {
+            break 'resolve data;
+        }
+
+        // If precompute loop is computing this exact item, wait for it
+        let is_being_computed = state.review.lock().unwrap().vocab_computing == Some(vocab_id);
+        if is_being_computed {
+            for _ in 0..30 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                let mut review = state.review.lock().unwrap();
+                if let Some(data) = review.vocab_precomputed.remove(&vocab_id) {
+                    break 'resolve data;
+                }
+                if review.vocab_computing != Some(vocab_id) {
+                    // Precompute moved on — check once more then fall through
+                    if let Some(data) = review.vocab_precomputed.remove(&vocab_id) {
+                        break 'resolve data;
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Not cached and not being precomputed — compute inline
+        let sentence = vocab_to_sentence(&vocab);
+        let backend = state.review.lock().unwrap().backend.clone();
+        let audio_dir = state.audio_dir.clone();
+        let state2 = state.clone();
+        let backend2 = backend.clone();
+        tokio::task::spawn_blocking(move || {
+            compute_for_sentence(&state2, &sentence, &backend2, &audio_dir)
+        })
+        .await
+        .map_err(|e| err(e))?
+        .map_err(err)?
+    };
+
+    // Trigger precompute of next terms
+    state.vocab_precompute_notify.notify_one();
+
+    let backend = state.review.lock().unwrap().backend.clone();
+    let backends = state.tts.available_backends();
+    let (reviewed, unreviewed, total) = {
+        let db = state.db.lock().unwrap();
+        db.vocab_review_counts().unwrap_or((0, 0, 0))
+    };
+
+    Ok(Json(serde_json::json!({
+        "sentence": {
+            "id": vocab.id,
+            "text": vocab.term,
+            "spoken": vocab.spoken(),
+            "unknown_words": [vocab.term],
+            "status": "pending",
+        },
+        "audio_b64": data.audio_b64,
+        "alignment": data.alignment,
+        "written_alignment": data.written_alignment,
+        "asr": {
+            "qwen": data.qwen_asr,
+            "parakeet": data.parakeet_asr,
+            "qwen_alignment": data.qwen_alignment,
+            "parakeet_alignment": data.parakeet_alignment,
+        },
+        "backend": backend,
+        "backends": backends,
+        "progress": {
+            "reviewed": reviewed,
+            "total": total,
+            "remaining": unreviewed,
+        },
+        "ready": true,
+        "mode": "vocab",
+    })).into_response())
+}
+
+/// Ensure the vocab queue is populated with shuffled unreviewed IDs.
+fn ensure_vocab_queue(state: &Arc<AppState>) {
+    let mut review = state.review.lock().unwrap();
+    if review.vocab_queue.is_empty() {
+        drop(review); // release review lock before taking db lock
+        let db = state.db.lock().unwrap();
+        let mut ids = db.unreviewed_vocab_ids(200).unwrap_or_default();
+        drop(db);
+        use rand::seq::SliceRandom;
+        ids.shuffle(&mut rand::rng());
+        let mut review = state.review.lock().unwrap();
+        review.vocab_queue = ids.into();
+        eprintln!("[vocab-review] queue refilled with {} terms", review.vocab_queue.len());
+    }
+}
+
+/// Invalidate the vocab queue (called after approve/reject)
+fn invalidate_vocab_queue(state: &Arc<AppState>) {
+    let mut review = state.review.lock().unwrap();
+    review.vocab_queue.clear();
+    review.vocab_precomputed.clear();
+}
+
+/// Pop the next vocab ID from the stable queue.
+fn next_vocab_id(state: &Arc<AppState>) -> Option<i64> {
+    ensure_vocab_queue(state);
+    let mut review = state.review.lock().unwrap();
+    review.vocab_queue.pop_front()
+}
+
+/// Eagerly precompute the next unreviewed vocab term. Called inline from approve/reject
+/// so it races the frontend's fetch for /current.
+async fn eager_vocab_precompute(state: &Arc<AppState>) {
+    ensure_vocab_queue(state);
+    let (id, vocab) = {
+        let review = state.review.lock().unwrap();
+        let db = state.db.lock().unwrap();
+        // Find next queued ID that isn't precomputed yet
+        let id = review.vocab_queue.iter().find(|id| !review.vocab_precomputed.contains_key(id)).copied();
+        match id {
+            Some(id) => match db.get_vocab(id) {
+                Ok(Some(v)) if !v.reviewed => (id, v),
+                _ => return,
+            },
+            None => return,
+        }
+    };
+    let sentence = vocab_to_sentence(&vocab);
+    let backend = state.review.lock().unwrap().backend.clone();
+    let audio_dir = state.audio_dir.clone();
+    let state2 = state.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        compute_for_sentence(&state2, &sentence, &backend, &audio_dir)
+    }).await;
+    if let Ok(Ok(data)) = result {
+        let mut review = state.review.lock().unwrap();
+        review.vocab_precomputed.insert(id, data);
+        eprintln!("[eager-precompute] {} ready", vocab.term);
+    }
+}
+
+pub async fn api_vocab_review_approve(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Response, AppError> {
+    let id = body["id"].as_i64().ok_or_else(|| err(anyhow::anyhow!("missing id")))?;
+    {
+        let db = state.db.lock().unwrap();
+        db.mark_vocab_reviewed(id).map_err(err)?;
+    }
+    {
+        let mut review = state.review.lock().unwrap();
+        review.vocab_queue.retain(|&qid| qid != id);
+        review.vocab_precomputed.remove(&id);
+    }
+    state.vocab_precompute_notify.notify_one();
+    Ok(Json(serde_json::json!({"ok": true})).into_response())
+}
+
+pub async fn api_vocab_review_reject(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Response, AppError> {
+    let id = body["id"].as_i64().ok_or_else(|| err(anyhow::anyhow!("missing id")))?;
+    {
+        let db = state.db.lock().unwrap();
+        db.reject_vocab(id).map_err(err)?;
+    }
+    {
+        let mut review = state.review.lock().unwrap();
+        review.vocab_queue.retain(|&qid| qid != id);
+        review.vocab_precomputed.remove(&id);
+    }
+    state.vocab_precompute_notify.notify_one();
+    Ok(Json(serde_json::json!({"ok": true})).into_response())
+}
+
+pub async fn api_vocab_review_pronunciation(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<PronunciationBody>,
+) -> Result<Response, AppError> {
+    // Update the vocab override
+    {
+        let db = state.db.lock().unwrap();
+        if let Ok(Some(vocab)) = db.find_vocab_by_term(&body.word) {
+            db.update_vocab_override(vocab.id, Some(&body.spoken)).map_err(err)?;
+        }
+    }
+    // Re-fetch and recompute current
+    api_vocab_review_current(State(state)).await
+}
+
+pub async fn api_vocab_review_backend(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<BackendBody>,
+) -> Result<Response, AppError> {
+    {
+        let mut review = state.review.lock().unwrap();
+        review.backend = body.backend;
+    }
+    api_vocab_review_current(State(state)).await
+}
+
 fn load_wav_16k(wav_path: &str) -> anyhow::Result<Vec<f32>> {
     let mut reader = hound::WavReader::open(wav_path)
         .map_err(|e| anyhow::anyhow!("WAV open {wav_path}: {e}"))?;

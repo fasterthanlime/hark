@@ -2,6 +2,15 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::path::Path;
 
+/// Returns true if a term is plausibly a dictatable word (not junk).
+pub fn is_valid_vocab_term(term: &str) -> bool {
+    if term.len() < 2 { return false; }
+    if term.contains('/') || term.contains('=') || term.contains('_') { return false; }
+    if term.chars().any(|c| !c.is_ascii()) { return false; }
+    if term.starts_with(|c: char| c.is_ascii_digit()) { return false; }
+    true
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct VocabEntry {
     /// Written form (target for correction model): `SHA-256`, `--doc`, `.asm`
@@ -31,6 +40,7 @@ pub fn extract_vocab(root: &str) -> Result<Vec<VocabEntry>> {
 
     let mut vocab: Vec<VocabEntry> = terms
         .into_iter()
+        .filter(|term| is_valid_vocab_term(term))
         .map(|term| {
             let spoken = to_spoken(&term);
             VocabEntry { term, spoken }

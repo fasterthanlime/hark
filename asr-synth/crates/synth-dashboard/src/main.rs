@@ -27,6 +27,7 @@ pub struct AppState {
     aligner: qwen3_asr::ForcedAligner,
     review: Mutex<review::ReviewSession>,
     precompute_notify: std::sync::Arc<tokio::sync::Notify>,
+    vocab_precompute_notify: std::sync::Arc<tokio::sync::Notify>,
     audio_dir: String,
     job_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -43,6 +44,7 @@ struct VocabListParams {
     search: Option<String>,
     reviewed: Option<bool>,
     has_override: Option<bool>,
+    sort: Option<String>, // "alpha" (default) or "recent"
     limit: Option<i64>,
     offset: Option<i64>,
 }
@@ -105,11 +107,13 @@ async fn api_vocab_list(
     Query(params): Query<VocabListParams>,
 ) -> Result<Response, AppError> {
     let db = state.db.lock().unwrap();
+    let sort_recent = params.sort.as_deref() == Some("recent");
     let list = db
         .list_vocab(
             params.search.as_deref(),
             params.reviewed,
             params.has_override,
+            sort_recent,
             params.limit.unwrap_or(100),
             params.offset.unwrap_or(0),
         )
@@ -754,6 +758,7 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("ForcedAligner ready");
 
     let precompute_notify = std::sync::Arc::new(tokio::sync::Notify::new());
+    let vocab_precompute_notify = std::sync::Arc::new(tokio::sync::Notify::new());
     let audio_dir = "audio".to_string();
     std::fs::create_dir_all(&audio_dir).ok();
 
@@ -767,12 +772,14 @@ async fn main() -> anyhow::Result<()> {
         aligner,
         review: Mutex::new(review::ReviewSession::new()),
         precompute_notify: precompute_notify.clone(),
+        vocab_precompute_notify: vocab_precompute_notify.clone(),
         audio_dir: audio_dir.clone(),
         job_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
 
     // Start background pre-computation loop
-    review::spawn_precompute_loop(state.clone(), precompute_notify, audio_dir);
+    review::spawn_precompute_loop(state.clone(), precompute_notify, audio_dir.clone());
+    review::spawn_vocab_precompute_loop(state.clone(), vocab_precompute_notify, audio_dir);
 
     let app = Router::new()
         // UI
@@ -805,6 +812,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/review/current/text", post(review::api_review_edit_text))
         .route("/api/review/current/backend", post(review::api_review_backend))
         .route("/api/review/current/asr", post(review::api_review_asr))
+        // Vocab review
+        .route("/api/review/vocab/current", get(review::api_vocab_review_current))
+        .route("/api/review/vocab/approve", post(review::api_vocab_review_approve))
+        .route("/api/review/vocab/reject", post(review::api_vocab_review_reject))
+        .route("/api/review/vocab/pronunciation", post(review::api_vocab_review_pronunciation))
+        .route("/api/review/vocab/backend", post(review::api_vocab_review_backend))
         // Hark
         .route("/api/hark/import", post(api_hark_import))
         // Jobs
@@ -816,6 +829,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/jobs/train", post(jobs::api_start_train_job))
         .route("/api/jobs/eval", post(jobs::api_start_eval_job))
         .route("/api/jobs/vocab-scan", post(jobs::api_start_vocab_scan))
+        .route("/api/jobs/curate", post(jobs::api_start_curate_job))
         .route("/api/jobs/stop", post(jobs::api_stop_job))
         .route("/api/pipeline/status", get(jobs::api_pipeline_status))
         .route("/api/pipeline/scan-results", get(jobs::api_scan_results))

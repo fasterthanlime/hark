@@ -384,15 +384,17 @@ pub fn detect_unknown_words(text: &str) -> Vec<String> {
     let mut unknown = Vec::new();
 
     for word in extract_words(text) {
+        if !synth_textgen::corpus::is_valid_vocab_term(&word) { continue; }
         let lower = word.to_lowercase();
 
         if dict.contains(&lower) { continue; }
-        if lower.ends_with("'s") && dict.contains(&lower[..lower.len()-2]) { continue; }
-        if lower.ends_with('s') && dict.contains(&lower[..lower.len()-1]) { continue; }
+        if let Some(stem) = lower.strip_suffix("'s") { if dict.contains(stem) { continue; } }
+        if let Some(stem) = lower.strip_suffix('s') { if dict.contains(stem) { continue; } }
         // Check if it's a compound of two known words (e.g., "roadmap" = "road" + "map")
-        let is_compound = (3..lower.len()-2).any(|i| {
-            dict.contains(&lower[..i]) && dict.contains(&lower[i..])
-        });
+        let is_compound = lower.char_indices()
+            .skip(2)
+            .take_while(|(i, _)| *i + 2 < lower.len())
+            .any(|(i, _)| dict.contains(&lower[..i]) && dict.contains(&lower[i..]));
         if is_compound { continue; }
         if word.chars().all(|c| c.is_ascii_digit()) { continue; }
         if lower.starts_with("0x") { continue; } // hex constants like 0xDEAD

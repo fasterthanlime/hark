@@ -21,6 +21,7 @@ synth-textgen = { path = "../synth-textgen" }
 synth-pipeline = { path = "../synth-pipeline" }
 synth-train = { path = "../synth-train" }
 shellexpand = "3"
+rand = "0.9"
 
 # TTS backends — all compiled in, chosen at runtime
 pocket-tts = { version = "0.6", features = ["metal", "quantized"] }

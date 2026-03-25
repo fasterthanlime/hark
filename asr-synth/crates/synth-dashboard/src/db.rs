@@ -109,6 +109,7 @@ pub struct CorpusStats {
     pub vocab_total: i64,
     pub vocab_reviewed: i64,
     pub vocab_with_override: i64,
+    pub vocab_unreviewed: i64,
     pub candidates_total: i64,
     pub sentences_total: i64,
     pub sentences_pending: i64,
@@ -157,6 +158,7 @@ impl Db {
         let _ = conn.execute_batch("ALTER TABLE sentences ADD COLUMN alignment_json TEXT;");
         let _ = conn.execute_batch("ALTER TABLE sentences ADD COLUMN tts_backend TEXT;");
         let _ = conn.execute_batch("ALTER TABLE sentences ADD COLUMN human_wav_path TEXT;");
+        let _ = conn.execute_batch("ALTER TABLE vocab ADD COLUMN curated TEXT;"); // 'kept', 'removed', or NULL
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS vocab_confusions (
                 id INTEGER PRIMARY KEY,
@@ -217,12 +219,16 @@ impl Db {
         search: Option<&str>,
         reviewed_only: Option<bool>,
         has_override: Option<bool>,
+        sort_recent: bool,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<VocabRow>> {
         let mut conditions = Vec::new();
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut idx = 1;
+
+        // Exclude tombstoned (removed) terms by default
+        conditions.push("(curated IS NULL OR curated != 'removed')".to_string());
 
         if let Some(q) = search {
             conditions.push(format!("term LIKE ?{idx}"));
@@ -247,8 +253,8 @@ impl Db {
         };
 
         let sql = format!(
-            "SELECT id, term, spoken_auto, spoken_override, reviewed FROM vocab {where_clause} ORDER BY term COLLATE NOCASE LIMIT ?{idx} OFFSET ?{}",
-            idx + 1
+            "SELECT id, term, spoken_auto, spoken_override, reviewed FROM vocab {where_clause} ORDER BY {} LIMIT ?{idx} OFFSET ?{}",
+            if sort_recent { "updated_at DESC" } else { "term COLLATE NOCASE" }, idx + 1
         );
         param_values.push(Box::new(limit));
         param_values.push(Box::new(offset));
@@ -579,9 +585,76 @@ impl Db {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Terms that haven't been curated yet (curated IS NULL)
+    pub fn uncurated_vocab_terms(&self) -> Result<Vec<(String, Option<String>)>> {
+        let mut stmt = self.conn.prepare("SELECT term, spoken_override FROM vocab WHERE curated IS NULL ORDER BY term COLLATE NOCASE")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Get IDs of kept vocab terms that haven't been reviewed yet
+    pub fn unreviewed_vocab_ids(&self, limit: i64) -> Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM vocab WHERE curated = 'kept' AND reviewed = 0 ORDER BY id LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn get_vocab(&self, id: i64) -> Result<Option<VocabRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, term, spoken_auto, spoken_override, reviewed FROM vocab WHERE id = ?1"
+        )?;
+        let mut rows = stmt.query_map(params![id], |row| {
+            Ok(VocabRow {
+                id: row.get(0)?, term: row.get(1)?, spoken_auto: row.get(2)?,
+                spoken_override: row.get(3)?, reviewed: row.get::<_, i64>(4)? != 0,
+            })
+        })?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn mark_vocab_reviewed(&self, id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE vocab SET reviewed = 1, updated_at = ?1 WHERE id = ?2",
+            params![now_str(), id],
+        )?;
+        Ok(())
+    }
+
+    pub fn reject_vocab(&self, id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE vocab SET curated = 'removed', updated_at = ?1 WHERE id = ?2",
+            params![now_str(), id],
+        )?;
+        Ok(())
+    }
+
+    pub fn vocab_review_counts(&self) -> Result<(i64, i64, i64)> {
+        // (reviewed, unreviewed, total kept)
+        let reviewed: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM vocab WHERE curated = 'kept' AND reviewed = 1", [], |r| r.get(0))?;
+        let unreviewed: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM vocab WHERE curated = 'kept' AND reviewed = 0", [], |r| r.get(0))?;
+        Ok((reviewed, unreviewed, reviewed + unreviewed))
+    }
+
+    pub fn set_vocab_curated(&self, term: &str, status: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE vocab SET curated = ?1, updated_at = ?2 WHERE LOWER(term) = LOWER(?3)",
+            params![status, now_str(), term],
+        )?;
+        Ok(())
+    }
+
     pub fn all_vocab_terms(&self) -> Result<Vec<(String, Option<String>)>> {
-        // Returns (term, spoken_override)
-        let mut stmt = self.conn.prepare("SELECT term, spoken_override FROM vocab ORDER BY term COLLATE NOCASE")?;
+        // Returns (term, spoken_override) — only kept or uncurated terms (excludes removed)
+        let mut stmt = self.conn.prepare("SELECT term, spoken_override FROM vocab WHERE curated IS NULL OR curated = 'kept' ORDER BY term COLLATE NOCASE")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
         })?;
@@ -634,6 +707,7 @@ impl Db {
             vocab_total: self.conn.query_row("SELECT COUNT(*) FROM vocab", [], |r| r.get(0))?,
             vocab_reviewed: self.conn.query_row("SELECT COUNT(*) FROM vocab WHERE reviewed = 1", [], |r| r.get(0))?,
             vocab_with_override: self.conn.query_row("SELECT COUNT(*) FROM vocab WHERE spoken_override IS NOT NULL", [], |r| r.get(0))?,
+            vocab_unreviewed: self.conn.query_row("SELECT COUNT(*) FROM vocab WHERE curated = 'kept' AND reviewed = 0", [], |r| r.get(0))?,
             candidates_total: self.conn.query_row("SELECT COUNT(*) FROM candidate_sentences", [], |r| r.get(0))?,
             sentences_total: self.conn.query_row("SELECT COUNT(*) FROM sentences", [], |r| r.get(0))?,
             sentences_pending: self.conn.query_row("SELECT COUNT(*) FROM sentences WHERE status = 'pending'", [], |r| r.get(0))?,

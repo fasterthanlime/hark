@@ -396,7 +396,8 @@ async fn run_curate_job(
 ) -> anyhow::Result<(usize, usize)> {
     let terms = {
         let db = state.db.lock().unwrap();
-        db.all_vocab_terms()?
+        // Only curate terms that haven't been curated yet (idempotent)
+        db.uncurated_vocab_terms()?
     };
     let total = terms.len();
     let term_strings: Vec<&str> = terms.iter().map(|(t, _)| t.as_str()).collect();
@@ -409,111 +410,145 @@ async fn run_curate_job(
     let client = reqwest::Client::new();
     let mut kept_total = 0usize;
     let mut removed_total = 0usize;
+    let num_batches = (total + batch_size - 1) / batch_size;
+    let concurrency = 5;
 
-    for (batch_idx, batch) in term_strings.chunks(batch_size).enumerate() {
+    // Process batches in groups of `concurrency`
+    let batches: Vec<Vec<&str>> = term_strings.chunks(batch_size).map(|b| b.to_vec()).collect();
+
+    for chunk_start in (0..batches.len()).step_by(concurrency) {
         if state.job_cancel.load(Ordering::Relaxed) {
             let db = state.db.lock().unwrap();
             let _ = db.append_job_log(job_id, "Stopped by user.");
             break;
         }
 
-        let terms_list = batch.join("\n");
-        let prompt = format!(
-            "You are helping curate a vocabulary list for an ASR (speech recognition) error correction system. \
-            The vocabulary should contain ONLY terms that a software developer would actually SAY OUT LOUD when \
-            dictating text — proper nouns, library names, acronyms, technical jargon.\n\n\
-            REMOVE:\n\
-            - Compiler flags (-Zmacro-stats, -Zself-profile)\n\
-            - Hex constants (0x0A, 0xFF)\n\
-            - Single letters or very short meaningless tokens (0B, 0O, 0x)\n\
-            - Punctuation-heavy tokens (--doc, .asm)\n\
-            - Version numbers (v0.1.0, 1.2.3)\n\
-            - Common English words that any ASR would handle fine (the, is, and)\n\
-            - Anything nobody would ever say in a sentence\n\n\
-            KEEP:\n\
-            - Library/framework names (serde, Tokio, Axum, React)\n\
-            - Tool names (rustc, cargo, npm, webpack)\n\
-            - Acronyms people say (JSON, HTML, API, SSH, TLS, ASR)\n\
-            - Technical terms (mutex, async, WebSocket, middleware)\n\
-            - Project names, proper nouns\n\n\
-            For each term you KEEP, also suggest how it should be pronounced if it's not obvious \
-            (e.g., \"serde\" → \"sir day\", \"Axum\" → \"axum\"). If pronunciation is obvious, leave it blank.\n\n\
-            Respond with ONLY a JSON array of objects: [{{\"term\": \"...\", \"keep\": true/false, \"pronunciation\": \"...\" or null}}]\n\
-            No markdown, no explanation, just the JSON array.\n\n\
-            Terms to evaluate:\n{terms_list}"
-        );
+        let chunk_end = (chunk_start + concurrency).min(batches.len());
+        let chunk = &batches[chunk_start..chunk_end];
 
         {
             let db = state.db.lock().unwrap();
-            let _ = db.append_job_log(job_id, &format!("[batch {}/{}] Sending {} terms to GPT...",
-                batch_idx + 1, (total + batch_size - 1) / batch_size, batch.len()));
+            let _ = db.append_job_log(job_id, &format!(
+                "[batches {}-{}/{}] Sending {} batches in parallel...",
+                chunk_start + 1, chunk_end, num_batches, chunk.len()
+            ));
         }
 
-        let resp = client.post("https://api.openai.com/v1/chat/completions")
-            .header("Authorization", format!("Bearer {api_key}"))
-            .json(&serde_json::json!({
-                "model": "gpt-4o-mini",
-                "temperature": 0,
-                "messages": [{"role": "user", "content": prompt}],
-            }))
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("OpenAI request failed: {e}"))?;
+        // Fire all batches in this chunk concurrently
+        let mut handles = Vec::new();
+        for (i, batch) in chunk.iter().enumerate() {
+            let batch_idx = chunk_start + i;
+            let terms_list = batch.join("\n");
+            let client = client.clone();
+            let api_key = api_key.to_string();
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("OpenAI API error {status}: {body}");
+            let handle = tokio::spawn(async move {
+                let prompt = format!(
+                    "You are helping curate a vocabulary list for an ASR (speech recognition) error correction system. \
+                    The vocabulary should contain ONLY terms that a software developer would actually SAY OUT LOUD when \
+                    dictating text — proper nouns, library names, acronyms, technical jargon.\n\n\
+                    REMOVE:\n\
+                    - Compiler flags (-Zmacro-stats, -Zself-profile)\n\
+                    - Hex constants (0x0A, 0xFF)\n\
+                    - Single letters or very short meaningless tokens (0B, 0O, 0x)\n\
+                    - Punctuation-heavy tokens (--doc, .asm)\n\
+                    - Version numbers (v0.1.0, 1.2.3)\n\
+                    - Common English words that any ASR would handle fine (the, is, and)\n\
+                    - Anything nobody would ever say in a sentence\n\n\
+                    KEEP:\n\
+                    - Library/framework names (serde, Tokio, Axum, React)\n\
+                    - Tool names (rustc, cargo, npm, webpack)\n\
+                    - Acronyms people say (JSON, HTML, API, SSH, TLS, ASR)\n\
+                    - Technical terms (mutex, async, WebSocket, middleware)\n\
+                    - Project names, proper nouns\n\n\
+                    For each term you KEEP, also suggest how it should be pronounced if it's not obvious \
+                    (e.g., \"serde\" → \"sir day\", \"Axum\" → \"axum\"). If pronunciation is obvious, leave it blank.\n\n\
+                    Respond with ONLY a JSON array of objects: [{{\"term\": \"...\", \"keep\": true/false, \"pronunciation\": \"...\" or null}}]\n\
+                    No markdown, no explanation, just the JSON array.\n\n\
+                    Terms to evaluate:\n{terms_list}"
+                );
+
+                let resp = client.post("https://api.openai.com/v1/chat/completions")
+                    .header("Authorization", format!("Bearer {api_key}"))
+                    .json(&serde_json::json!({
+                        "model": "gpt-4o-mini",
+                        "temperature": 0,
+                        "messages": [{"role": "user", "content": prompt}],
+                    }))
+                    .send()
+                    .await;
+
+                let resp = match resp {
+                    Ok(r) => r,
+                    Err(e) => return Err(anyhow::anyhow!("batch {}: request failed: {e}", batch_idx + 1)),
+                };
+
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(anyhow::anyhow!("batch {}: API error {status}: {body}", batch_idx + 1));
+                }
+
+                let json: serde_json::Value = resp.json().await
+                    .map_err(|e| anyhow::anyhow!("batch {}: parse failed: {e}", batch_idx + 1))?;
+
+                let content = json["choices"][0]["message"]["content"].as_str().unwrap_or("[]");
+                let results: Vec<serde_json::Value> = serde_json::from_str(content)
+                    .or_else(|_| {
+                        let cleaned = content.trim()
+                            .strip_prefix("```json").or_else(|| content.trim().strip_prefix("```")).unwrap_or(content)
+                            .strip_suffix("```").unwrap_or(content).trim();
+                        serde_json::from_str(cleaned)
+                    })
+                    .unwrap_or_default();
+
+                Ok(results)
+            });
+            handles.push(handle);
         }
 
-        let json: serde_json::Value = resp.json().await
-            .map_err(|e| anyhow::anyhow!("OpenAI response parse failed: {e}"))?;
+        // Collect results
+        for handle in handles {
+            match handle.await {
+                Ok(Ok(results)) => {
+                    let mut kept = 0usize;
+                    let mut removed = 0usize;
+                    let db = state.db.lock().unwrap();
+                    for item in &results {
+                        let term = item["term"].as_str().unwrap_or("");
+                        let keep = item["keep"].as_bool().unwrap_or(true);
+                        let pronunciation = item["pronunciation"].as_str().filter(|s| !s.is_empty());
 
-        let content = json["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or("[]");
-
-        // Parse the JSON array from the response
-        let results: Vec<serde_json::Value> = serde_json::from_str(content)
-            .or_else(|_| {
-                // Try stripping markdown fences
-                let cleaned = content
-                    .trim()
-                    .strip_prefix("```json").or_else(|| content.trim().strip_prefix("```")).unwrap_or(content)
-                    .strip_suffix("```").unwrap_or(content)
-                    .trim();
-                serde_json::from_str(cleaned)
-            })
-            .unwrap_or_default();
-
-        let mut kept = 0usize;
-        let mut removed = 0usize;
-        let db = state.db.lock().unwrap();
-        for item in &results {
-            let term = item["term"].as_str().unwrap_or("");
-            let keep = item["keep"].as_bool().unwrap_or(true);
-            let pronunciation = item["pronunciation"].as_str().filter(|s| !s.is_empty());
-
-            if keep {
-                kept += 1;
-                // If the LLM suggested a pronunciation and there's no override yet, set it
-                if let Some(pron) = pronunciation {
-                    if let Ok(Some(vocab)) = db.find_vocab_by_term(term) {
-                        if vocab.spoken_override.is_none() {
-                            let _ = db.update_vocab_override(vocab.id, Some(pron));
-                            let _ = db.append_job_log(job_id, &format!("  + {term} → \"{pron}\""));
+                        if keep {
+                            kept += 1;
+                            let _ = db.set_vocab_curated(term, "kept");
+                            if let Some(pron) = pronunciation {
+                                if let Ok(Some(vocab)) = db.find_vocab_by_term(term) {
+                                    if vocab.spoken_override.is_none() {
+                                        let _ = db.update_vocab_override(vocab.id, Some(pron));
+                                        let _ = db.append_job_log(job_id, &format!("  + {term} → \"{pron}\""));
+                                    }
+                                }
+                            }
+                        } else {
+                            removed += 1;
+                            let _ = db.set_vocab_curated(term, "removed");
                         }
                     }
+                    let _ = db.append_job_log(job_id, &format!("  kept {kept}, removed {removed}"));
+                    kept_total += kept;
+                    removed_total += removed;
                 }
-            } else {
-                removed += 1;
-                // Delete the term from vocab
-                let _ = db.delete_vocab_by_term(term);
+                Ok(Err(e)) => {
+                    let db = state.db.lock().unwrap();
+                    let _ = db.append_job_log(job_id, &format!("  ERROR: {e}"));
+                }
+                Err(e) => {
+                    let db = state.db.lock().unwrap();
+                    let _ = db.append_job_log(job_id, &format!("  TASK ERROR: {e}"));
+                }
             }
         }
-        let _ = db.append_job_log(job_id, &format!("  kept {kept}, removed {removed}"));
-        kept_total += kept;
-        removed_total += removed;
     }
 
     Ok((kept_total, removed_total))
