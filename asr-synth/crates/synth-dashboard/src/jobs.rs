@@ -206,13 +206,11 @@ fn find_consensus_boundary(all_boundaries: &[&[f64]], target_time: f64, toleranc
     }
 }
 
-/// Extract words from an alignment that fall within a time range.
+/// Extract words from an alignment whose time range overlaps [start, end].
+/// Any word that overlaps at all is included.
 fn words_in_range(items: &[qwen3_asr::ForcedAlignItem], start: f64, end: f64) -> String {
     let words: Vec<&str> = items.iter()
-        .filter(|a| {
-            let mid = (a.start_time + a.end_time) / 2.0;
-            mid >= start - 0.05 && mid <= end + 0.05
-        })
+        .filter(|a| a.end_time > start && a.start_time < end)
         .map(|a| a.word.as_str())
         .collect();
     words.join(" ")
@@ -236,36 +234,32 @@ fn extract_asr_at_time_range(
     if result.is_empty() { asr_text.to_string() } else { result }
 }
 
-/// Extract ASR words using consensus boundaries from all three alignments.
-/// Returns (qwen_extract, parakeet_extract, clean) where clean=false means
-/// boundaries didn't agree and the result may be noisy.
+/// Extract words using consensus boundaries from all three alignments.
+/// Returns (original_fragment, qwen_fragment, parakeet_fragment, consensus_range, clean).
 fn extract_with_consensus(
     orig_align: &[qwen3_asr::ForcedAlignItem],
     qwen_align: &[qwen3_asr::ForcedAlignItem],
     parakeet_align: &[qwen3_asr::ForcedAlignItem],
     term_start: f64,
     term_end: f64,
-) -> (String, String, bool) {
+) -> (String, String, String, (f64, f64), bool) {
     let orig_bounds = word_boundaries(orig_align);
     let qwen_bounds = word_boundaries(qwen_align);
     let parakeet_bounds = word_boundaries(parakeet_align);
     let all_bounds: Vec<&[f64]> = vec![&orig_bounds, &qwen_bounds, &parakeet_bounds];
 
-    // Find consensus start boundary (before term)
-    let cons_start = find_consensus_boundary(&all_bounds, term_start, 0.15, false)
-        .unwrap_or(term_start);
-    // Find consensus end boundary (after term)
-    let cons_end = find_consensus_boundary(&all_bounds, term_end, 0.15, true)
-        .unwrap_or(term_end);
+    let start_cons = find_consensus_boundary(&all_bounds, term_start, 0.15, false);
+    let end_cons = find_consensus_boundary(&all_bounds, term_end, 0.15, true);
 
+    let cons_start = start_cons.unwrap_or(term_start);
+    let cons_end = end_cons.unwrap_or(term_end);
+    let clean = start_cons.is_some() && end_cons.is_some();
+
+    let original = words_in_range(orig_align, cons_start, cons_end);
     let qwen = words_in_range(qwen_align, cons_start, cons_end);
     let parakeet = words_in_range(parakeet_align, cons_start, cons_end);
 
-    // Check if boundaries were clean (consensus found for both)
-    let start_clean = find_consensus_boundary(&all_bounds, term_start, 0.15, false).is_some();
-    let end_clean = find_consensus_boundary(&all_bounds, term_end, 0.15, true).is_some();
-
-    (qwen, parakeet, start_clean && end_clean)
+    (original, qwen, parakeet, (cons_start, cons_end), clean)
 }
 
 /// Strip carrier phrase prefix variants from ASR output.
@@ -573,9 +567,8 @@ async fn run_corpus_job(
             let parakeet_align = state.aligner.align(&full_16k, &parakeet_full).unwrap_or_default();
 
             // 4) Use consensus boundaries across all three alignments to extract cleanly
-            let (qwen_extracted, parakeet_extracted, clean) = extract_with_consensus(
-                &orig_align, &qwen_align, &parakeet_align, term_start, term_end,
-            );
+            let (orig_extracted, qwen_extracted, parakeet_extracted, cons_range, clean) =
+                extract_with_consensus(&orig_align, &qwen_align, &parakeet_align, term_start, term_end);
 
             // Serialize alignments for debugging
             let fmt_align = |items: &[qwen3_asr::ForcedAlignItem]| -> Vec<serde_json::Value> {
@@ -586,14 +579,16 @@ async fn run_corpus_job(
 
             writeln!(file, "{}", serde_json::json!({
                 "term": item.term,
+                "original": orig_extracted,
+                "qwen": qwen_extracted,
+                "parakeet": parakeet_extracted,
+                "clean": clean,
                 "sentence": sentence,
                 "spoken": spoken,
                 "qwen_full": qwen_full,
                 "parakeet_full": parakeet_full,
-                "qwen": qwen_extracted,
-                "parakeet": parakeet_extracted,
-                "clean": clean,
                 "term_time": [term_start, term_end],
+                "cons_time": [cons_range.0, cons_range.1],
                 "orig_alignment": fmt_align(&orig_align),
                 "qwen_alignment": fmt_align(&qwen_align),
                 "parakeet_alignment": fmt_align(&parakeet_align),

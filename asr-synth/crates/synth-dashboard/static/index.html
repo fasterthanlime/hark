@@ -2720,9 +2720,10 @@
                                     let cleanCount = 0;
                                     passes.forEach(p => {
                                         if (p.clean) cleanCount++;
+                                        const origKey = (p.original || term).toLowerCase().replace(/[.,!?]/g,'').trim();
                                         [p.qwen, p.parakeet].filter(Boolean).forEach(o => {
                                             const key = o.toLowerCase().replace(/[.,!?]/g,'').trim();
-                                            if (!asr[key]) asr[key] = {text: o, count: 0, correct: key === term.toLowerCase()};
+                                            if (!asr[key]) asr[key] = {text: o, count: 0, correct: key === origKey};
                                             asr[key].count++;
                                         });
                                     });
@@ -2730,21 +2731,27 @@
                                 });
 
                                 const renderPassDetail = (p, i) => {
-                                    const tt = p.term_time;
+                                    const tt = p.cons_time || p.term_time;
+                                    const origFrag = p.original || p.term;
+                                    const qwenMatch = p.qwen?.toLowerCase().replace(/[.,!?]/g,'').trim() === origFrag.toLowerCase().replace(/[.,!?]/g,'').trim();
+                                    const paraMatch = p.parakeet?.toLowerCase().replace(/[.,!?]/g,'').trim() === origFrag.toLowerCase().replace(/[.,!?]/g,'').trim();
                                     return (
                                         <div key={i} style={{marginBottom:10,padding:'8px 10px',background:'rgba(255,255,255,0.02)',borderRadius:6,fontSize:12,lineHeight:1.6}}>
                                             {p.sentence && <div style={{color:'var(--text-muted)'}}><b>Sentence:</b> {p.sentence}</div>}
                                             {p.spoken && p.spoken !== p.sentence && <div style={{color:'var(--text-muted)'}}><b>Spoken:</b> {p.spoken}</div>}
                                             {tt && <div style={{color:'var(--text-muted)'}}>
-                                                <b>Term time:</b> {tt[0]?.toFixed(2)}s – {tt[1]?.toFixed(2)}s
+                                                <b>Range:</b> {tt[0]?.toFixed(2)}s – {tt[1]?.toFixed(2)}s
                                                 {p.clean === false && <span style={{marginLeft:8,color:'var(--warning)',fontSize:11}}>noisy</span>}
                                                 {p.clean === true && <span style={{marginLeft:8,color:'var(--success)',fontSize:11}}>clean</span>}
                                             </div>}
-                                            <div style={{display:'flex',gap:24,marginTop:4}}>
-                                                <div><span style={{color:'var(--text-muted)'}}>Qwen: </span><span style={{color:'var(--error)',fontWeight:600}}>{p.qwen||'—'}</span>
-                                                    {p.qwen_full && p.qwen_full !== p.qwen && <span style={{color:'var(--text-muted)',marginLeft:6,fontSize:11}}>full: {p.qwen_full}</span>}
-                                                </div>
-                                                <div><span style={{color:'var(--text-muted)'}}>Parakeet: </span><span style={{color:'var(--error)',fontWeight:600}}>{p.parakeet||'—'}</span>
+                                            <div style={{display:'flex',gap:16,marginTop:6,padding:'4px 8px',background:'rgba(0,0,0,0.2)',borderRadius:4,fontFamily:'monospace',fontSize:13}}>
+                                                <div><span style={{color:'rgba(88,166,255,0.7)',fontWeight:600}}>{origFrag}</span></div>
+                                                <div style={{color:'var(--text-muted)'}}>&rarr;</div>
+                                                <div><span style={{color:qwenMatch?'var(--success)':'var(--error)',fontWeight:600}}>{p.qwen||'—'}</span><span style={{color:'var(--text-muted)',fontSize:10,marginLeft:4}}>Q</span></div>
+                                                <div><span style={{color:paraMatch?'var(--success)':'var(--error)',fontWeight:600}}>{p.parakeet||'—'}</span><span style={{color:'var(--text-muted)',fontSize:10,marginLeft:4}}>P</span></div>
+                                            </div>
+                                            {p.qwen_full && <div style={{color:'var(--text-muted)',fontSize:11,marginTop:2}}>Q full: {p.qwen_full}</div>}
+                                            {p.parakeet_full && <div style={{color:'var(--text-muted)',fontSize:11}}>P full: {p.parakeet_full}</div>}
                                                     {p.parakeet_full && p.parakeet_full !== p.parakeet && <span style={{color:'var(--text-muted)',marginLeft:6,fontSize:11}}>full: {p.parakeet_full}</span>}
                                                 </div>
                                             </div>
