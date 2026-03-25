@@ -90,6 +90,7 @@ pub struct VocabRow {
     pub spoken_auto: String,
     pub spoken_override: Option<String>,
     pub reviewed: bool,
+    pub description: Option<String>,
 }
 
 impl VocabRow {
@@ -174,6 +175,7 @@ impl Db {
         let _ = conn.execute_batch("ALTER TABLE sentences ADD COLUMN tts_backend TEXT;");
         let _ = conn.execute_batch("ALTER TABLE sentences ADD COLUMN human_wav_path TEXT;");
         let _ = conn.execute_batch("ALTER TABLE vocab ADD COLUMN curated TEXT;"); // 'kept', 'removed', or NULL
+        let _ = conn.execute_batch("ALTER TABLE vocab ADD COLUMN description TEXT;");
         let _ = conn.execute_batch("ALTER TABLE corpus_pairs ADD COLUMN orig_alignment TEXT;");
         let _ = conn.execute_batch("ALTER TABLE corpus_pairs ADD COLUMN qwen_alignment TEXT;");
         let _ = conn.execute_batch("ALTER TABLE corpus_pairs ADD COLUMN parakeet_alignment TEXT;");
@@ -266,7 +268,7 @@ impl Db {
     pub fn pick_term_for_authoring(&self) -> Result<Option<(VocabRow, i64)>> {
         // Count authored sentences per term, pick the one with fewest
         let mut stmt = self.conn.prepare(
-            "SELECT v.id, v.term, v.spoken_auto, v.spoken_override, v.reviewed,
+            "SELECT v.id, v.term, v.spoken_auto, v.spoken_override, v.reviewed, v.description,
                     COALESCE(c.cnt, 0) as sentence_count
              FROM vocab v
              LEFT JOIN (SELECT term, COUNT(*) as cnt FROM authored_sentences GROUP BY term) c
@@ -281,7 +283,8 @@ impl Db {
             Ok((VocabRow {
                 id: row.get(0)?, term: row.get(1)?, spoken_auto: row.get(2)?,
                 spoken_override: row.get(3)?, reviewed: row.get::<_, i64>(4)? != 0,
-            }, row.get::<_, i64>(5)?))
+                description: row.get(5)?,
+            }, row.get::<_, i64>(6)?))
         })?;
         match rows.next() {
             Some(Ok(r)) => Ok(Some(r)),
@@ -457,7 +460,7 @@ impl Db {
         };
 
         let sql = format!(
-            "SELECT id, term, spoken_auto, spoken_override, reviewed FROM vocab {where_clause} ORDER BY {} LIMIT ?{idx} OFFSET ?{}",
+            "SELECT id, term, spoken_auto, spoken_override, reviewed, description FROM vocab {where_clause} ORDER BY {} LIMIT ?{idx} OFFSET ?{}",
             if sort_recent { "updated_at DESC" } else { "term COLLATE NOCASE" }, idx + 1
         );
         param_values.push(Box::new(limit));
@@ -472,6 +475,7 @@ impl Db {
                 spoken_auto: row.get(2)?,
                 spoken_override: row.get(3)?,
                 reviewed: row.get::<_, i64>(4)? != 0,
+                description: row.get(5)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -658,6 +662,14 @@ impl Db {
     }
 
     /// Find a vocab entry by term (exact, case-insensitive).
+    pub fn update_vocab_description(&self, id: i64, description: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE vocab SET description = ?1, updated_at = ?2 WHERE id = ?3",
+            params![description, now_str(), id],
+        )?;
+        Ok(())
+    }
+
     pub fn delete_vocab_by_term(&self, term: &str) -> Result<()> {
         self.conn.execute("DELETE FROM vocab WHERE LOWER(term) = LOWER(?1)", params![term])?;
         // Clean up authored sentences linked to this term
@@ -669,12 +681,13 @@ impl Db {
 
     pub fn find_vocab_by_term(&self, term: &str) -> Result<Option<VocabRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, term, spoken_auto, spoken_override, reviewed FROM vocab WHERE LOWER(term) = LOWER(?1)"
+            "SELECT id, term, spoken_auto, spoken_override, reviewed, description FROM vocab WHERE LOWER(term) = LOWER(?1)"
         )?;
         let mut rows = stmt.query_map(params![term], |row| {
             Ok(VocabRow {
                 id: row.get(0)?, term: row.get(1)?, spoken_auto: row.get(2)?,
                 spoken_override: row.get(3)?, reviewed: row.get::<_, i64>(4)? != 0,
+                description: row.get(5).ok().flatten(),
             })
         })?;
         match rows.next() {
@@ -897,12 +910,13 @@ impl Db {
 
     pub fn get_vocab(&self, id: i64) -> Result<Option<VocabRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, term, spoken_auto, spoken_override, reviewed FROM vocab WHERE id = ?1"
+            "SELECT id, term, spoken_auto, spoken_override, reviewed, description FROM vocab WHERE id = ?1"
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
             Ok(VocabRow {
                 id: row.get(0)?, term: row.get(1)?, spoken_auto: row.get(2)?,
                 spoken_override: row.get(3)?, reviewed: row.get::<_, i64>(4)? != 0,
+                description: row.get(5).ok().flatten(),
             })
         })?;
         match rows.next() {
@@ -916,12 +930,13 @@ impl Db {
         // Only use terms that have been reviewed AND have a pronunciation override.
         // Skip hyphenated terms — they're compound names where each part is a normal word.
         let mut stmt = self.conn.prepare(
-            "SELECT id, term, spoken_auto, spoken_override, reviewed FROM vocab WHERE reviewed = 1 AND spoken_override IS NOT NULL AND (curated IS NULL OR curated = 'kept') AND term NOT LIKE '%-%'"
+            "SELECT id, term, spoken_auto, spoken_override, reviewed, description FROM vocab WHERE reviewed = 1 AND spoken_override IS NOT NULL AND (curated IS NULL OR curated = 'kept') AND term NOT LIKE '%-%'"
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(VocabRow {
                 id: row.get(0)?, term: row.get(1)?, spoken_auto: row.get(2)?,
                 spoken_override: row.get(3)?, reviewed: row.get::<_, i64>(4)? != 0,
+                description: row.get(5).ok().flatten(),
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)

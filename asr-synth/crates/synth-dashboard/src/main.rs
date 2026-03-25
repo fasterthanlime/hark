@@ -55,12 +55,14 @@ struct VocabListParams {
 struct VocabUpdateBody {
     spoken_override: Option<String>,
     reviewed: Option<bool>,
+    description: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct VocabAddBody {
     term: String,
     spoken_override: Option<String>,
+    description: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -160,6 +162,10 @@ async fn api_vocab_update(
     if let Some(reviewed) = body.reviewed {
         db.set_vocab_reviewed(id, reviewed).map_err(err)?;
     }
+    if let Some(ref desc) = body.description {
+        let val = if desc.is_empty() { None } else { Some(desc.as_str()) };
+        db.update_vocab_description(id, val).map_err(err)?;
+    }
     Ok(Json(serde_json::json!({ "ok": true })).into_response())
 }
 
@@ -192,6 +198,11 @@ async fn api_vocab_add(
         if let Some(ref spoken) = body.spoken_override {
             if !spoken.is_empty() {
                 db.update_vocab_override(row.id, Some(spoken)).map_err(err)?;
+            }
+        }
+        if let Some(ref desc) = body.description {
+            if !desc.is_empty() {
+                db.update_vocab_description(row.id, Some(desc)).map_err(err)?;
             }
         }
     }
@@ -989,14 +1000,14 @@ async fn main() -> anyhow::Result<()> {
                 .map(|(t, c)| (t.to_lowercase(), c)).collect();
 
             // Pick terms with < 3 sentences, up to 10 terms
-            let mut needing: Vec<(String, String, i64)> = vocab.iter()
+            let mut needing: Vec<(String, String, Option<String>, i64)> = vocab.iter()
                 .map(|v| {
                     let count = count_map.get(&v.term.to_lowercase()).copied().unwrap_or(0);
-                    (v.term.clone(), v.spoken().to_string(), count)
+                    (v.term.clone(), v.spoken().to_string(), v.description.clone(), count)
                 })
-                .filter(|(_, _, c)| *c < 3)
+                .filter(|(_, _, _, c)| *c < 3)
                 .collect();
-            needing.sort_by_key(|(_, _, c)| *c);
+            needing.sort_by_key(|(_, _, _, c)| *c);
             needing.truncate(10);
 
             let sents = db.all_authored_sentences().map_err(err)?;
@@ -1008,7 +1019,10 @@ async fn main() -> anyhow::Result<()> {
         }
 
         let terms_str: Vec<String> = terms_needing.iter()
-            .map(|(t, spoken, c)| format!("{} (pronounced \"{}\", {} sentences so far)", t, spoken, c))
+            .map(|(t, spoken, desc, c)| {
+                let desc_str = desc.as_deref().map(|d| format!(", {d}")).unwrap_or_default();
+                format!("{t} (pronounced \"{spoken}\"{desc_str}, {c} sentences so far)")
+            })
             .collect();
 
         let client = reqwest::Client::new();
@@ -1087,7 +1101,13 @@ async fn main() -> anyhow::Result<()> {
         let (existing_terms, sentences, rejected) = {
             let db = state.db.lock().unwrap();
             let vocab = db.list_reviewed_vocab().map_err(err)?;
-            let terms: Vec<String> = vocab.iter().map(|v| v.term.clone()).collect();
+            let terms: Vec<String> = vocab.iter().map(|v| {
+                if let Some(desc) = &v.description {
+                    format!("{} ({})", v.term, desc)
+                } else {
+                    v.term.clone()
+                }
+            }).collect();
             let sents = db.all_authored_sentences().map_err(err)?;
             let rejected = db.list_rejected_suggestions().map_err(err)?;
             (terms, sents, rejected)
@@ -1101,7 +1121,7 @@ async fn main() -> anyhow::Result<()> {
                 "temperature": 0.7,
                 "messages": [{
                     "role": "system",
-                    "content": "You help build a vocabulary of technical terms that speech recognition gets wrong. Given existing vocab and example sentences, suggest 20 more terms that the user likely uses and that ASR would struggle with. Focus on: programming tools, crate names, acronyms, technical jargon, project names, non-English-word identifiers. Do NOT suggest common English words or hyphenated compound words. For each term, provide a natural example sentence that uses it in context (the kind of thing a developer would say out loud). Output JSON: {\"suggestions\": [{\"term\": \"...\", \"pronunciation\": \"how a human would say it phonetically\", \"sentence\": \"a natural sentence using the term\"}]}"
+                    "content": "You help build a vocabulary of technical terms that speech recognition gets wrong. Given existing vocab and example sentences, suggest 20 more terms that the user likely uses and that ASR would struggle with. Focus on: programming tools, crate names, acronyms, technical jargon, project names, non-English-word identifiers. Do NOT suggest common English words or hyphenated compound words. For each term, provide a short description (what it is), a pronunciation (how a human would say it), and a natural example sentence. Output JSON: {\"suggestions\": [{\"term\": \"...\", \"description\": \"short description of what this is\", \"pronunciation\": \"how a human would say it phonetically\", \"sentence\": \"a natural sentence using the term\"}]}"
                 }, {
                     "role": "user",
                     "content": format!("Existing vocab: {}\n\nPreviously rejected (do NOT suggest these again): {}\n\nExample sentences:\n{}",

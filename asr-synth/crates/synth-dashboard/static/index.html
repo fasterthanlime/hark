@@ -2704,7 +2704,7 @@
                         })() : pron;
                         const doAdd = async () => {
                             stopPlayback();
-                            await api('/api/vocab', {method:'POST', body: JSON.stringify({term: s.term, spoken_override: pron})});
+                            await api('/api/vocab', {method:'POST', body: JSON.stringify({term: s.term, spoken_override: pron, description: s.description})});
                             setSuggestions(prev => { const n = prev.filter((_, j) => j !== suggestIdx); return n; });
                             setSuggestIdx(i => Math.min(i, suggestions.length - 2));
                             loadStats();
@@ -2730,6 +2730,7 @@
                             </div>
                             <div style={{textAlign:'center',marginBottom:12}}>
                                 <div style={{fontSize:28,fontWeight:700,fontFamily:'monospace',color:'var(--text)'}}>{s.term}</div>
+                                {s.description && <div style={{fontSize:12,color:'var(--text-muted)',marginTop:4}}>{s.description}</div>}
                                 {s.sentence && <div style={{marginTop:6,color:'var(--text-muted)',fontSize:13,fontStyle:'italic'}}>"{s.sentence}"</div>}
                             </div>
                             <div style={{display:'flex',gap:8,alignItems:'center',justifyContent:'center',marginBottom:12}}>
