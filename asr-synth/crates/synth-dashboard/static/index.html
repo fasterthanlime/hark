@@ -2573,7 +2573,7 @@
                     <div className="card" style={{marginBottom: 16}}>
                         <h3>1. Generate Corpus</h3>
                         <p style={{color: 'var(--text-muted)', fontSize: 13, marginBottom: 12}}>
-                            {status.approved_count} approved sentences → TTS → dual ASR → training pairs.
+                            {status.approved_count} approved sentences, {status.vocab_reviewed || 0} reviewed vocab → TTS → dual ASR → training pairs.
                             {status.corpus_exists && <span style={{color: 'var(--success)'}}> {status.corpus_lines} pairs generated.</span>}
                         </p>
                         <div style={{display:'flex',gap:8,alignItems:'center'}}>
@@ -2583,7 +2583,7 @@
                                 {(status.backends||[]).map(b => <option key={b} value={b}>{b}</option>)}
                             </select>
                             <div style={{flex:1}} />
-                            <button className="btn btn-primary btn-sm" disabled={isRunning || status.approved_count === 0}
+                            <button className="btn btn-primary btn-sm" disabled={isRunning || (status.approved_count === 0 && !(status.vocab_reviewed > 0))}
                                 onClick={() => startJob('corpus', {tts_backend: backend})}>
                                 {rt === 'corpus' ? 'Running...' : 'Generate'}
                             </button>

@@ -107,15 +107,29 @@ async fn run_corpus_job(
     job_id: i64,
     tts_backend: &str,
 ) -> anyhow::Result<usize> {
-    let sentences = {
+    // Collect both approved sentences AND reviewed vocab terms
+    let (sentences, vocab_terms) = {
         let db = state.db.lock().unwrap();
-        db.list_approved_sentences()?
+        (db.list_approved_sentences()?, db.list_reviewed_vocab()?)
     };
-    let total = sentences.len();
+
+    // Build unified list of (original_text, spoken_text) items
+    let mut items: Vec<(String, String)> = Vec::new();
+    for s in &sentences {
+        items.push((s.text.clone(), s.spoken.clone()));
+    }
+    for v in &vocab_terms {
+        // Vocab terms: "original" is the term, spoken is the pronunciation
+        items.push((v.term.clone(), v.spoken().to_string()));
+    }
+    let total = items.len();
 
     {
         let db = state.db.lock().unwrap();
-        db.append_job_log(job_id, &format!("Starting corpus generation: {total} approved sentences, backend: {tts_backend}"))?;
+        db.append_job_log(job_id, &format!(
+            "Starting corpus generation: {} sentences + {} vocab terms = {total} items, backend: {tts_backend}",
+            sentences.len(), vocab_terms.len()
+        ))?;
     }
 
     // Ensure data directory exists
@@ -126,16 +140,16 @@ async fn run_corpus_job(
     );
 
     let mut count = 0;
-    for (i, sentence) in sentences.iter().enumerate() {
+    for (i, (original, spoken)) in items.iter().enumerate() {
         if state.job_cancel.load(Ordering::Relaxed) {
             let db = state.db.lock().unwrap();
             let _ = db.append_job_log(job_id, "Stopped by user.");
             break;
         }
-        let text_preview: String = sentence.text.chars().take(50).collect();
+        let text_preview: String = original.chars().take(50).collect();
 
         // TTS (async for remote backends)
-        let audio = match state.tts.generate(tts_backend, &sentence.spoken).await {
+        let audio = match state.tts.generate(tts_backend, spoken).await {
             Ok(mut a) => {
                 a.normalize();
                 a
@@ -185,7 +199,7 @@ async fn run_corpus_job(
             file,
             "{}",
             serde_json::json!({
-                "original": sentence.text,
+                "original": original,
                 "parakeet": parakeet,
                 "qwen": qwen,
             })
@@ -954,20 +968,20 @@ pub async fn api_scan_results(
 pub async fn api_pipeline_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Response, AppError> {
-    let (approved_count, human_recordings, running_job, last_eval, vocab_scanned) = {
+    let (approved_count, vocab_reviewed, human_recordings, running_job, last_eval, vocab_scanned) = {
         let db = state.db.lock().unwrap();
         let (approved, _, _) = db.sentence_count_by_status().map_err(err)?;
+        let (reviewed, _, _) = db.vocab_review_counts().unwrap_or((0, 0, 0));
         let human = db.sentences_with_human_recording_count().map_err(err)?;
         let scanned = db.confusion_count().map_err(err)?;
         let jobs = db.list_jobs().map_err(err)?;
         let running = jobs.iter().find(|j| j.status == "running").cloned();
-        // Find last completed eval job
         let eval = jobs.iter()
             .filter(|j| j.job_type == "eval" && j.status == "completed")
-            .next()  // list_jobs returns DESC by id, so first = most recent
+            .next()
             .and_then(|j| j.result.as_ref())
             .and_then(|r| serde_json::from_str::<serde_json::Value>(r).ok());
-        (approved, human, running, eval, scanned)
+        (approved, reviewed, human, running, eval, scanned)
     };
 
     // Check filesystem for corpus / training data / adapters
@@ -1006,6 +1020,7 @@ pub async fn api_pipeline_status(
 
     Ok(Json(serde_json::json!({
         "approved_count": approved_count,
+        "vocab_reviewed": vocab_reviewed,
         "corpus_exists": corpus_exists,
         "corpus_lines": corpus_lines,
         "training_data_exists": training_data_exists,

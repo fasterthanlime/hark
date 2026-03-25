@@ -658,6 +658,20 @@ impl Db {
         }
     }
 
+    /// All reviewed (approved) vocab terms for corpus generation.
+    pub fn list_reviewed_vocab(&self) -> Result<Vec<VocabRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, term, spoken_auto, spoken_override, reviewed FROM vocab WHERE reviewed = 1 AND (curated IS NULL OR curated = 'kept')"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(VocabRow {
+                id: row.get(0)?, term: row.get(1)?, spoken_auto: row.get(2)?,
+                spoken_override: row.get(3)?, reviewed: row.get::<_, i64>(4)? != 0,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     pub fn mark_vocab_reviewed(&self, id: i64) -> Result<()> {
         self.conn.execute(
             "UPDATE vocab SET reviewed = 1, updated_at = ?1 WHERE id = ?2",
