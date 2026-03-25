@@ -10,20 +10,16 @@ struct Args {
 
 #[derive(clap::Subcommand)]
 enum Cmd {
-    /// Convert corpus JSONL → MLX-LM completions format (train/valid/test splits)
+    /// Convert corpus JSONL → MLX-LM completions format (train/valid splits)
     Prepare {
-        #[arg(short, long, default_value = "data/corpus_5k.jsonl")]
+        #[arg(short, long, default_value = "data/corpus_dashboard.jsonl")]
         input: String,
         #[arg(short, long, default_value = "training/data")]
         output: String,
-        #[arg(long, default_value = "95000")]
-        identity_count: usize,
-        #[arg(long, default_value = "~/.claude/history.jsonl")]
-        claude_history: String,
-        #[arg(long, default_value = "~/.codex/history.jsonl")]
-        codex_history: String,
-        #[arg(long, default_value = "0.8")]
-        train_ratio: f64,
+        #[arg(long, default_value = "12000")]
+        total_examples: usize,
+        #[arg(long, default_value = "0.5")]
+        error_rate: f64,
     },
     /// Run MLX-LM LoRA training (wraps uvx)
     Train {
@@ -35,9 +31,9 @@ enum Cmd {
         model: String,
         #[arg(long, default_value = "1000")]
         iters: usize,
-        #[arg(long, default_value = "1")]
-        batch_size: usize,
         #[arg(long, default_value = "4")]
+        batch_size: usize,
+        #[arg(long, default_value = "8")]
         num_layers: usize,
     },
 }
@@ -47,23 +43,19 @@ fn main() -> Result<()> {
         Cmd::Prepare {
             input,
             output,
-            identity_count,
-            claude_history,
-            codex_history,
-            train_ratio,
+            total_examples,
+            error_rate,
         } => {
             let config = synth_train::PrepareConfig {
                 input,
                 output,
-                identity_count,
-                claude_history,
-                codex_history,
-                train_ratio,
+                total_examples,
+                error_rate,
             };
             let stats = synth_train::prepare(&config, |msg| eprintln!("{msg}"))?;
             eprintln!(
-                "({} correction + {} identity examples)",
-                stats.correction_examples, stats.identity_examples
+                "({} error + {} identity = {} total)",
+                stats.correction_examples, stats.identity_examples, stats.total
             );
             Ok(())
         }

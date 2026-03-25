@@ -2559,8 +2559,8 @@
             const [backend, setBackend] = useState('pocket-hq');
             const [corpusLimit, setCorpusLimit] = useState(200);
             const [corpusPasses, setCorpusPasses] = useState(25);
-            const [identityCount, setIdentityCount] = useState(95000);
-            const [trainRatio, setTrainRatio] = useState(0.8);
+            const [totalExamples, setTotalExamples] = useState(12000);
+            const [errorRate, setErrorRate] = useState(50);
             const [previewData, setPreviewData] = useState(null);
             const [previewLoading, setPreviewLoading] = useState(false);
             const [liveStats, setLiveStats] = useState(null);
@@ -2681,10 +2681,10 @@
                                         setPreviewData(d);
                                     } catch (err) { setError(err.message); }
                                     setPreviewLoading(false);
-                                }}>{status.train_count?.toLocaleString()} train / {status.valid_count?.toLocaleString()} valid / {status.test_count?.toLocaleString()} test</a>
+                                }}>{status.train_count?.toLocaleString()} train / {status.valid_count?.toLocaleString()} valid</a>
                                 <a href="#" style={{color:'var(--text-muted)',fontSize:11}} onClick={async e => {
                                     e.preventDefault();
-                                    if (confirm('Delete training data splits?')) {
+                                    if (confirm('Delete training data?')) {
                                         await api('/api/pipeline/reset-training', {method:'POST'});
                                         setPreviewData(null); load();
                                     }
@@ -2692,41 +2692,36 @@
                             </>}
                         </div>
 
-                        <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:10,lineHeight:1.5}}>
-                            Takes your corpus pairs (the real ASR errors) and mixes them with identity examples (correct text where input=output, so the model learns when <i>not</i> to correct).
-                            Shuffles everything and splits into train/valid/test sets.
-                        </div>
-
                         <div style={{display:'flex',gap:16,alignItems:'flex-start',marginBottom:8,flexWrap:'wrap'}}>
                             <div>
-                                <label style={{fontSize:12,color:'var(--text-muted)',display:'block',marginBottom:2}}>Identity examples</label>
-                                <input type="number" value={identityCount} onChange={e => setIdentityCount(parseInt(e.target.value)||95000)} disabled={prepareRunning}
+                                <label style={{fontSize:12,color:'var(--text-muted)',display:'block',marginBottom:2}}>Total examples</label>
+                                <input type="number" value={totalExamples} onChange={e => setTotalExamples(parseInt(e.target.value)||12000)} disabled={prepareRunning}
                                     style={{...inputStyle,width:80}} />
-                                <div style={{fontSize:10,color:'var(--text-muted)',marginTop:2}}>Generated from chat history + blog posts. Higher = model is more conservative.</div>
+                                <div style={{fontSize:10,color:'var(--text-muted)',marginTop:2}}>How many training prompts to generate total.</div>
                             </div>
                             <div>
-                                <label style={{fontSize:12,color:'var(--text-muted)',display:'block',marginBottom:2}}>Train ratio</label>
-                                <input type="number" value={trainRatio} onChange={e => setTrainRatio(parseFloat(e.target.value)||0.8)} disabled={prepareRunning}
-                                    step="0.05" min="0.5" max="0.95"
+                                <label style={{fontSize:12,color:'var(--text-muted)',display:'block',marginBottom:2}}>Error rate %</label>
+                                <input type="number" value={errorRate} onChange={e => setErrorRate(Math.min(100, Math.max(0, parseInt(e.target.value)||50)))} disabled={prepareRunning}
+                                    min="0" max="100"
                                     style={{...inputStyle,width:60}} />
-                                <div style={{fontSize:10,color:'var(--text-muted)',marginTop:2}}>Fraction for training. Rest split evenly into valid/test.</div>
+                                <div style={{fontSize:10,color:'var(--text-muted)',marginTop:2}}>% with real ASR errors. Rest are identity (no correction needed).</div>
                             </div>
                             <div style={{flex:1,display:'flex',alignItems:'flex-end',justifyContent:'flex-end',paddingTop:16}}>
                                 {prepareRunning
                                     ? <button className="btn btn-sm" style={{borderColor:'var(--warning)',color:'var(--warning)',background:'rgba(210,153,34,0.1)'}}
                                         onClick={stopJob} disabled={stopping}>{stopping ? 'Stopping...' : 'Stop'}</button>
                                     : <button className="btn btn-primary btn-sm" disabled={isRunning || !status.corpus_exists}
-                                        onClick={() => startJob('prepare', {identity_count: identityCount, train_ratio: trainRatio})}>Prepare</button>
+                                        onClick={() => startJob('prepare', {total_examples: totalExamples, error_rate: errorRate / 100})}>Prepare</button>
                                 }
                             </div>
                         </div>
 
                         {status.corpus_exists && !prepareRunning && (
                             <div style={{fontSize:12,color:'var(--text-muted)',padding:'6px 0',borderTop:'1px solid var(--border)',marginTop:4}}>
-                                Will create: ~{status.corpus_lines?.toLocaleString()} correction examples + {identityCount.toLocaleString()} identity examples = ~{((status.corpus_lines||0) + identityCount).toLocaleString()} total.
-                                {' '}Train: ~{Math.round(((status.corpus_lines||0) + identityCount) * trainRatio).toLocaleString()},
-                                {' '}Valid: ~{Math.round(((status.corpus_lines||0) + identityCount) * (1-trainRatio) / 2).toLocaleString()},
-                                {' '}Test: ~{Math.round(((status.corpus_lines||0) + identityCount) * (1-trainRatio) / 2).toLocaleString()}.
+                                {Math.round(totalExamples * errorRate / 100).toLocaleString()} error examples (sampled from {status.corpus_lines?.toLocaleString()} corpus pairs)
+                                {' + '}{Math.round(totalExamples * (100 - errorRate) / 100).toLocaleString()} identity examples
+                                {' = '}{totalExamples.toLocaleString()} total.
+                                {' '}90% train / 10% valid.
                             </div>
                         )}
 
@@ -2737,17 +2732,17 @@
                             <div style={{marginTop:12,borderTop:'1px solid var(--border)',paddingTop:12}}>
                                 <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:8}}>
                                     <b style={{fontSize:13}}>Training Data Preview</b>
-                                    <span style={{fontSize:11,color:'var(--text-muted)'}}>{previewData.correction_count?.toLocaleString()} corrections + {previewData.identity_count?.toLocaleString()} identity = {previewData.total?.toLocaleString()} total</span>
+                                    <span style={{fontSize:11,color:'var(--text-muted)'}}>{previewData.correction_count?.toLocaleString()} error + {previewData.identity_count?.toLocaleString()} identity = {previewData.total?.toLocaleString()} total</span>
                                     <div style={{flex:1}} />
                                     <button onClick={() => setPreviewData(null)} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:14}}>&times;</button>
                                 </div>
                                 {previewData.correction_samples?.length > 0 && <>
-                                    <div style={{fontSize:11,fontWeight:600,color:'var(--success)',marginBottom:4}}>Correction examples (random sample):</div>
+                                    <div style={{fontSize:11,fontWeight:600,color:'var(--success)',marginBottom:4}}>Error examples (random sample):</div>
                                     <div style={{maxHeight:200,overflow:'auto',marginBottom:12}}>
                                         {previewData.correction_samples.map((s, i) => (
-                                            <div key={i} style={{fontSize:11,fontFamily:'monospace',padding:'3px 6px',background:i%2?'transparent':'rgba(255,255,255,0.02)',lineHeight:1.5}}>
-                                                <span style={{color:'var(--text-muted)'}}>prompt:</span> {s.prompt}
-                                                <br/><span style={{color:'var(--text-muted)'}}>completion:</span> <span style={{color:'var(--success)'}}>{s.completion}</span>
+                                            <div key={i} style={{fontSize:11,fontFamily:'monospace',padding:'4px 8px',background:i%2?'transparent':'rgba(255,255,255,0.02)',lineHeight:1.6,whiteSpace:'pre-wrap'}}>
+                                                {s.prompt}
+                                                {'\n'}<span style={{color:'var(--success)'}}>{s.completion}</span>
                                             </div>
                                         ))}
                                     </div>
@@ -2756,9 +2751,9 @@
                                     <div style={{fontSize:11,fontWeight:600,color:'var(--accent)',marginBottom:4}}>Identity examples (random sample):</div>
                                     <div style={{maxHeight:200,overflow:'auto'}}>
                                         {previewData.identity_samples.map((s, i) => (
-                                            <div key={i} style={{fontSize:11,fontFamily:'monospace',padding:'3px 6px',background:i%2?'transparent':'rgba(255,255,255,0.02)',lineHeight:1.5}}>
-                                                <span style={{color:'var(--text-muted)'}}>prompt:</span> {s.prompt}
-                                                <br/><span style={{color:'var(--text-muted)'}}>completion:</span> <span style={{color:'var(--accent)'}}>{s.completion}</span>
+                                            <div key={i} style={{fontSize:11,fontFamily:'monospace',padding:'4px 8px',background:i%2?'transparent':'rgba(255,255,255,0.02)',lineHeight:1.6,whiteSpace:'pre-wrap'}}>
+                                                {s.prompt}
+                                                {'\n'}<span style={{color:'var(--accent)'}}>{s.completion}</span>
                                             </div>
                                         ))}
                                     </div>

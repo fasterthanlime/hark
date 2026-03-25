@@ -406,8 +406,8 @@ pub struct CorpusJobBody {
 
 #[derive(Deserialize)]
 pub struct PrepareJobBody {
-    pub identity_count: Option<usize>,
-    pub train_ratio: Option<f64>,
+    pub total_examples: Option<usize>,
+    pub error_rate: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -762,9 +762,9 @@ pub async fn api_start_prepare_job(
 ) -> Result<Response, AppError> {
     check_no_running_jobs(&state)?;
 
-    let identity_count = body.identity_count.unwrap_or(95000);
-    let train_ratio = body.train_ratio.unwrap_or(0.8);
-    let config_json = serde_json::json!({"identity_count": identity_count, "train_ratio": train_ratio}).to_string();
+    let total_examples = body.total_examples.unwrap_or(12000);
+    let error_rate = body.error_rate.unwrap_or(0.5);
+    let config_json = serde_json::json!({"total_examples": total_examples, "error_rate": error_rate}).to_string();
 
     let job_id = {
         let db = state.db.lock().unwrap();
@@ -788,8 +788,8 @@ pub async fn api_start_prepare_job(
 
         let config = synth_train::PrepareConfig {
             input: "data/corpus_dashboard.jsonl".into(),
-            identity_count,
-            train_ratio,
+            total_examples,
+            error_rate,
             ..Default::default()
         };
 
@@ -804,12 +804,12 @@ pub async fn api_start_prepare_job(
                 let _ = db.append_job_log(
                     job_id,
                     &format!(
-                        "Done: {} corrections + {} identity = {} train / {} valid / {} test",
+                        "Done: {} error + {} identity = {} total ({} train / {} valid)",
                         stats.correction_examples,
                         stats.identity_examples,
+                        stats.total,
                         stats.train_count,
                         stats.valid_count,
-                        stats.test_count,
                     ),
                 );
                 let _ = db.finish_job(
@@ -819,9 +819,9 @@ pub async fn api_start_prepare_job(
                         &serde_json::json!({
                             "correction_examples": stats.correction_examples,
                             "identity_examples": stats.identity_examples,
+                            "total": stats.total,
                             "train_count": stats.train_count,
                             "valid_count": stats.valid_count,
-                            "test_count": stats.test_count,
                         })
                         .to_string(),
                     ),
@@ -1591,15 +1591,14 @@ pub async fn api_preview_training(
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
             let prompt = v["prompt"].as_str().unwrap_or("");
             let completion = v["completion"].as_str().unwrap_or("");
-            // An identity example has the same text in both <parakeet> and <qwen> slots
-            let parts: Vec<&str> = prompt.splitn(3, " <qwen> ").collect();
-            let is_identity = if parts.len() == 2 {
-                let p_text = parts[0].strip_prefix("<parakeet> ").unwrap_or(parts[0]);
-                let q_text = parts[1].strip_suffix(" <correct>").unwrap_or(parts[1]);
-                p_text == q_text
-            } else {
-                false
-            };
+            // An identity example has the same text in both <keet> and <qwen> slots
+            let is_identity = if let Some(rest) = prompt.strip_prefix("<keet> ") {
+                if let Some(idx) = rest.find("\n<qwen> ") {
+                    let keet_text = &rest[..idx];
+                    let qwen_text = rest[idx + 7..].strip_suffix("\n<fixd>").unwrap_or(&rest[idx + 7..]);
+                    keet_text == qwen_text
+                } else { false }
+            } else { false };
             let entry = serde_json::json!({"prompt": prompt, "completion": completion});
             if is_identity {
                 identities.push(entry);
@@ -1671,16 +1670,14 @@ pub async fn api_pipeline_status(
     let corpus_exists = corpus_lines > 0;
 
     let training_data_exists = std::path::Path::new("training/data/train.jsonl").exists();
-    let (train_count, valid_count, test_count) = if training_data_exists {
+    let (train_count, valid_count) = if training_data_exists {
         let tc = std::fs::read_to_string("training/data/train.jsonl")
             .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
         let vc = std::fs::read_to_string("training/data/valid.jsonl")
             .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
-        let tec = std::fs::read_to_string("training/data/test.jsonl")
-            .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
-        (tc, vc, tec)
+        (tc, vc)
     } else {
-        (0, 0, 0)
+        (0, 0)
     };
 
     let adapters_exist = std::path::Path::new("training/adapters").exists()
@@ -1706,7 +1703,6 @@ pub async fn api_pipeline_status(
         "training_data_exists": training_data_exists,
         "train_count": train_count,
         "valid_count": valid_count,
-        "test_count": test_count,
         "adapters_exist": adapters_exist,
         "human_recordings": human_recordings,
         "vocab_scanned": vocab_scanned,

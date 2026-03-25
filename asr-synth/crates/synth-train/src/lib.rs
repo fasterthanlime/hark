@@ -1,36 +1,35 @@
 use anyhow::Result;
 use rand::prelude::*;
 use std::io::Write;
-use std::path::Path;
 
 /// Stats returned from the prepare step
 #[derive(Debug, serde::Serialize)]
 pub struct PrepareStats {
     pub correction_examples: usize,
     pub identity_examples: usize,
+    pub total: usize,
     pub train_count: usize,
     pub valid_count: usize,
-    pub test_count: usize,
 }
 
 pub struct PrepareConfig {
+    /// Path to corpus JSONL (each line has original/qwen/parakeet fields)
     pub input: String,
+    /// Output directory for train.jsonl + valid.jsonl
     pub output: String,
-    pub identity_count: usize,
-    pub claude_history: String,
-    pub codex_history: String,
-    pub train_ratio: f64,
+    /// Total number of training examples to generate
+    pub total_examples: usize,
+    /// Fraction of examples that contain a real ASR error (0.0–1.0)
+    pub error_rate: f64,
 }
 
 impl Default for PrepareConfig {
     fn default() -> Self {
         Self {
-            input: "data/corpus_5k.jsonl".into(),
+            input: "data/corpus_dashboard.jsonl".into(),
             output: "training/data".into(),
-            identity_count: 95000,
-            claude_history: "~/.claude/history.jsonl".into(),
-            codex_history: "~/.codex/history.jsonl".into(),
-            train_ratio: 0.8,
+            total_examples: 12000,
+            error_rate: 0.5,
         }
     }
 }
@@ -63,173 +62,91 @@ impl Default for TrainConfig {
     }
 }
 
-/// Prepare training data from corpus JSONL → MLX-LM completions format
+/// Prepare training data from corpus JSONL → MLX-LM completions format.
+///
+/// Generates `total_examples` training prompts:
+/// - `error_rate` fraction are correction examples (randomly sampled from corpus pairs)
+/// - The rest are identity examples (randomly sampled originals where both ASR lanes are correct)
+///
+/// All examples have the same shape. Fixed 90/10 train/valid split.
 pub fn prepare(config: &PrepareConfig, mut on_status: impl FnMut(&str)) -> Result<PrepareStats> {
     let content = std::fs::read_to_string(&config.input)?;
     let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
-    on_status(&format!("Read {} corpus entries from {}", lines.len(), config.input));
 
-    let mut examples = Vec::new();
-    let mut rng = rand::rng();
+    // Parse corpus pairs
+    let mut corpus_pairs: Vec<(String, String, String)> = Vec::new(); // (original, parakeet, qwen)
+    let mut originals: Vec<String> = Vec::new(); // unique originals for identity examples
 
     for line in &lines {
         let v: serde_json::Value = serde_json::from_str(line)?;
-        let original = v["original"].as_str().unwrap_or("");
-        let parakeet = v["parakeet"].as_str().unwrap_or("");
-        let qwen = v["qwen"].as_str().unwrap_or("");
+        let original = v["original"].as_str().unwrap_or("").to_string();
+        let parakeet = v["parakeet"].as_str().unwrap_or("").to_string();
+        let qwen = v["qwen"].as_str().unwrap_or("").to_string();
+        if original.is_empty() { continue; }
+        originals.push(original.clone());
+        corpus_pairs.push((original, parakeet, qwen));
+    }
 
-        if original.is_empty() {
-            continue;
-        }
+    on_status(&format!("Loaded {} corpus pairs, {} unique originals", corpus_pairs.len(), originals.len()));
 
-        let prompt = format!("<parakeet> {} <qwen> {} <correct>", parakeet, qwen);
+    if corpus_pairs.is_empty() {
+        anyhow::bail!("No corpus pairs found in {}", config.input);
+    }
+
+    let mut rng = rand::rng();
+    let n_error = (config.total_examples as f64 * config.error_rate).round() as usize;
+    let n_identity = config.total_examples - n_error;
+
+    on_status(&format!("Generating {} error + {} identity = {} total examples",
+        n_error, n_identity, config.total_examples));
+
+    let mut examples = Vec::with_capacity(config.total_examples);
+    let mut correction_count = 0usize;
+    let mut identity_count = 0usize;
+
+    // Error examples: randomly sample from corpus pairs (with replacement)
+    for _ in 0..n_error {
+        let (original, parakeet, qwen) = &corpus_pairs[rng.random_range(0..corpus_pairs.len())];
         examples.push(serde_json::json!({
-            "prompt": prompt,
+            "prompt": format!("<keet> {}\n<qwen> {}\n<fixd>", parakeet, qwen),
             "completion": format!(" {}<|endoftext|>", original),
         }));
+        correction_count += 1;
     }
 
-    let n_corrections = examples.len();
-
-    // Build markov chain from history + blog posts for identity examples
-    let mut chain = synth_corrupt::markov::MarkovChain::new();
-    let mut raw_texts: Vec<String> = Vec::new();
-
-    for path in [&config.claude_history, &config.codex_history] {
-        let expanded = shellexpand::tilde(path).to_string();
-        if let Ok(content) = std::fs::read_to_string(&expanded) {
-            for line in content.lines() {
-                if let Ok(d) = serde_json::from_str::<serde_json::Value>(line) {
-                    let text = d["display"]
-                        .as_str()
-                        .or_else(|| d["text"].as_str())
-                        .unwrap_or("");
-                    if text.len() >= 20
-                        && text.len() <= 200
-                        && !text.contains("[Pasted")
-                        && !text.contains("[Image")
-                        && !text.starts_with('/')
-                    {
-                        chain.feed(text);
-                        raw_texts.push(text.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    // Blog posts from ~/bearcove/fasterthanli.me
-    let blog_dir = shellexpand::tilde("~/bearcove/fasterthanli.me").to_string();
-    let mut blog_paragraphs = 0usize;
-    if let Ok(entries) = glob_md(&blog_dir) {
-        for path in entries {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                let mut in_code_block = false;
-                let mut current_para = String::new();
-
-                let mut opts = pulldown_cmark::Options::empty();
-                opts.insert(pulldown_cmark::Options::ENABLE_TABLES);
-                for event in pulldown_cmark::Parser::new_ext(&content, opts) {
-                    match event {
-                        pulldown_cmark::Event::Start(pulldown_cmark::Tag::CodeBlock(_)) => {
-                            in_code_block = true;
-                        }
-                        pulldown_cmark::Event::End(pulldown_cmark::TagEnd::CodeBlock) => {
-                            in_code_block = false;
-                        }
-                        pulldown_cmark::Event::Text(text) if !in_code_block => {
-                            current_para.push_str(&text);
-                        }
-                        pulldown_cmark::Event::SoftBreak
-                        | pulldown_cmark::Event::HardBreak
-                            if !in_code_block =>
-                        {
-                            current_para.push(' ');
-                        }
-                        // Table cells: add space between cells
-                        pulldown_cmark::Event::End(pulldown_cmark::TagEnd::TableCell) => {
-                            current_para.push(' ');
-                        }
-                        // Table rows: flush like paragraphs
-                        pulldown_cmark::Event::End(
-                            pulldown_cmark::TagEnd::TableHead | pulldown_cmark::TagEnd::TableRow,
-                        ) => {
-                            let clean = current_para.trim().to_string();
-                            if clean.len() >= 30 && clean.len() <= 300 {
-                                chain.feed(&clean);
-                                blog_paragraphs += 1;
-                            }
-                            current_para.clear();
-                        }
-                        pulldown_cmark::Event::End(pulldown_cmark::TagEnd::Paragraph) => {
-                            let clean = current_para.trim().to_string();
-                            if clean.len() >= 30 && clean.len() <= 300 {
-                                chain.feed(&clean);
-                                blog_paragraphs += 1;
-                            }
-                            current_para.clear();
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-    on_status(&format!("Blog: {} paragraphs from fasterthanli.me", blog_paragraphs));
-    on_status(&format!(
-        "Markov chain: {} transitions, {} raw texts",
-        chain.transition_count(),
-        raw_texts.len()
-    ));
-
-    let mut identity_generated = 0;
-    for _ in 0..config.identity_count {
-        let text = if !raw_texts.is_empty() && rng.random_bool(0.5) {
-            raw_texts[rng.random_range(0..raw_texts.len())].clone()
-        } else {
-            let target_len: usize = 10 + rng.random_range(0..10);
-            match chain.generate(&mut rng, target_len) {
-                Some(t) => t,
-                None => continue,
-            }
-        };
-
-        let prompt = format!("<parakeet> {} <qwen> {} <correct>", text, text);
+    // Identity examples: same shape, but both ASR lanes have the correct text
+    for _ in 0..n_identity {
+        let text = &originals[rng.random_range(0..originals.len())];
         examples.push(serde_json::json!({
-            "prompt": prompt,
+            "prompt": format!("<keet> {}\n<qwen> {}\n<fixd>", text, text),
             "completion": format!(" {}<|endoftext|>", text),
         }));
-        identity_generated += 1;
+        identity_count += 1;
     }
-    on_status(&format!("Generated {} identity examples", identity_generated));
 
     examples.shuffle(&mut rng);
 
+    // Fixed 90/10 train/valid split
     let n = examples.len();
-    let n_train = (n as f64 * config.train_ratio) as usize;
-    let n_remaining = n - n_train;
-    let n_valid = n_remaining / 2;
-
+    let n_train = (n as f64 * 0.9) as usize;
     let train = &examples[..n_train];
-    let valid = &examples[n_train..n_train + n_valid];
-    let test = &examples[n_train + n_valid..];
+    let valid = &examples[n_train..];
 
     std::fs::create_dir_all(&config.output)?;
     write_jsonl(&format!("{}/train.jsonl", config.output), train)?;
     write_jsonl(&format!("{}/valid.jsonl", config.output), valid)?;
-    write_jsonl(&format!("{}/test.jsonl", config.output), test)?;
 
     let stats = PrepareStats {
-        correction_examples: n_corrections,
-        identity_examples: identity_generated,
+        correction_examples: correction_count,
+        identity_examples: identity_count,
+        total: n,
         train_count: train.len(),
         valid_count: valid.len(),
-        test_count: test.len(),
     };
 
     on_status(&format!(
-        "Wrote {} train, {} valid, {} test to {}",
-        stats.train_count, stats.valid_count, stats.test_count, config.output
+        "Wrote {} train + {} valid to {}",
+        stats.train_count, stats.valid_count, config.output
     ));
 
     Ok(stats)
@@ -395,7 +312,7 @@ impl Default for InferenceConfig {
 
 /// Build the prompt for the correction model from ASR outputs
 pub fn build_correction_prompt(parakeet: &str, qwen: &str) -> String {
-    format!("<parakeet> {} <qwen> {} <correct>", parakeet, qwen)
+    format!("<keet> {}\n<qwen> {}\n<fixd>", parakeet, qwen)
 }
 
 /// An inference server that keeps the model loaded. Wraps mlx_lm.server.
@@ -475,24 +392,6 @@ impl Drop for InferenceServer {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
-}
-
-pub fn glob_md(root: &str) -> Result<Vec<std::path::PathBuf>> {
-    let mut results = Vec::new();
-    fn walk(dir: &Path, results: &mut Vec<std::path::PathBuf>) {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    walk(&path, results);
-                } else if path.extension().is_some_and(|e| e == "md") {
-                    results.push(path);
-                }
-            }
-        }
-    }
-    walk(Path::new(root), &mut results);
-    Ok(results)
 }
 
 pub fn write_jsonl(path: &str, entries: &[serde_json::Value]) -> Result<()> {
