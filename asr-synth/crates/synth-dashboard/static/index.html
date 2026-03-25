@@ -2645,12 +2645,16 @@
                             <span>0s</span><span>{maxTime.toFixed(1)}s</span>
                         </div>
                     </div>
-                    {ex.cons_range && <div style={{fontSize:10,color:'var(--text-muted)'}}>
-                        Consensus: {ex.cons_range[0]?.toFixed(3)}s – {ex.cons_range[1]?.toFixed(3)}s
-                        {data.term_range && <span> | Term: {data.term_range[0]?.toFixed(3)}s – {data.term_range[1]?.toFixed(3)}s</span>}
-                        {data.term_found === false && <span style={{color:'var(--error)',fontWeight:700,marginLeft:8}}>TERM NOT FOUND</span>}
-                        {data.term_found === true && <span style={{color:'var(--success)',marginLeft:8}}>found</span>}
-                    </div>}
+                    <div style={{fontSize:10,color:'var(--text-muted)',lineHeight:1.6}}>
+                        {data.sentence && <div><b>Written:</b> {data.sentence}</div>}
+                        {data.spoken_sentence && data.spoken_sentence !== data.sentence && <div><b>Spoken:</b> {data.spoken_sentence}</div>}
+                        {ex.cons_range && <div>
+                            Consensus: {ex.cons_range[0]?.toFixed(3)}s – {ex.cons_range[1]?.toFixed(3)}s
+                            {data.term_range && <span> | Term: {data.term_range[0]?.toFixed(3)}s – {data.term_range[1]?.toFixed(3)}s</span>}
+                            {data.term_found === false && <span style={{color:'var(--error)',fontWeight:700,marginLeft:8}}>TERM NOT FOUND</span>}
+                            {data.term_found === true && <span style={{color:'var(--success)',marginLeft:8}}>found</span>}
+                        </div>}
+                    </div>
                 </div>
             );
         }
@@ -2760,12 +2764,19 @@
                                     onBlur={() => setTimeout(() => setTestSuggestions([]), 150)}
                                     style={{...inputStyle,width:'100%'}} />
                                 {testSuggestions.length > 0 && (
-                                    <div style={{position:'absolute',top:'100%',left:0,right:0,zIndex:10,background:'var(--card-bg)',border:'1px solid var(--border)',borderRadius:4,marginTop:2,maxHeight:200,overflow:'auto'}}>
+                                    <div style={{position:'absolute',top:'100%',left:0,right:0,zIndex:10,background:'var(--bg)',border:'1px solid var(--border)',borderRadius:4,marginTop:2,maxHeight:200,overflow:'auto',boxShadow:'0 4px 12px rgba(0,0,0,0.4)'}}>
                                         {testSuggestions.map(s => (
-                                            <div key={s} onClick={() => { setTestTerm(s); setTestSuggestions([]); }}
-                                                style={{padding:'4px 10px',cursor:'pointer',fontSize:13,fontFamily:'monospace'}}
-                                                onMouseEnter={e => e.target.style.background='rgba(255,255,255,0.08)'}
-                                                onMouseLeave={e => e.target.style.background='transparent'}>
+                                            <div key={s} onMouseDown={e => {
+                                                    e.preventDefault();
+                                                    setTestTerm(s); setTestSuggestions([]);
+                                                    setTestLoading(true); setTestResult(null);
+                                                    api('/api/test-term', {method:'POST', body: JSON.stringify({term: s, tts_backend: testBackend})})
+                                                        .then(r => { setTestResult(r); setTestLoading(false); })
+                                                        .catch(err => { setError(err.message); setTestLoading(false); });
+                                                }}
+                                                style={{padding:'6px 10px',cursor:'pointer',fontSize:13,fontFamily:'monospace',background:'var(--bg)'}}
+                                                onMouseEnter={e => e.target.style.background='var(--card-bg)'}
+                                                onMouseLeave={e => e.target.style.background='var(--bg)'}>
                                                 {s}
                                             </div>
                                         ))}
