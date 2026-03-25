@@ -81,30 +81,26 @@ impl MarkovChain {
     }
 
     /// Generate a sentence containing `target_word`.
-    /// Falls back to a random template if the word isn't in the chain.
+    /// Walks forward/backward until a natural sentence boundary (SENTENCE_END/START)
+    /// or max_words. Falls back to a template if the word isn't in the chain.
     fn generate_with(&self, target_word: &str, max_words: usize, rng: &mut impl Rng) -> String {
         let target_lower = target_word.to_lowercase();
 
-        // Build forward from target
+        // Build forward from target until sentence end
         let mut forward_words = Vec::new();
         let mut cur = target_lower.clone();
-        if let Some(choices) = self.forward.get(&cur) {
-            if let Some(next) = Self::sample(choices, rng) {
-                if next != SENTENCE_END { forward_words.push(next.clone()); cur = next; }
-            }
-            for _ in 1..max_words / 2 {
-                let Some(choices) = self.forward.get(&cur) else { break };
-                let Some(next) = Self::sample(choices, rng) else { break };
-                if next == SENTENCE_END { break; }
-                forward_words.push(next.clone());
-                cur = next;
-            }
+        for _ in 0..max_words {
+            let Some(choices) = self.forward.get(&cur) else { break };
+            let Some(next) = Self::sample(choices, rng) else { break };
+            if next == SENTENCE_END { break; }
+            forward_words.push(next.clone());
+            cur = next;
         }
 
-        // Build backward from target
+        // Build backward from target until sentence start
         let mut backward_words = Vec::new();
         cur = target_lower.clone();
-        for _ in 0..max_words / 2 {
+        for _ in 0..max_words {
             let Some(choices) = self.backward.get(&cur) else { break };
             let Some(prev) = Self::sample(choices, rng) else { break };
             if prev == SENTENCE_START { break; }
@@ -119,7 +115,6 @@ impl MarkovChain {
         words.extend(forward_words);
 
         if words.len() < 3 {
-            // Fallback templates for terms not in the chain
             const TEMPLATES: &[&str] = &[
                 "I've been looking into {} and it seems useful.",
                 "The {} approach worked really well for us.",
@@ -134,15 +129,18 @@ impl MarkovChain {
             return TEMPLATES[idx].replace("{}", target_word);
         }
 
-        // Capitalize first word
+        // Capitalize first word, add period if no punctuation at end
         if let Some(first) = words.first_mut() {
             let mut chars = first.chars();
             if let Some(c) = chars.next() {
                 *first = c.to_uppercase().to_string() + chars.as_str();
             }
         }
-
-        words.join(" ")
+        let mut result = words.join(" ");
+        if !result.ends_with('.') && !result.ends_with('?') && !result.ends_with('!') {
+            result.push('.');
+        }
+        result
     }
 }
 
@@ -447,7 +445,10 @@ pub async fn api_start_corpus_job(
     check_no_running_jobs(&state)?;
 
     let tts_backend = body.tts_backend.unwrap_or_else(|| "openai".to_string());
-    let limit = body.limit.unwrap_or(usize::MAX);
+    let limit = match body.limit {
+        Some(0) | None => usize::MAX, // 0 or absent = unlimited
+        Some(n) => n,
+    };
     let passes = body.passes.unwrap_or(25);
     let config_json = serde_json::json!({"tts_backend": tts_backend, "limit": limit, "passes": passes}).to_string();
 
@@ -617,115 +618,116 @@ async fn run_corpus_job(
         let _ = db.append_job_log(job_id, &format!("Generated {} Markov sentences, starting pipeline...", pass_items.len()));
     }
 
-    // Pipeline: run N TTS calls concurrently, process ASR+alignment as results arrive
-    const PIPELINE_DEPTH: usize = 4;
+    // Pipeline: TTS producer runs ahead, consumer does ASR+alignment as audio arrives.
+    // Bounded channel with PIPELINE_AHEAD slots — TTS can run that many ahead of ASR.
+    const PIPELINE_AHEAD: usize = 4;
+    let pass_items = std::sync::Arc::new(pass_items);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, Result<tts::TtsAudio, anyhow::Error>, u64)>(PIPELINE_AHEAD);
 
-    // We process in chunks of PIPELINE_DEPTH
-    let chunks: Vec<&[PassItem]> = pass_items.chunks(PIPELINE_DEPTH).collect();
+    // TTS producer task
+    let cancel = state.job_cancel.clone();
+    let tts_backend_owned = tts_backend.to_string();
+    let state_tts = state.clone();
+    let items_ref = pass_items.clone();
+    let producer = tokio::spawn(async move {
+        for (idx, pi) in items_ref.iter().enumerate() {
+            if cancel.load(Ordering::Relaxed) { break; }
+            let t0 = std::time::Instant::now();
+            let result = state_tts.tts.generate(&tts_backend_owned, &pi.spoken).await;
+            let ms = t0.elapsed().as_millis() as u64;
+            if tx.send((idx, result, ms)).await.is_err() {
+                break;
+            }
+        }
+    });
 
-    for chunk in chunks {
+    // Consumer: process audio as it arrives from TTS
+    while let Some((idx, tts_result, tts_call_ms)) = rx.recv().await {
+        let pi = &pass_items[idx];
+        let term = &pi.term;
+        let sentence = &pi.sentence;
         if state.job_cancel.load(Ordering::Relaxed) {
             let db = state.db.lock().unwrap();
             let _ = db.append_job_log(job_id, "Stopped by user.");
             break;
         }
 
-        // Fire all TTS calls in the chunk concurrently via separate tokio tasks
+        tts_ms += tts_call_ms;
+
+        let mut audio = match tts_result {
+            Ok(mut a) => { a.normalize(); a }
+            Err(e) => {
+                let db = state.db.lock().unwrap();
+                let _ = db.append_job_log(job_id, &format!("TTS FAILED: {e} — {}", &sentence.chars().take(40).collect::<String>()));
+                errors += 1;
+                count += 1;
+                continue;
+            }
+        };
+
+        let full_16k = match tts::resample_to_16k(&audio.samples, audio.sample_rate) {
+            Ok(s) => s,
+            Err(_) => { errors += 1; count += 1; continue; }
+        };
+
+        // ASR (dual, parallel)
         let t0 = std::time::Instant::now();
-        let tts_handles: Vec<_> = chunk.iter().map(|pi| {
-            let backend = tts_backend.to_string();
-            let spoken = pi.spoken.clone();
-            let state2 = state.clone();
-            tokio::spawn(async move {
-                let t = std::time::Instant::now();
-                let result = state2.tts.generate(&backend, &spoken).await;
-                let ms = t.elapsed().as_millis();
-                eprintln!("[tts:{}] {} ms — {}", backend, ms, &spoken.chars().take(40).collect::<String>());
-                result
-            })
-        }).collect();
-        let mut tts_results = Vec::with_capacity(tts_handles.len());
-        for handle in tts_handles {
-            tts_results.push(handle.await.unwrap_or_else(|e| Err(anyhow::anyhow!("task join: {e}"))));
+        let state_q = state.clone();
+        let samples_q = full_16k.clone();
+        let qwen_task = tokio::task::spawn_blocking(move || -> String {
+            state_q.asr
+                .transcribe_samples(&samples_q, qwen3_asr::TranscribeOptions::default().with_language("english"))
+                .map(|r| r.text)
+                .unwrap_or_default()
+        });
+        let state_p = state.clone();
+        let samples_p = full_16k.clone();
+        let parakeet_task = tokio::task::spawn_blocking(move || -> String {
+            let mut p = state_p.parakeet.lock().unwrap();
+            p.transcribe_samples(samples_p, 16000, 1, None)
+                .map(|r| r.text)
+                .unwrap_or_default()
+        });
+        let (qwen_full, parakeet_full) = tokio::join!(qwen_task, parakeet_task);
+        let qwen_full = qwen_full.unwrap_or_default();
+        let parakeet_full = parakeet_full.unwrap_or_default();
+        asr_ms += t0.elapsed().as_millis() as u64;
+
+        // Alignment
+        let t0 = std::time::Instant::now();
+        let orig_align = state.aligner.align(&full_16k, &sentence).unwrap_or_default();
+        let term_lower = term.to_lowercase();
+        let (term_start, term_end) = find_term_time_range(&orig_align, &term_lower)
+            .unwrap_or((0.0, full_16k.len() as f64 / 16000.0));
+        let qwen_align = state.aligner.align(&full_16k, &qwen_full).unwrap_or_default();
+        let parakeet_align = state.aligner.align(&full_16k, &parakeet_full).unwrap_or_default();
+        align_ms += t0.elapsed().as_millis() as u64;
+
+        let cons = extract_with_consensus(&orig_align, &qwen_align, &parakeet_align, term_start, term_end);
+
+        if cons.clean {
+            let db = state.db.lock().unwrap();
+            let _ = db.insert_corpus_pair(&pi.term, &cons.original, &cons.qwen, &cons.parakeet, &pi.sentence, &pi.spoken);
         }
-        tts_ms += t0.elapsed().as_millis() as u64;
-
-        // Process each result: resample → ASR → align → extract → write
-        for (pi, tts_result) in chunk.iter().zip(tts_results.into_iter()) {
-            if state.job_cancel.load(Ordering::Relaxed) { break; }
-
-            let mut audio = match tts_result {
-                Ok(mut a) => { a.normalize(); a }
-                Err(e) => {
-                    let db = state.db.lock().unwrap();
-                    let _ = db.append_job_log(job_id, &format!("TTS FAILED: {e} — {}", &pi.sentence.chars().take(40).collect::<String>()));
-                    errors += 1;
-                    continue;
-                }
-            };
-
-            let full_16k = match tts::resample_to_16k(&audio.samples, audio.sample_rate) {
-                Ok(s) => s,
-                Err(e) => { errors += 1; continue; }
-            };
-
-            // ASR (dual, parallel)
-            let t0 = std::time::Instant::now();
-            let state_q = state.clone();
-            let samples_q = full_16k.clone();
-            let qwen_task = tokio::task::spawn_blocking(move || -> String {
-                state_q.asr
-                    .transcribe_samples(&samples_q, qwen3_asr::TranscribeOptions::default().with_language("english"))
-                    .map(|r| r.text)
-                    .unwrap_or_default()
-            });
-            let state_p = state.clone();
-            let samples_p = full_16k.clone();
-            let parakeet_task = tokio::task::spawn_blocking(move || -> String {
-                let mut p = state_p.parakeet.lock().unwrap();
-                p.transcribe_samples(samples_p, 16000, 1, None)
-                    .map(|r| r.text)
-                    .unwrap_or_default()
-            });
-            let (qwen_full, parakeet_full) = tokio::join!(qwen_task, parakeet_task);
-            let qwen_full = qwen_full.unwrap_or_default();
-            let parakeet_full = parakeet_full.unwrap_or_default();
-            asr_ms += t0.elapsed().as_millis() as u64;
-
-            // Alignment
-            let t0 = std::time::Instant::now();
-            let orig_align = state.aligner.align(&full_16k, &pi.sentence).unwrap_or_default();
-            let term_lower = pi.term.to_lowercase();
-            let (term_start, term_end) = find_term_time_range(&orig_align, &term_lower)
-                .unwrap_or((0.0, full_16k.len() as f64 / 16000.0));
-            let qwen_align = state.aligner.align(&full_16k, &qwen_full).unwrap_or_default();
-            let parakeet_align = state.aligner.align(&full_16k, &parakeet_full).unwrap_or_default();
-            align_ms += t0.elapsed().as_millis() as u64;
-
-            let cons = extract_with_consensus(&orig_align, &qwen_align, &parakeet_align, term_start, term_end);
-
-            // Only store clean pairs
-            if cons.clean {
-                let db = state.db.lock().unwrap();
-                let _ = db.insert_corpus_pair(&pi.term, &cons.original, &cons.qwen, &cons.parakeet, &pi.sentence, &pi.spoken);
-            }
-            count += 1;
-
-            if pi.pass_idx == 0 || (count % 10) == 0 {
-                let db = state.db.lock().unwrap();
-                let _ = db.append_job_log(job_id, &format!(
-                    "[{}/{}] \"{}\" pass {}: \"{}\"",
-                    pi.item_idx + 1, total_items, pi.term,
-                    pi.pass_idx + 1,
-                    &pi.sentence.chars().take(50).collect::<String>(),
-                ));
-            }
+        count += 1;
+        items_done = pi.item_idx + 1;
+        if pi.pass_idx == 0 || (count % 10) == 0 {
+            let db = state.db.lock().unwrap();
+            let _ = db.append_job_log(job_id, &format!(
+                "[{}/{}] \"{}\" pass {}: \"{}\"",
+                pi.item_idx + 1, total_items, pi.term,
+                pi.pass_idx + 1,
+                &pi.sentence.chars().take(50).collect::<String>(),
+            ));
         }
 
-        items_done = chunk.last().map(|pi| pi.item_idx + 1).unwrap_or(items_done);
-        update_stats(state, job_id, count, items_done, errors, tts_ms, asr_ms, align_ms, job_start.elapsed().as_millis() as u64);
+        if count % 5 == 0 {
+            update_stats(state, job_id, count, items_done, errors, tts_ms, asr_ms, align_ms, job_start.elapsed().as_millis() as u64);
+        }
     }
 
+    // Wait for producer to finish
+    let _ = producer.await;
     update_stats(state, job_id, count, items_done, errors, tts_ms, asr_ms, align_ms, job_start.elapsed().as_millis() as u64);
 
     {
