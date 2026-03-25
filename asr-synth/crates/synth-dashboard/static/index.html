@@ -2589,7 +2589,14 @@
                     else if (res.error) setError(res.error);
                 } catch (e) { setError(e.message); }
             };
-            const stopJob = async () => { try { await api('/api/jobs/stop', {method: 'POST'}); } catch (e) {} };
+            const [stopping, setStopping] = useState(false);
+            const stopJob = async () => {
+                setStopping(true);
+                try { await api('/api/jobs/stop', {method: 'POST'}); } catch (e) {}
+            };
+
+            // Reset stopping when job finishes
+            useEffect(() => { if (!runningJob) setStopping(false); }, [runningJob]);
 
             if (!status) return <div className="container"><p>Loading...</p></div>;
             const isRunning = !!runningJob;
@@ -2602,7 +2609,7 @@
                         Generate training data from approved sentences: TTS → ASR → training pairs, then prepare train/valid/test splits.
                     </p>
                     {error && <div className="pipeline-error">{error}</div>}
-                    {isRunning && <div style={{textAlign:'right',marginBottom:8}}><button className="stage-launch-btn" style={{borderColor:'var(--warning)',color:'var(--warning)',background:'rgba(210,153,34,0.1)'}} onClick={stopJob}>Stop</button></div>}
+                    {isRunning && <div style={{textAlign:'right',marginBottom:8}}><button className="stage-launch-btn" style={{borderColor:'var(--warning)',color:'var(--warning)',background:'rgba(210,153,34,0.1)'}} onClick={stopJob} disabled={stopping}>{stopping ? 'Stopping...' : 'Stop'}</button></div>}
 
                     <div className="card" style={{marginBottom: 16}}>
                         <h3>1. Generate Corpus</h3>
