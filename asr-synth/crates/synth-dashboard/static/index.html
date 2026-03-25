@@ -2575,6 +2575,10 @@
             const [editingId, setEditingId] = useState(null);
             const [editValue, setEditValue] = useState('');
             const [sentenceFilter, setSentenceFilter] = useState('');
+            const [spellIssues, setSpellIssues] = useState(null);
+            const [spellLoading, setSpellLoading] = useState(false);
+            const [suggestions, setSuggestions] = useState(null);
+            const [suggestLoading, setSuggestLoading] = useState(false);
             const inputRef = useRef(null);
 
             const loadNext = () => {
@@ -2620,6 +2624,65 @@
                             <div className="stat-card"><div className="value" style={{color:'var(--success)'}}>{stats.total_sentences}</div><div className="label">Sentences</div></div>
                             <div className="stat-card"><div className="value">{stats.terms?.length || 0}</div><div className="label">Terms Covered</div></div>
                             <div className="stat-card"><div className="value">{stats.vocab_count || 0}</div><div className="label">Vocab Total</div></div>
+                        </div>
+                    )}
+
+                    <div style={{display:'flex',gap:8,marginBottom:12}}>
+                        <button className="btn btn-sm" disabled={spellLoading} onClick={async () => {
+                            setSpellLoading(true); setSpellIssues(null);
+                            try { const r = await api('/api/author/spellcheck', {method:'POST'}); setSpellIssues(r.issues); }
+                            catch (e) { setError(e.message); }
+                            setSpellLoading(false);
+                        }}>{spellLoading ? 'Checking...' : 'Spellcheck'}</button>
+                        <button className="btn btn-sm" disabled={suggestLoading} onClick={async () => {
+                            setSuggestLoading(true); setSuggestions(null);
+                            try { const r = await api('/api/author/suggest-vocab', {method:'POST'}); setSuggestions(r.suggestions || []); }
+                            catch (e) { setError(e.message); }
+                            setSuggestLoading(false);
+                        }}>{suggestLoading ? 'Thinking...' : 'Suggest Vocab'}</button>
+                    </div>
+
+                    {spellIssues && (
+                        <div className="card" style={{marginBottom:12}}>
+                            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                                <h3 style={{margin:0}}>Spellcheck Results</h3>
+                                <button onClick={() => setSpellIssues(null)} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer'}}>&times;</button>
+                            </div>
+                            {(Array.isArray(spellIssues) ? spellIssues : spellIssues?.issues || []).length === 0
+                                ? <div style={{color:'var(--success)',fontSize:13}}>No issues found!</div>
+                                : (Array.isArray(spellIssues) ? spellIssues : spellIssues?.issues || []).map((issue, i) => (
+                                    <div key={i} style={{padding:'4px 0',borderBottom:'1px solid rgba(255,255,255,0.04)',fontSize:12,display:'flex',gap:8,alignItems:'center'}}>
+                                        <span style={{color:'var(--text-muted)',minWidth:30}}>#{issue.id}</span>
+                                        <span style={{color:'var(--error)',textDecoration:'line-through'}}>{issue.original}</span>
+                                        <span style={{color:'var(--text-muted)'}}>&rarr;</span>
+                                        <span style={{color:'var(--success)',fontWeight:600}}>{issue.suggestion}</span>
+                                        <span style={{color:'var(--text-muted)',fontSize:11}}>{issue.reason}</span>
+                                    </div>
+                                ))
+                            }
+                        </div>
+                    )}
+
+                    {suggestions && (
+                        <div className="card" style={{marginBottom:12}}>
+                            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                                <h3 style={{margin:0}}>Suggested Vocab</h3>
+                                <button onClick={() => setSuggestions(null)} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer'}}>&times;</button>
+                            </div>
+                            {suggestions.map((s, i) => (
+                                <div key={i} style={{padding:'6px 0',borderBottom:'1px solid rgba(255,255,255,0.04)',fontSize:12,display:'flex',gap:8,alignItems:'center'}}>
+                                    <span style={{fontWeight:700,fontFamily:'monospace',minWidth:100}}>{s.term}</span>
+                                    <span style={{color:'var(--text-muted)'}}>"{s.pronunciation}"</span>
+                                    <span style={{color:'var(--text-muted)',fontSize:11,flex:1}}>{s.reason}</span>
+                                    <button className="btn btn-sm" onClick={async () => {
+                                        await api('/api/vocab', {method:'POST', body: JSON.stringify({term: s.term, spoken_override: s.pronunciation})});
+                                        setSuggestions(prev => prev.filter((_, j) => j !== i));
+                                        loadStats();
+                                    }} style={{color:'var(--success)',borderColor:'var(--success)'}}>Add</button>
+                                    <button className="btn btn-sm" onClick={() => setSuggestions(prev => prev.filter((_, j) => j !== i))}>Skip</button>
+                                </div>
+                            ))}
+                            {suggestions.length === 0 && <div style={{color:'var(--text-muted)'}}>All reviewed!</div>}
                         </div>
                     )}
 

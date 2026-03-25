@@ -962,6 +962,85 @@ async fn main() -> anyhow::Result<()> {
         })).into_response())
     }
 
+    /// Spellcheck all authored sentences via OpenAI. Returns list of issues.
+    async fn api_author_spellcheck(
+        State(state): State<Arc<AppState>>,
+    ) -> Result<Response, AppError> {
+        let api_key = std::env::var("OPENAI_API_KEY")
+            .map_err(|_| err(anyhow::anyhow!("OPENAI_API_KEY not set")))?;
+
+        let sentences = {
+            let db = state.db.lock().unwrap();
+            db.list_authored_sentences().map_err(err)?
+        };
+
+        let lines: Vec<String> = sentences.iter()
+            .map(|s| format!("[{}] {}", s["id"], s["sentence"].as_str().unwrap_or("")))
+            .collect();
+
+        let client = reqwest::Client::new();
+        let resp = client.post("https://api.openai.com/v1/chat/completions")
+            .header("Authorization", format!("Bearer {api_key}"))
+            .json(&serde_json::json!({
+                "model": "gpt-4o-mini",
+                "temperature": 0,
+                "messages": [{
+                    "role": "system",
+                    "content": "You are a proofreader. The user will give you numbered sentences. Find typos, misspellings, and grammar errors. Ignore technical terms, crate names, tool names — they're intentional. Output JSON array of objects: {\"id\": number, \"original\": \"the wrong word\", \"suggestion\": \"the fix\", \"reason\": \"brief explanation\"}. If no issues found, output []."
+                }, {
+                    "role": "user",
+                    "content": lines.join("\n")
+                }],
+                "response_format": {"type": "json_object"},
+            }))
+            .send().await.map_err(|e| err(e))?;
+
+        let body: serde_json::Value = resp.json().await.map_err(|e| err(e))?;
+        let content = body["choices"][0]["message"]["content"].as_str().unwrap_or("[]");
+        let issues: serde_json::Value = serde_json::from_str(content).unwrap_or(serde_json::json!([]));
+
+        Ok(Json(serde_json::json!({"issues": issues})).into_response())
+    }
+
+    /// Ask OpenAI to suggest new vocab terms based on existing ones + sentences.
+    async fn api_author_suggest_vocab(
+        State(state): State<Arc<AppState>>,
+    ) -> Result<Response, AppError> {
+        let api_key = std::env::var("OPENAI_API_KEY")
+            .map_err(|_| err(anyhow::anyhow!("OPENAI_API_KEY not set")))?;
+
+        let (existing_terms, sentences) = {
+            let db = state.db.lock().unwrap();
+            let vocab = db.list_reviewed_vocab().map_err(err)?;
+            let terms: Vec<String> = vocab.iter().map(|v| v.term.clone()).collect();
+            let sents = db.all_authored_sentences().map_err(err)?;
+            (terms, sents)
+        };
+
+        let client = reqwest::Client::new();
+        let resp = client.post("https://api.openai.com/v1/chat/completions")
+            .header("Authorization", format!("Bearer {api_key}"))
+            .json(&serde_json::json!({
+                "model": "gpt-4o-mini",
+                "temperature": 0.7,
+                "messages": [{
+                    "role": "system",
+                    "content": "You help build a vocabulary of technical terms that speech recognition gets wrong. Given existing vocab and example sentences, suggest 20 more terms that the user likely uses and that ASR would struggle with. Focus on: programming tools, crate names, acronyms, technical jargon, project names, non-English-word identifiers. Do NOT suggest common English words or hyphenated compound words. Output JSON: {\"suggestions\": [{\"term\": \"...\", \"pronunciation\": \"...\", \"reason\": \"...\"}]}"
+                }, {
+                    "role": "user",
+                    "content": format!("Existing vocab: {}\n\nExample sentences:\n{}", existing_terms.join(", "), sentences.iter().take(30).cloned().collect::<Vec<_>>().join("\n"))
+                }],
+                "response_format": {"type": "json_object"},
+            }))
+            .send().await.map_err(|e| err(e))?;
+
+        let body: serde_json::Value = resp.json().await.map_err(|e| err(e))?;
+        let content = body["choices"][0]["message"]["content"].as_str().unwrap_or("{}");
+        let parsed: serde_json::Value = serde_json::from_str(content).unwrap_or(serde_json::json!({"suggestions": []}));
+
+        Ok(Json(parsed).into_response())
+    }
+
     let app = Router::new()
         // UI
         .route("/", get(index))
@@ -1028,6 +1107,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/author/sentences", get(api_author_sentences))
         .route("/api/author/sentences/{id}", post(api_author_sentence_update))
         .route("/api/author/sentences/{id}/delete", post(api_author_sentence_delete))
+        .route("/api/author/spellcheck", post(api_author_spellcheck))
+        .route("/api/author/suggest-vocab", post(api_author_suggest_vocab))
         .with_state(state);
 
     let addr = format!("{}:{}", cli.host, cli.port);
