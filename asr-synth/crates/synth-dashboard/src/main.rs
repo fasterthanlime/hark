@@ -920,6 +920,36 @@ async fn main() -> anyhow::Result<()> {
         Ok(Json(serde_json::json!({"id": id})).into_response())
     }
 
+    async fn api_author_sentences(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
+        let db = state.db.lock().unwrap();
+        let sentences = db.list_authored_sentences().map_err(err)?;
+        Ok(Json(sentences).into_response())
+    }
+
+    #[derive(Deserialize)]
+    struct AuthorSentenceUpdateBody {
+        sentence: String,
+    }
+
+    async fn api_author_sentence_update(
+        State(state): State<Arc<AppState>>,
+        Path(id): Path<i64>,
+        Json(body): Json<AuthorSentenceUpdateBody>,
+    ) -> Result<Response, AppError> {
+        let db = state.db.lock().unwrap();
+        db.update_authored_sentence(id, body.sentence.trim()).map_err(err)?;
+        Ok(Json(serde_json::json!({"ok": true})).into_response())
+    }
+
+    async fn api_author_sentence_delete(
+        State(state): State<Arc<AppState>>,
+        Path(id): Path<i64>,
+    ) -> Result<Response, AppError> {
+        let db = state.db.lock().unwrap();
+        db.delete_authored_sentence(id).map_err(err)?;
+        Ok(Json(serde_json::json!({"ok": true})).into_response())
+    }
+
     async fn api_author_stats(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
         let db = state.db.lock().unwrap();
         let total = db.authored_sentence_count().map_err(err)?;
@@ -995,6 +1025,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/author/next", get(api_author_next))
         .route("/api/author/submit", post(api_author_submit))
         .route("/api/author/stats", get(api_author_stats))
+        .route("/api/author/sentences", get(api_author_sentences))
+        .route("/api/author/sentences/{id}", post(api_author_sentence_update))
+        .route("/api/author/sentences/{id}/delete", post(api_author_sentence_delete))
         .with_state(state);
 
     let addr = format!("{}:{}", cli.host, cli.port);

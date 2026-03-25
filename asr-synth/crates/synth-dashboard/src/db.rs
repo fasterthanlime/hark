@@ -267,6 +267,34 @@ impl Db {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    pub fn list_authored_sentences(&self) -> Result<Vec<serde_json::Value>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, term, sentence, created_at FROM authored_sentences ORDER BY id DESC"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, i64>(0)?,
+                "term": row.get::<_, String>(1)?,
+                "sentence": row.get::<_, String>(2)?,
+                "created_at": row.get::<_, String>(3)?,
+            }))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn update_authored_sentence(&self, id: i64, sentence: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE authored_sentences SET sentence = ?1 WHERE id = ?2",
+            params![sentence, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_authored_sentence(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM authored_sentences WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     /// Get all authored sentences as plain text (for Markov chain building).
     pub fn all_authored_sentences(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare("SELECT sentence FROM authored_sentences")?;

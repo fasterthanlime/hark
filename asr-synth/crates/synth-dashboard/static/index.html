@@ -2571,6 +2571,10 @@
             const [stats, setStats] = useState(null);
             const [error, setError] = useState(null);
             const [saving, setSaving] = useState(false);
+            const [sentences, setSentences] = useState(null);
+            const [editingId, setEditingId] = useState(null);
+            const [editValue, setEditValue] = useState('');
+            const [sentenceFilter, setSentenceFilter] = useState('');
             const inputRef = useRef(null);
 
             const loadNext = () => {
@@ -2649,15 +2653,58 @@
                             <h3>Coverage</h3>
                             <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
                                 {stats.terms.map(([term, count]) => (
-                                    <span key={term} style={{fontSize:12,padding:'2px 8px',borderRadius:10,
+                                    <span key={term} style={{fontSize:12,padding:'2px 8px',borderRadius:10,cursor:'pointer',
                                         background: count >= 3 ? 'rgba(126,231,135,0.15)' : count >= 1 ? 'rgba(88,166,255,0.15)' : 'rgba(255,255,255,0.05)',
                                         color: count >= 3 ? 'var(--success)' : count >= 1 ? 'var(--accent)' : 'var(--text-muted)',
                                         border: `1px solid ${count >= 3 ? 'rgba(126,231,135,0.3)' : count >= 1 ? 'rgba(88,166,255,0.3)' : 'var(--border)'}`,
-                                    }}>{term} <b>{count}</b></span>
+                                    }} onClick={() => { setSentenceFilter(term); if (!sentences) api('/api/author/sentences').then(setSentences); }}>{term} <b>{count}</b></span>
                                 ))}
                             </div>
                         </div>
                     )}
+
+                    <div style={{marginTop:24}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                            <h3 style={{margin:0}}>Sentences</h3>
+                            {!sentences && <button className="btn btn-sm" onClick={() => api('/api/author/sentences').then(setSentences)}>Show</button>}
+                            {sentences && <>
+                                <span style={{fontSize:12,color:'var(--text-muted)'}}>{sentences.length} total</span>
+                                <input type="text" placeholder="Filter by term..." value={sentenceFilter} onChange={e => setSentenceFilter(e.target.value)}
+                                    style={{marginLeft:8,padding:'3px 8px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',fontSize:12,fontFamily:'Jost,sans-serif'}} />
+                            </>}
+                        </div>
+                        {sentences && (() => {
+                            const f = sentenceFilter.toLowerCase();
+                            const filtered = f ? sentences.filter(s => s.term.toLowerCase().includes(f) || s.sentence.toLowerCase().includes(f)) : sentences;
+                            return (
+                                <div style={{maxHeight:400,overflow:'auto',border:'1px solid var(--border)',borderRadius:8,background:'var(--bg)'}}>
+                                    {filtered.map(s => (
+                                        <div key={s.id} style={{padding:'6px 10px',borderBottom:'1px solid rgba(255,255,255,0.04)',fontSize:12,display:'flex',alignItems:'center',gap:8}}>
+                                            <span style={{color:'var(--accent)',fontWeight:600,minWidth:80,fontFamily:'monospace'}}>{s.term}</span>
+                                            {editingId === s.id ? (
+                                                <input value={editValue} onChange={e => setEditValue(e.target.value)} autoFocus
+                                                    onKeyDown={async e => {
+                                                        if (e.key === 'Enter') {
+                                                            await api(`/api/author/sentences/${s.id}`, {method:'POST', body: JSON.stringify({sentence: editValue})});
+                                                            setEditingId(null); api('/api/author/sentences').then(setSentences); loadStats();
+                                                        }
+                                                        if (e.key === 'Escape') setEditingId(null);
+                                                    }}
+                                                    style={{flex:1,padding:'2px 6px',background:'var(--card-bg)',border:'1px solid var(--accent)',borderRadius:3,color:'var(--text)',fontSize:12,fontFamily:'Jost,sans-serif'}} />
+                                            ) : (
+                                                <span style={{flex:1,cursor:'pointer'}} onClick={() => { setEditingId(s.id); setEditValue(s.sentence); }}>{s.sentence}</span>
+                                            )}
+                                            <button onClick={async () => {
+                                                await api(`/api/author/sentences/${s.id}/delete`, {method:'POST'});
+                                                api('/api/author/sentences').then(setSentences); loadStats();
+                                            }} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:13,padding:2}} title="Delete">&times;</button>
+                                        </div>
+                                    ))}
+                                    {filtered.length === 0 && <div style={{padding:16,textAlign:'center',color:'var(--text-muted)'}}>No sentences{f ? ' matching filter' : ''}</div>}
+                                </div>
+                            );
+                        })()}
+                    </div>
                 </div>
             );
         }
