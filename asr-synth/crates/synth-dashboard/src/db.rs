@@ -225,13 +225,40 @@ impl Db {
 
     // ==================== AUTHORED SENTENCES ====================
 
-    pub fn insert_authored_sentence(&self, term: &str, sentence: &str) -> Result<i64> {
+    /// Insert an authored sentence, linking it to ALL vocab terms it contains.
+    /// The `primary_term` is the one that was prompted, but we also scan for others.
+    pub fn insert_authored_sentence(&self, primary_term: &str, sentence: &str) -> Result<i64> {
         let now = now_str();
-        self.conn.execute(
-            "INSERT INTO authored_sentences (term, sentence, created_at) VALUES (?1, ?2, ?3)",
-            params![term, sentence, now],
+        let lower = sentence.to_lowercase();
+
+        // Find all vocab terms present in this sentence
+        let mut stmt = self.conn.prepare(
+            "SELECT term FROM vocab WHERE reviewed = 1 AND spoken_override IS NOT NULL AND (curated IS NULL OR curated = 'kept')"
         )?;
-        Ok(self.conn.last_insert_rowid())
+        let all_terms: Vec<String> = stmt.query_map([], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut matched_terms: Vec<&str> = Vec::new();
+        // Always include the primary term
+        matched_terms.push(primary_term);
+        // Add any other terms found in the sentence
+        for t in &all_terms {
+            if t.to_lowercase() != primary_term.to_lowercase() && lower.contains(&t.to_lowercase()) {
+                matched_terms.push(t);
+            }
+        }
+        matched_terms.dedup_by(|a, b| a.to_lowercase() == b.to_lowercase());
+
+        let mut last_id = 0i64;
+        for term in &matched_terms {
+            self.conn.execute(
+                "INSERT INTO authored_sentences (term, sentence, created_at) VALUES (?1, ?2, ?3)",
+                params![term, sentence, now],
+            )?;
+            last_id = self.conn.last_insert_rowid();
+        }
+        Ok(last_id)
     }
 
     /// Get a vocab term that needs more sentences, weighted toward terms with fewer.
@@ -263,7 +290,7 @@ impl Db {
     }
 
     pub fn authored_sentence_count(&self) -> Result<i64> {
-        Ok(self.conn.query_row("SELECT COUNT(*) FROM authored_sentences", [], |r| r.get(0))?)
+        Ok(self.conn.query_row("SELECT COUNT(DISTINCT sentence) FROM authored_sentences", [], |r| r.get(0))?)
     }
 
     pub fn authored_sentence_term_counts(&self) -> Result<Vec<(String, i64)>> {
@@ -304,7 +331,7 @@ impl Db {
 
     /// Get all authored sentences as plain text (for Markov chain building).
     pub fn all_authored_sentences(&self) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare("SELECT sentence FROM authored_sentences")?;
+        let mut stmt = self.conn.prepare("SELECT DISTINCT sentence FROM authored_sentences")?;
         let rows = stmt.query_map([], |row| row.get(0))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -633,6 +660,10 @@ impl Db {
     /// Find a vocab entry by term (exact, case-insensitive).
     pub fn delete_vocab_by_term(&self, term: &str) -> Result<()> {
         self.conn.execute("DELETE FROM vocab WHERE LOWER(term) = LOWER(?1)", params![term])?;
+        // Clean up authored sentences linked to this term
+        self.conn.execute("DELETE FROM authored_sentences WHERE LOWER(term) = LOWER(?1)", params![term])?;
+        // Clean up rejected suggestions
+        self.conn.execute("DELETE FROM rejected_suggestions WHERE LOWER(term) = LOWER(?1)", params![term])?;
         Ok(())
     }
 
