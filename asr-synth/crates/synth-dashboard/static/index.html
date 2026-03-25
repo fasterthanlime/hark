@@ -2595,10 +2595,25 @@
             const qwenMatch = ex.qwen?.toLowerCase().replace(/[.,!?]/g,'').trim() === origMatch;
             const paraMatch = ex.parakeet?.toLowerCase().replace(/[.,!?]/g,'').trim() === origMatch;
 
+            const playWav = () => {
+                if (!data.wav_b64) return;
+                const bin = atob(data.wav_b64);
+                const buf = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+                const blob = new Blob([buf], {type: 'audio/wav'});
+                const url = URL.createObjectURL(blob);
+                const a = new Audio(url);
+                a.play();
+                a.onended = () => URL.revokeObjectURL(url);
+            };
+
             return (
                 <div style={{fontSize:12,lineHeight:1.6}}>
                     <div style={{marginBottom:6}}>
-                        <div style={{color:'var(--text-muted)'}}><b>Sentence:</b> {data.sentence}</div>
+                        <div style={{color:'var(--text-muted)',display:'flex',alignItems:'center',gap:8}}>
+                            <b>Sentence:</b> {data.sentence}
+                            {data.wav_b64 && <button onClick={playWav} style={{background:'none',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',cursor:'pointer',padding:'1px 8px',fontSize:11}}>&#9654; Play</button>}
+                        </div>
                         {data.spoken_sentence && data.spoken_sentence !== data.sentence &&
                             <div style={{color:'var(--text-muted)'}}><b>Spoken:</b> {data.spoken_sentence}</div>}
                         <div style={{color:'var(--text-muted)'}}><b>Qwen full:</b> {data.qwen_full}</div>

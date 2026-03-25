@@ -1771,6 +1771,13 @@ pub async fn api_test_term(
     audio.normalize();
     let full_16k = tts::resample_to_16k(&audio.samples, audio.sample_rate).map_err(err)?;
 
+    // Encode audio as base64 WAV for playback
+    let wav_b64 = {
+        use base64::Engine;
+        let wav = audio.to_wav().map_err(err)?;
+        base64::engine::general_purpose::STANDARD.encode(&wav)
+    };
+
     // Pipeline uses the WRITTEN term and WRITTEN sentence
     let mut result = run_corpus_pass(&state, &full_16k, &written_sentence, &written).await.map_err(err)?;
     result.spoken_sentence = spoken_sentence;
@@ -1797,6 +1804,7 @@ pub async fn api_test_term(
             "parakeet": fmt_alignment_json(&result.parakeet_alignment),
         },
         "term_range": [result.term_range.0, result.term_range.1],
+        "wav_b64": wav_b64,
     })).into_response())
 }
 
