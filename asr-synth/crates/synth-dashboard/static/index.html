@@ -1960,7 +1960,7 @@
                                 if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); addTerm(); }
                                 else if (e.key === 'Enter') { e.preventDefault(); previewNewTerm(); }
                             }} />
-                        <button className="btn btn-sm btn-primary" onClick={addTerm} disabled={!newTerm.trim()}>{newPreviewed ? 'Save (&#8984;&#9166;)' : 'Preview (&#9166;)'}</button>
+                        <button className="btn btn-sm btn-primary" onClick={addTerm} disabled={!newTerm.trim()}>{newPreviewed ? <>Save ({'\u2318\u23CE'})</> : <>Preview ({'\u23CE'})</>}</button>
                         {newTermExists && <span style={{fontSize:11,color:'var(--warning)'}}>already exists</span>}
                     </div>
                     {loading ? <p>Loading...</p> : vocab.length === 0 ? (
@@ -2746,7 +2746,7 @@
                                 <button onClick={doPlay} style={{background:'none',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',cursor:'pointer',padding:'4px 10px',fontSize:13}}>&#9654;</button>
                             </div>
                             <div style={{display:'flex',gap:8,justifyContent:'center'}}>
-                                <button className="btn btn-primary" onClick={doAdd}>Add (&#8984;&#9166;)</button>
+                                <button className="btn btn-primary" onClick={doAdd}>Add ({'\u2318\u23CE'})</button>
                                 <button className="btn" onClick={doSkip}>Skip (Esc)</button>
                                 <span style={{fontSize:10,color:'var(--text-muted)',marginLeft:8}}>Enter = play</span>
                             </div>
@@ -2814,7 +2814,7 @@
                                 <button onClick={doPlaySent} style={{background:'none',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',cursor:'pointer',padding:'4px 10px',fontSize:13}}>&#9654;</button>
                             </div>
                             <div style={{display:'flex',gap:8,justifyContent:'center'}}>
-                                <button className="btn btn-primary" onClick={doAccept}>Accept (&#8984;&#9166;)</button>
+                                <button className="btn btn-primary" onClick={doAccept}>Accept ({'\u2318\u23CE'})</button>
                                 <button className="btn" onClick={doSkipSent}>Skip (Esc)</button>
                                 <span style={{fontSize:10,color:'var(--text-muted)',marginLeft:8}}>Enter = play</span>
                             </div>
@@ -2843,7 +2843,7 @@
                                         if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && sentence.trim()) { e.preventDefault(); submit(); }
                                     }}
                                     style={{flex:1,padding:'10px 14px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text)',fontFamily:'Jost,sans-serif',fontSize:15}} />
-                                <button className="btn btn-primary" onClick={submit} disabled={saving || !sentence.trim()}>Save (&#8984;&#9166;)</button>
+                                <button className="btn btn-primary" onClick={submit} disabled={saving || !sentence.trim()}>Save ({'\u2318\u23CE'})</button>
                                 <button className="btn" onClick={skip} style={{color:'var(--text-muted)'}}>Skip</button>
                             </div>
                         </div>
