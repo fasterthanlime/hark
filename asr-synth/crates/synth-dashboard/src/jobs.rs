@@ -1585,6 +1585,116 @@ pub async fn api_scan_results(
     Ok(Json(json).into_response())
 }
 
+// ==================== Test One Term ====================
+
+#[derive(Deserialize)]
+pub struct TestTermBody {
+    pub term: String,
+    pub tts_backend: Option<String>,
+}
+
+/// Run one corpus pass for a single term and return the full result (without saving to DB).
+/// Useful for debugging extraction quality before committing to a full corpus run.
+pub async fn api_test_term(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<TestTermBody>,
+) -> Result<Response, AppError> {
+    let term = body.term.trim().to_string();
+    let tts_backend = body.tts_backend.unwrap_or_else(|| "pocket-hq".to_string());
+
+    // Look up the vocab entry
+    let vocab = {
+        let db = state.db.lock().unwrap();
+        db.find_vocab_by_term(&term).map_err(err)?.ok_or_else(|| err(format!("Term '{}' not found", term)))?
+    };
+    let spoken = vocab.spoken().to_string();
+
+    // Build a sentence with the Markov chain
+    let all_texts = {
+        let db = state.db.lock().unwrap();
+        db.all_sentence_texts().map_err(err)?
+    };
+    let chain = MarkovChain::build(&all_texts);
+    let mut rng = rand::rngs::StdRng::from_os_rng();
+    let sentence = chain.generate_with(&term, 15, &mut rng);
+
+    // Replace term with spoken form in sentence
+    let spoken_sentence = {
+        let lower = sentence.to_lowercase();
+        let lower_term = term.to_lowercase();
+        if let Some(pos) = lower.find(&lower_term) {
+            format!("{}{}{}", &sentence[..pos], &spoken, &sentence[pos + term.len()..])
+        } else {
+            sentence.clone()
+        }
+    };
+
+    // TTS
+    let mut audio = state.tts.generate(&tts_backend, &spoken_sentence).await.map_err(|e| err(e))?;
+    audio.normalize();
+    let full_16k = tts::resample_to_16k(&audio.samples, audio.sample_rate).map_err(err)?;
+
+    // ASR (dual)
+    let state_q = state.clone();
+    let samples_q = full_16k.clone();
+    let qwen_task = tokio::task::spawn_blocking(move || -> String {
+        state_q.asr
+            .transcribe_samples(&samples_q, qwen3_asr::TranscribeOptions::default().with_language("english"))
+            .map(|r| r.text)
+            .unwrap_or_default()
+    });
+    let state_p = state.clone();
+    let samples_p = full_16k.clone();
+    let parakeet_task = tokio::task::spawn_blocking(move || -> String {
+        let mut p = state_p.parakeet.lock().unwrap();
+        p.transcribe_samples(samples_p, 16000, 1, None)
+            .map(|r| r.text)
+            .unwrap_or_default()
+    });
+    let (qwen_full, parakeet_full) = tokio::join!(qwen_task, parakeet_task);
+    let qwen_full = qwen_full.unwrap_or_default();
+    let parakeet_full = parakeet_full.unwrap_or_default();
+
+    // Alignment
+    let orig_align = state.aligner.align(&full_16k, &sentence).unwrap_or_default();
+    let term_lower = term.to_lowercase();
+    let spoken_lower = spoken.to_lowercase();
+    let (term_start, term_end) = find_term_time_range(&orig_align, &spoken_lower)
+        .unwrap_or((0.0, full_16k.len() as f64 / 16000.0));
+    let qwen_align = state.aligner.align(&full_16k, &qwen_full).unwrap_or_default();
+    let parakeet_align = state.aligner.align(&full_16k, &parakeet_full).unwrap_or_default();
+
+    let cons = extract_with_consensus(&orig_align, &qwen_align, &parakeet_align, term_start, term_end);
+
+    let fmt = |items: &[qwen3_asr::ForcedAlignItem]| -> serde_json::Value {
+        serde_json::json!(items.iter().map(|a| {
+            serde_json::json!({"w": a.word, "s": (a.start_time * 1000.0).round() / 1000.0, "e": (a.end_time * 1000.0).round() / 1000.0})
+        }).collect::<Vec<_>>())
+    };
+
+    Ok(Json(serde_json::json!({
+        "term": term,
+        "spoken": spoken,
+        "sentence": sentence,
+        "spoken_sentence": spoken_sentence,
+        "qwen_full": qwen_full,
+        "parakeet_full": parakeet_full,
+        "extraction": {
+            "original": cons.original,
+            "qwen": cons.qwen,
+            "parakeet": cons.parakeet,
+            "clean": cons.clean,
+            "cons_range": [cons.cons_range.0, cons.cons_range.1],
+        },
+        "alignments": {
+            "original": fmt(&orig_align),
+            "qwen": fmt(&qwen_align),
+            "parakeet": fmt(&parakeet_align),
+        },
+        "term_range": [term_start, term_end],
+    })).into_response())
+}
+
 // ==================== Pipeline Status ====================
 
 pub async fn api_view_corpus(

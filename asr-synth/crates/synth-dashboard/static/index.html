@@ -2545,6 +2545,89 @@
             );
         }
 
+        // ==================== SHARED: Alignment Timeline ====================
+
+        function AlignmentView({data}) {
+            // data: { term, spoken, sentence, spoken_sentence, qwen_full, parakeet_full,
+            //         extraction: {original, qwen, parakeet, clean, cons_range},
+            //         alignments: {original, qwen, parakeet}, term_range }
+            if (!data) return null;
+            const ex = data.extraction || {};
+            const al = data.alignments || {};
+            const origItems = al.original || [];
+            const qwenItems = al.qwen || [];
+            const paraItems = al.parakeet || [];
+            const allItems = [...origItems, ...qwenItems, ...paraItems];
+            const maxTime = allItems.length ? Math.max(...allItems.map(a => a.e)) : 1;
+            const pct = t => (t / maxTime * 100).toFixed(2) + '%';
+
+            const extractedIndices = (items, extracted) => {
+                if (!extracted) return new Set();
+                const words = extracted.split(/\s+/);
+                const indices = new Set();
+                let wi = 0;
+                for (let i = 0; i < items.length && wi < words.length; i++) {
+                    if (items[i].w.toLowerCase() === words[wi].toLowerCase()) { indices.add(i); wi++; }
+                }
+                return indices;
+            };
+            const origIdx = extractedIndices(origItems, ex.original);
+            const qwenIdx = extractedIndices(qwenItems, ex.qwen);
+            const paraIdx = extractedIndices(paraItems, ex.parakeet);
+
+            const renderTimeline = (label, items, color, highlighted) => items.length > 0 && (
+                <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:3}}>
+                    <span style={{fontSize:9,color:'var(--text-muted)',width:55,textAlign:'right',flexShrink:0,fontWeight:600}}>{label}</span>
+                    <div style={{position:'relative',flex:1,height:22,background:'rgba(255,255,255,0.03)',borderRadius:3,overflow:'hidden'}}>
+                        {items.map((a, j) => {
+                            const hl = highlighted.has(j);
+                            return (<div key={j} title={`${a.w} (${a.s}s–${a.e}s)`} style={{
+                                position:'absolute', left:pct(a.s), width:pct(Math.max(a.e - a.s, 0.02)), top:2, bottom:2, borderRadius:2,
+                                background: hl ? color : 'rgba(255,255,255,0.08)', border:`1px solid ${hl ? color : 'rgba(255,255,255,0.12)'}`,
+                                display:'flex', alignItems:'center', justifyContent:'center', overflow:'hidden',
+                            }}><span style={{fontSize:8, color: hl ? '#fff' : 'var(--text-muted)', whiteSpace:'nowrap', padding:'0 2px'}}>{a.w}</span></div>);
+                        })}
+                    </div>
+                </div>
+            );
+
+            const origMatch = ex.original?.toLowerCase().replace(/[.,!?]/g,'').trim();
+            const qwenMatch = ex.qwen?.toLowerCase().replace(/[.,!?]/g,'').trim() === origMatch;
+            const paraMatch = ex.parakeet?.toLowerCase().replace(/[.,!?]/g,'').trim() === origMatch;
+
+            return (
+                <div style={{fontSize:12,lineHeight:1.6}}>
+                    <div style={{marginBottom:6}}>
+                        <div style={{color:'var(--text-muted)'}}><b>Sentence:</b> {data.sentence}</div>
+                        {data.spoken_sentence && data.spoken_sentence !== data.sentence &&
+                            <div style={{color:'var(--text-muted)'}}><b>Spoken:</b> {data.spoken_sentence}</div>}
+                        <div style={{color:'var(--text-muted)'}}><b>Qwen full:</b> {data.qwen_full}</div>
+                        <div style={{color:'var(--text-muted)'}}><b>Parakeet full:</b> {data.parakeet_full}</div>
+                    </div>
+                    <div style={{display:'flex',gap:16,padding:'6px 10px',background:'rgba(0,0,0,0.2)',borderRadius:4,fontFamily:'monospace',fontSize:13,marginBottom:6}}>
+                        <div><span style={{color:'rgba(88,166,255,0.7)',fontWeight:600}}>{ex.original||'—'}</span><span style={{color:'var(--text-muted)',fontSize:10,marginLeft:4}}>orig</span></div>
+                        <div style={{color:'var(--text-muted)'}}>&rarr;</div>
+                        <div><span style={{color:qwenMatch?'var(--success)':'var(--error)',fontWeight:600}}>{ex.qwen||'—'}</span><span style={{color:'var(--text-muted)',fontSize:10,marginLeft:4}}>Q</span></div>
+                        <div><span style={{color:paraMatch?'var(--success)':'var(--error)',fontWeight:600}}>{ex.parakeet||'—'}</span><span style={{color:'var(--text-muted)',fontSize:10,marginLeft:4}}>P</span></div>
+                        {ex.clean === false && <span style={{color:'var(--warning)',fontSize:11}}>noisy</span>}
+                        {ex.clean === true && <span style={{color:'var(--success)',fontSize:11}}>clean</span>}
+                    </div>
+                    <div style={{marginBottom:4}}>
+                        {renderTimeline('Original', origItems, 'rgba(88,166,255,0.6)', origIdx)}
+                        {renderTimeline('Qwen', qwenItems, 'rgba(210,153,34,0.7)', qwenIdx)}
+                        {renderTimeline('Parakeet', paraItems, 'rgba(163,113,247,0.7)', paraIdx)}
+                        <div style={{display:'flex',justifyContent:'space-between',fontSize:9,color:'var(--text-muted)',marginTop:1,paddingLeft:61}}>
+                            <span>0s</span><span>{maxTime.toFixed(1)}s</span>
+                        </div>
+                    </div>
+                    {ex.cons_range && <div style={{fontSize:10,color:'var(--text-muted)'}}>
+                        Consensus range: {ex.cons_range[0]?.toFixed(3)}s – {ex.cons_range[1]?.toFixed(3)}s
+                        {data.term_range && <span> | Term range: {data.term_range[0]?.toFixed(3)}s – {data.term_range[1]?.toFixed(3)}s</span>}
+                    </div>}
+                </div>
+            );
+        }
+
         // ==================== CORPUS PAGE ====================
         function CorpusPage() {
             const [status, setStatus] = useState(null);
@@ -2564,6 +2647,9 @@
             const [previewData, setPreviewData] = useState(null);
             const [previewLoading, setPreviewLoading] = useState(false);
             const [liveStats, setLiveStats] = useState(null);
+            const [testTerm, setTestTerm] = useState('');
+            const [testResult, setTestResult] = useState(null);
+            const [testLoading, setTestLoading] = useState(false);
             const pollRef = useRef(null);
             const logRef = useRef(null);
 
@@ -2615,6 +2701,37 @@
                 <div className="container">
                     <h2>Corpus</h2>
                     {error && <div className="pipeline-error" style={{marginBottom:12}}>{error}</div>}
+
+                    <div className="card" style={{marginBottom: 16}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                            <h3 style={{margin:0,flex:1}}>Test Term</h3>
+                        </div>
+                        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                            <input type="text" value={testTerm} onChange={e => setTestTerm(e.target.value)} placeholder="Type a vocab term..."
+                                onKeyDown={e => { if (e.key === 'Enter' && testTerm.trim()) {
+                                    setTestLoading(true); setTestResult(null);
+                                    api('/api/test-term', {method:'POST', body: JSON.stringify({term: testTerm.trim(), tts_backend: backend})})
+                                        .then(r => { setTestResult(r); setTestLoading(false); })
+                                        .catch(e => { setError(e.message); setTestLoading(false); });
+                                }}}
+                                style={{...inputStyle,flex:1}} />
+                            <button className="btn btn-sm btn-primary" disabled={testLoading || !testTerm.trim()} onClick={() => {
+                                setTestLoading(true); setTestResult(null);
+                                api('/api/test-term', {method:'POST', body: JSON.stringify({term: testTerm.trim(), tts_backend: backend})})
+                                    .then(r => { setTestResult(r); setTestLoading(false); })
+                                    .catch(e => { setError(e.message); setTestLoading(false); });
+                            }}>{testLoading ? 'Running...' : 'Test'}</button>
+                        </div>
+                        <div style={{fontSize:10,color:'var(--text-muted)',marginTop:4}}>Run one corpus pass for a term: TTS → ASR → alignment → extraction. Shows exactly what would be stored.</div>
+                        {testResult && (
+                            <div style={{marginTop:12,borderTop:'1px solid var(--border)',paddingTop:12}}>
+                                {testResult.error
+                                    ? <div style={{color:'var(--error)'}}>{testResult.error}</div>
+                                    : <AlignmentView data={testResult} />
+                                }
+                            </div>
+                        )}
+                    </div>
 
                     <div className="card" style={{marginBottom: 16}}>
                         <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>

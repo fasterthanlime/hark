@@ -926,6 +926,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/pipeline/reset-training", post(jobs::api_reset_training))
         .route("/api/pipeline/scan-results", get(jobs::api_scan_results))
         .route("/api/correct", post(jobs::api_correct))
+        .route("/api/test-term", post(jobs::api_test_term))
         .with_state(state);
 
     let addr = format!("{}:{}", cli.host, cli.port);
