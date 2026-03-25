@@ -974,6 +974,69 @@ async fn main() -> anyhow::Result<()> {
         })).into_response())
     }
 
+    /// Ask OpenAI to generate sentences for terms that need more coverage.
+    async fn api_author_suggest_sentences(
+        State(state): State<Arc<AppState>>,
+    ) -> Result<Response, AppError> {
+        let api_key = std::env::var("OPENAI_API_KEY")
+            .map_err(|_| err(anyhow::anyhow!("OPENAI_API_KEY not set")))?;
+
+        let (terms_needing, existing_sentences) = {
+            let db = state.db.lock().unwrap();
+            let vocab = db.list_reviewed_vocab().map_err(err)?;
+            let term_counts = db.authored_sentence_term_counts().map_err(err)?;
+            let count_map: std::collections::HashMap<String, i64> = term_counts.into_iter()
+                .map(|(t, c)| (t.to_lowercase(), c)).collect();
+
+            // Pick terms with < 3 sentences, up to 10 terms
+            let mut needing: Vec<(String, String, i64)> = vocab.iter()
+                .map(|v| {
+                    let count = count_map.get(&v.term.to_lowercase()).copied().unwrap_or(0);
+                    (v.term.clone(), v.spoken().to_string(), count)
+                })
+                .filter(|(_, _, c)| *c < 3)
+                .collect();
+            needing.sort_by_key(|(_, _, c)| *c);
+            needing.truncate(10);
+
+            let sents = db.all_authored_sentences().map_err(err)?;
+            (needing, sents)
+        };
+
+        if terms_needing.is_empty() {
+            return Ok(Json(serde_json::json!({"suggestions": []})).into_response());
+        }
+
+        let terms_str: Vec<String> = terms_needing.iter()
+            .map(|(t, spoken, c)| format!("{} (pronounced \"{}\", {} sentences so far)", t, spoken, c))
+            .collect();
+
+        let client = reqwest::Client::new();
+        let resp = client.post("https://api.openai.com/v1/chat/completions")
+            .header("Authorization", format!("Bearer {api_key}"))
+            .json(&serde_json::json!({
+                "model": "gpt-4o-mini",
+                "temperature": 0.8,
+                "messages": [{
+                    "role": "system",
+                    "content": "You help a developer build training sentences for an ASR correction model. Generate natural sentences that a software developer would actually say out loud — the kind of thing you'd say to a colleague, in a meeting, or while dictating code notes. Each sentence must contain the given technical term. Vary sentence structure, length, and context. Output JSON: {\"suggestions\": [{\"term\": \"...\", \"sentence\": \"...\"}]}"
+                }, {
+                    "role": "user",
+                    "content": format!("Generate 3 sentences for each of these terms:\n{}\n\nExisting sentences for style reference:\n{}",
+                        terms_str.join("\n"),
+                        existing_sentences.iter().take(20).cloned().collect::<Vec<_>>().join("\n"))
+                }],
+                "response_format": {"type": "json_object"},
+            }))
+            .send().await.map_err(|e| err(e))?;
+
+        let body: serde_json::Value = resp.json().await.map_err(|e| err(e))?;
+        let content = body["choices"][0]["message"]["content"].as_str().unwrap_or("{}");
+        let parsed: serde_json::Value = serde_json::from_str(content).unwrap_or(serde_json::json!({"suggestions": []}));
+
+        Ok(Json(parsed).into_response())
+    }
+
     /// Spellcheck all authored sentences via OpenAI. Returns list of issues.
     async fn api_author_spellcheck(
         State(state): State<Arc<AppState>>,
@@ -1126,6 +1189,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/author/spellcheck", post(api_author_spellcheck))
         .route("/api/author/suggest-vocab", post(api_author_suggest_vocab))
         .route("/api/author/reject-suggestion", post(api_author_reject_suggestion))
+        .route("/api/author/suggest-sentences", post(api_author_suggest_sentences))
         .with_state(state);
 
     let addr = format!("{}:{}", cli.host, cli.port);

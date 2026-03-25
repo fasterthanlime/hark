@@ -1056,12 +1056,18 @@
             return {audioBuf, alignment: data.alignment};
         }
 
+        let _currentSource = null;
+        function stopPlayback() {
+            if (_currentSource) { try { _currentSource.stop(); } catch {} _currentSource = null; }
+        }
         function playBuffer(audioBuf, onEnd) {
+            stopPlayback();
             const source = audioCtx.createBufferSource();
             source.buffer = audioBuf;
             source.connect(audioCtx.destination);
-            source.onended = onEnd || (() => { });
+            source.onended = () => { _currentSource = null; if (onEnd) onEnd(); };
             source.start();
+            _currentSource = source;
             return source;
         }
 
@@ -2587,6 +2593,10 @@
             const [suggestLoading, setSuggestLoading] = useState(false);
             const [suggestIdx, setSuggestIdx] = useState(0);
             const suggestPronRef = useRef(null);
+            const [sentSuggestions, setSentSuggestions] = useState(null);
+            const [sentSuggestLoading, setSentSuggestLoading] = useState(false);
+            const [sentSuggestIdx, setSentSuggestIdx] = useState(0);
+            const sentSuggestRef = useRef(null);
             const inputRef = useRef(null);
 
             const loadNext = () => {
@@ -2648,6 +2658,13 @@
                             catch (e) { setError(e.message); }
                             setSuggestLoading(false);
                         }}>{suggestLoading ? 'Thinking...' : 'Suggest Vocab'}</button>
+                        <button className="btn btn-sm" disabled={sentSuggestLoading} onClick={async () => {
+                            setSentSuggestLoading(true); setSentSuggestions(null); setSentSuggestIdx(0);
+                            try { const r = await api('/api/author/suggest-sentences', {method:'POST'}); setSentSuggestions(r.suggestions || []); }
+                            catch (e) { setError(e.message); }
+                            setSentSuggestLoading(false);
+                            setTimeout(() => sentSuggestRef.current?.focus(), 100);
+                        }}>{sentSuggestLoading ? 'Thinking...' : 'Suggest Sentences'}</button>
                     </div>
 
                     {spellIssues && (
@@ -2686,6 +2703,7 @@
                             return s.sentence;
                         })() : pron;
                         const doAdd = async () => {
+                            stopPlayback();
                             await api('/api/vocab', {method:'POST', body: JSON.stringify({term: s.term, spoken_override: pron})});
                             setSuggestions(prev => { const n = prev.filter((_, j) => j !== suggestIdx); return n; });
                             setSuggestIdx(i => Math.min(i, suggestions.length - 2));
@@ -2693,6 +2711,7 @@
                             setTimeout(() => suggestPronRef.current?.focus(), 50);
                         };
                         const doSkip = () => {
+                            stopPlayback();
                             api('/api/author/reject-suggestion', {method:'POST', body: JSON.stringify({term: s.term})}).catch(() => {});
                             setSuggestions(prev => prev.filter((_, j) => j !== suggestIdx));
                             setSuggestIdx(i => Math.min(i, suggestions.length - 2));
@@ -2729,6 +2748,74 @@
                             <div style={{display:'flex',gap:8,justifyContent:'center'}}>
                                 <button className="btn btn-primary" onClick={doAdd}>Add (&#8984;&#9166;)</button>
                                 <button className="btn" onClick={doSkip}>Skip (Esc)</button>
+                                <span style={{fontSize:10,color:'var(--text-muted)',marginLeft:8}}>Enter = play</span>
+                            </div>
+                        </div>
+                        );
+                    })()}
+
+                    {sentSuggestions && (() => {
+                        const s = sentSuggestions[sentSuggestIdx];
+                        if (!s) return (
+                            <div className="card" style={{marginBottom:12,textAlign:'center',padding:24}}>
+                                <div style={{color:'var(--success)',fontSize:16,marginBottom:8}}>All sentence suggestions reviewed!</div>
+                                <button className="btn btn-sm" onClick={() => setSentSuggestions(null)}>Close</button>
+                            </div>
+                        );
+                        // Build spoken version by replacing term with its override
+                        const vocab = stats?.terms || [];
+                        const spokenSentence = (() => {
+                            // Look up the pronunciation for this term
+                            // We need to fetch it — for now just use the sentence as-is for TTS
+                            // The TTS will handle it based on the term's spoken form
+                            return s._edited ?? s.sentence;
+                        })();
+                        const doAccept = async () => {
+                            stopPlayback();
+                            const sent = s._edited ?? s.sentence;
+                            await api('/api/author/submit', {method:'POST', body: JSON.stringify({term: s.term, sentence: sent})});
+                            setSentSuggestions(prev => prev.filter((_, j) => j !== sentSuggestIdx));
+                            setSentSuggestIdx(i => Math.min(i, sentSuggestions.length - 2));
+                            loadStats();
+                            setTimeout(() => sentSuggestRef.current?.focus(), 50);
+                        };
+                        const doSkipSent = () => {
+                            stopPlayback();
+                            setSentSuggestions(prev => prev.filter((_, j) => j !== sentSuggestIdx));
+                            setSentSuggestIdx(i => Math.min(i, sentSuggestions.length - 2));
+                            setTimeout(() => sentSuggestRef.current?.focus(), 50);
+                        };
+                        const doPlaySent = () => {
+                            const text = s._edited ?? s.sentence;
+                            fetchTtsBuffer(text).then(buf => playBuffer(buf)).catch(() => {});
+                        };
+                        return (
+                        <div className="card" style={{marginBottom:12}}>
+                            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
+                                <h3 style={{margin:0}}>Suggested Sentences</h3>
+                                <span style={{fontSize:12,color:'var(--text-muted)'}}>{sentSuggestIdx + 1} / {sentSuggestions.length}</span>
+                                <div style={{flex:1}} />
+                                <button onClick={() => setSentSuggestions(null)} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:16}}>&times;</button>
+                            </div>
+                            <div style={{textAlign:'center',marginBottom:8}}>
+                                <span style={{fontSize:11,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:1}}>Term:</span>
+                                <span style={{fontSize:18,fontWeight:700,fontFamily:'monospace',color:'var(--accent)',marginLeft:8}}>{s.term}</span>
+                            </div>
+                            <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:12}}>
+                                <input ref={sentSuggestRef} value={s._edited ?? s.sentence}
+                                    onChange={e => setSentSuggestions(prev => prev.map((x, j) => j === sentSuggestIdx ? {...x, _edited: e.target.value} : x))}
+                                    onKeyDown={e => {
+                                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); doAccept(); }
+                                        else if (e.key === 'Enter') { e.preventDefault(); doPlaySent(); }
+                                        else if (e.key === 'Escape') { e.preventDefault(); doSkipSent(); }
+                                    }}
+                                    autoFocus
+                                    style={{flex:1,padding:'8px 12px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',fontSize:14,fontFamily:'Jost,sans-serif'}} />
+                                <button onClick={doPlaySent} style={{background:'none',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',cursor:'pointer',padding:'4px 10px',fontSize:13}}>&#9654;</button>
+                            </div>
+                            <div style={{display:'flex',gap:8,justifyContent:'center'}}>
+                                <button className="btn btn-primary" onClick={doAccept}>Accept (&#8984;&#9166;)</button>
+                                <button className="btn" onClick={doSkipSent}>Skip (Esc)</button>
                                 <span style={{fontSize:10,color:'var(--text-muted)',marginLeft:8}}>Enter = play</span>
                             </div>
                         </div>
