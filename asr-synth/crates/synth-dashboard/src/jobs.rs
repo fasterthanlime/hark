@@ -167,68 +167,42 @@ fn find_term_time_range(
     None
 }
 
-/// Get sorted word boundary times (start AND end of each word).
+/// Collect sorted, deduped boundary times from alignment items.
+/// Each word contributes its start and end time.
 fn word_boundaries(items: &[qwen3_asr::ForcedAlignItem]) -> Vec<f64> {
-    let mut bounds = Vec::with_capacity(items.len() * 2);
+    let mut b = Vec::with_capacity(items.len() * 2);
     for a in items {
-        bounds.push(a.start_time);
-        bounds.push(a.end_time);
+        b.push(a.start_time);
+        b.push(a.end_time);
     }
-    bounds.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    bounds.dedup_by(|a, b| (*a - *b).abs() < 0.001);
-    bounds
+    b.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    b.dedup_by(|a, b| (*a - *b).abs() < 0.005);
+    b
 }
 
-/// Check if a boundary list has a boundary within `tolerance` of `time`.
-fn has_boundary_near(bounds: &[f64], time: f64, tolerance: f64) -> bool {
-    bounds.iter().any(|&b| (b - time).abs() <= tolerance)
-}
-
-/// Starting from `anchor`, expand outward through `orig_bounds` to find a
-/// boundary that all alignment boundary lists agree on.
-/// `direction`: -1 for left (earlier), +1 for right (later).
-/// Returns the consensus boundary time, or None after max_steps.
-fn find_consensus_expanding(
-    anchor: f64,
-    orig_bounds: &[f64],
-    others: &[&[f64]],
-    direction: i32,
-    tolerance: f64,
-    max_steps: usize,
-) -> Option<f64> {
-    // Collect candidate boundaries from orig in the right direction, sorted by distance from anchor
-    let mut candidates: Vec<f64> = if direction > 0 {
-        orig_bounds.iter().copied().filter(|&b| b >= anchor - 0.01).collect()
-    } else {
-        let mut v: Vec<f64> = orig_bounds.iter().copied().filter(|&b| b <= anchor + 0.01).collect();
-        v.reverse();
-        v
-    };
-    candidates.truncate(max_steps);
-
-    for candidate in candidates {
-        // Check if all other alignments have a boundary near this one
-        if others.iter().all(|bounds| has_boundary_near(bounds, candidate, tolerance)) {
-            return Some(candidate);
-        }
-    }
-    None
+/// Does `bounds` have any boundary within `tol` of `t`?
+fn has_boundary_near(bounds: &[f64], t: f64, tol: f64) -> bool {
+    bounds.iter().any(|&b| (b - t).abs() <= tol)
 }
 
 /// Extract words from an alignment that START within [start, end).
 fn words_in_range(items: &[qwen3_asr::ForcedAlignItem], start: f64, end: f64) -> String {
-    let words: Vec<&str> = items.iter()
+    items.iter()
         .filter(|a| a.start_time >= start && a.start_time < end)
         .map(|a| a.word.as_str())
-        .collect();
-    words.join(" ")
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
-/// Extract triplets using consensus boundaries.
-/// 1. Start with the term's exact boundaries from the original alignment.
-/// 2. Check if the other two alignments agree (have a boundary nearby).
-/// 3. If not, expand left/right one boundary at a time, up to 5 steps.
-/// 4. Give up and mark as noisy if no consensus found.
+/// Find consensus boundaries and extract triplets.
+///
+/// Algorithm:
+/// 1. Start with the term's boundaries from the original alignment.
+/// 2. For the start boundary: check if Qwen and Parakeet both have a
+///    boundary nearby (within 120ms). If yes, done. If no, step one
+///    boundary LEFT in the original and try again. Max 5 steps.
+/// 3. Same for the end boundary, stepping RIGHT.
+/// 4. If no consensus after 5 steps, mark noisy.
 fn extract_with_consensus(
     orig_align: &[qwen3_asr::ForcedAlignItem],
     qwen_align: &[qwen3_asr::ForcedAlignItem],
@@ -236,32 +210,37 @@ fn extract_with_consensus(
     term_start: f64,
     term_end: f64,
 ) -> (String, String, String, (f64, f64), bool) {
-    let orig_bounds = word_boundaries(orig_align);
-    let qwen_bounds = word_boundaries(qwen_align);
-    let parakeet_bounds = word_boundaries(parakeet_align);
-    let others = vec![qwen_bounds.as_slice(), parakeet_bounds.as_slice()];
+    let orig_b = word_boundaries(orig_align);
+    let qwen_b = word_boundaries(qwen_align);
+    let para_b = word_boundaries(parakeet_align);
 
-    let tolerance = 0.10;
-    let max_steps = 5;
+    const TOL: f64 = 0.12;
+    const MAX_STEPS: usize = 5;
 
-    // Find start consensus: start at term_start, expand LEFT if needed
-    let start_cons = find_consensus_expanding(
-        term_start, &orig_bounds, &others, -1, tolerance, max_steps,
-    );
-    // Find end consensus: start at term_end, expand RIGHT if needed
-    let end_cons = find_consensus_expanding(
-        term_end, &orig_bounds, &others, 1, tolerance, max_steps,
-    );
+    // Find start consensus: try term_start, then expand left
+    let cons_start = {
+        // Get original boundaries <= term_start, closest first
+        let mut lefts: Vec<f64> = orig_b.iter().copied().filter(|&b| b <= term_start + 0.01).collect();
+        lefts.reverse(); // closest to term_start first
+        lefts.truncate(MAX_STEPS);
+        lefts.into_iter().find(|&b| has_boundary_near(&qwen_b, b, TOL) && has_boundary_near(&para_b, b, TOL))
+    };
 
-    let cons_start = start_cons.unwrap_or(term_start);
-    let cons_end = end_cons.unwrap_or(term_end);
-    let clean = start_cons.is_some() && end_cons.is_some();
+    // Find end consensus: try term_end, then expand right
+    let cons_end = {
+        let rights: Vec<f64> = orig_b.iter().copied().filter(|&b| b >= term_end - 0.01).take(MAX_STEPS).collect();
+        rights.into_iter().find(|&b| has_boundary_near(&qwen_b, b, TOL) && has_boundary_near(&para_b, b, TOL))
+    };
 
-    let original = words_in_range(orig_align, cons_start, cons_end);
-    let qwen = words_in_range(qwen_align, cons_start, cons_end);
-    let parakeet = words_in_range(parakeet_align, cons_start, cons_end);
+    let start = cons_start.unwrap_or(term_start);
+    let end = cons_end.unwrap_or(term_end);
+    let clean = cons_start.is_some() && cons_end.is_some();
 
-    (original, qwen, parakeet, (cons_start, cons_end), clean)
+    let original = words_in_range(orig_align, start, end);
+    let qwen = words_in_range(qwen_align, start, end);
+    let parakeet = words_in_range(parakeet_align, start, end);
+
+    (original, qwen, parakeet, (start, end), clean)
 }
 
 /// Strip carrier phrase prefix variants from ASR output.
