@@ -2675,6 +2675,7 @@
             const [previewLoading, setPreviewLoading] = useState(false);
             const [liveStats, setLiveStats] = useState(null);
             const [testTerm, setTestTerm] = useState('');
+            const [testSuggestions, setTestSuggestions] = useState([]);
             const [testBackend, setTestBackend] = useState('pocket-hq');
             const [testResult, setTestResult] = useState(null);
             const [testLoading, setTestLoading] = useState(false);
@@ -2735,14 +2736,42 @@
                             <h3 style={{margin:0,flex:1}}>Test Term</h3>
                         </div>
                         <div style={{display:'flex',gap:8,alignItems:'center'}}>
-                            <input type="text" value={testTerm} onChange={e => setTestTerm(e.target.value)} placeholder="Type a vocab term..."
-                                onKeyDown={e => { if (e.key === 'Enter' && testTerm.trim()) {
-                                    setTestLoading(true); setTestResult(null);
-                                    api('/api/test-term', {method:'POST', body: JSON.stringify({term: testTerm.trim(), tts_backend: testBackend})})
-                                        .then(r => { setTestResult(r); setTestLoading(false); })
-                                        .catch(e => { setError(e.message); setTestLoading(false); });
-                                }}}
-                                style={{...inputStyle,flex:1}} />
+                            <div style={{flex:1,position:'relative'}}>
+                                <input type="text" value={testTerm} placeholder="Type a vocab term..."
+                                    onChange={e => {
+                                        const v = e.target.value;
+                                        setTestTerm(v);
+                                        if (v.trim().length >= 1) {
+                                            api(`/api/vocab?search=${encodeURIComponent(v.trim())}&limit=8`).then(list => {
+                                                setTestSuggestions(list.map(r => r.term));
+                                            }).catch(() => {});
+                                        } else { setTestSuggestions([]); }
+                                    }}
+                                    onKeyDown={e => {
+                                        if (e.key === 'Enter' && testTerm.trim()) {
+                                            setTestSuggestions([]);
+                                            setTestLoading(true); setTestResult(null);
+                                            api('/api/test-term', {method:'POST', body: JSON.stringify({term: testTerm.trim(), tts_backend: testBackend})})
+                                                .then(r => { setTestResult(r); setTestLoading(false); })
+                                                .catch(e => { setError(e.message); setTestLoading(false); });
+                                        }
+                                        if (e.key === 'Escape') setTestSuggestions([]);
+                                    }}
+                                    onBlur={() => setTimeout(() => setTestSuggestions([]), 150)}
+                                    style={{...inputStyle,width:'100%'}} />
+                                {testSuggestions.length > 0 && (
+                                    <div style={{position:'absolute',top:'100%',left:0,right:0,zIndex:10,background:'var(--card-bg)',border:'1px solid var(--border)',borderRadius:4,marginTop:2,maxHeight:200,overflow:'auto'}}>
+                                        {testSuggestions.map(s => (
+                                            <div key={s} onClick={() => { setTestTerm(s); setTestSuggestions([]); }}
+                                                style={{padding:'4px 10px',cursor:'pointer',fontSize:13,fontFamily:'monospace'}}
+                                                onMouseEnter={e => e.target.style.background='rgba(255,255,255,0.08)'}
+                                                onMouseLeave={e => e.target.style.background='transparent'}>
+                                                {s}
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
                             <select value={testBackend} onChange={e => setTestBackend(e.target.value)} style={inputStyle}>
                                 {(status.backends||[]).map(b => <option key={b} value={b}>{b}</option>)}
                             </select>
