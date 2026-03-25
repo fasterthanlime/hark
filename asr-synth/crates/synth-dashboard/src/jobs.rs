@@ -506,20 +506,13 @@ async fn run_corpus_job(
         passes_needed: usize,
     }
 
-    // Count existing passes per term in the corpus file
-    std::fs::create_dir_all("data").ok();
-    let corpus_path = "data/corpus_dashboard.jsonl";
-    let mut existing_passes: HashMap<String, usize> = HashMap::new();
-    if let Ok(content) = std::fs::read_to_string(corpus_path) {
-        for line in content.lines() {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                if let Some(orig) = v["original"].as_str() {
-                    *existing_passes.entry(orig.to_string()).or_default() += 1;
-                }
-            }
-        }
-    }
-    let existing_total: usize = existing_passes.values().sum();
+    // Count existing passes per term from DB
+    let (existing_passes, existing_total) = {
+        let db = state.db.lock().unwrap();
+        let passes = db.corpus_passes_per_term().unwrap_or_default();
+        let total: usize = passes.values().sum();
+        (passes, total)
+    };
 
     let mut work: Vec<WorkItem> = Vec::new();
     let mut total_passes_needed = 0usize;
@@ -553,14 +546,7 @@ async fn run_corpus_job(
         ))?;
     }
 
-    // Append to existing file
-    let mut file = std::io::BufWriter::new(
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(corpus_path)
-            .map_err(|e| anyhow::anyhow!("Failed to open corpus file: {e}"))?,
-    );
+    // No more JSONL file — corpus pairs go straight to SQLite
 
     let mut count = 0usize;
     let mut errors = 0usize;
@@ -718,29 +704,11 @@ async fn run_corpus_job(
 
             let cons = extract_with_consensus(&orig_align, &qwen_align, &parakeet_align, term_start, term_end);
 
-            let fmt_align = |items: &[qwen3_asr::ForcedAlignItem]| -> Vec<serde_json::Value> {
-                items.iter().map(|a| {
-                    serde_json::json!({"w": a.word, "s": (a.start_time * 1000.0).round() / 1000.0, "e": (a.end_time * 1000.0).round() / 1000.0})
-                }).collect()
-            };
-
-            writeln!(file, "{}", serde_json::json!({
-                "term": pi.term,
-                "original": cons.original,
-                "qwen": cons.qwen,
-                "parakeet": cons.parakeet,
-                "clean": cons.clean,
-                "sentence": pi.sentence,
-                "spoken": pi.spoken,
-                "qwen_full": qwen_full,
-                "parakeet_full": parakeet_full,
-                "term_time": [term_start, term_end],
-                "cons_time": [cons.cons_range.0, cons.cons_range.1],
-                "orig_alignment": fmt_align(&orig_align),
-                "qwen_alignment": fmt_align(&qwen_align),
-                "parakeet_alignment": fmt_align(&parakeet_align),
-                "tri_debug": cons.debug,
-            }))?;
+            // Only store clean pairs
+            if cons.clean {
+                let db = state.db.lock().unwrap();
+                let _ = db.insert_corpus_pair(&pi.term, &cons.original, &cons.qwen, &cons.parakeet, &pi.sentence, &pi.spoken);
+            }
             count += 1;
 
             if pi.pass_idx == 0 || (count % 10) == 0 {
@@ -755,11 +723,9 @@ async fn run_corpus_job(
         }
 
         items_done = chunk.last().map(|pi| pi.item_idx + 1).unwrap_or(items_done);
-        file.flush()?;
         update_stats(state, job_id, count, items_done, errors, tts_ms, asr_ms, align_ms, job_start.elapsed().as_millis() as u64);
     }
 
-    file.flush()?;
     update_stats(state, job_id, count, items_done, errors, tts_ms, asr_ms, align_ms, job_start.elapsed().as_millis() as u64);
 
     {
@@ -791,6 +757,19 @@ pub async fn api_start_prepare_job(
 
     let state2 = state.clone();
     tokio::task::spawn_blocking(move || {
+        // Export corpus from DB to JSONL for synth_train::prepare
+        {
+            let db = state2.db.lock().unwrap();
+            std::fs::create_dir_all("data").ok();
+            let pairs = db.corpus_pairs_all().unwrap_or_default();
+            let mut f = std::io::BufWriter::new(std::fs::File::create("data/corpus_dashboard.jsonl").unwrap());
+            for p in &pairs {
+                let _ = writeln!(f, "{}", serde_json::json!({
+                    "original": p["original"], "qwen": p["qwen"], "parakeet": p["parakeet"],
+                }));
+            }
+        }
+
         let config = synth_train::PrepareConfig {
             input: "data/corpus_dashboard.jsonl".into(),
             identity_count,
@@ -1401,26 +1380,11 @@ pub async fn api_start_eval_job(
             }
         };
 
-        // Read corpus triplets (only clean ones)
-        let corpus: Vec<serde_json::Value> = std::fs::read_to_string("data/corpus_dashboard.jsonl")
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .filter(|v: &serde_json::Value| v["clean"].as_bool() == Some(true))
-            .collect();
-
-        // Deduplicate: keep unique (original, qwen, parakeet) triplets
-        let mut seen = std::collections::HashSet::new();
-        let triplets: Vec<(String, String, String, String)> = corpus.iter()
-            .filter_map(|v| {
-                let orig = v["original"].as_str()?.to_string();
-                let q = v["qwen"].as_str()?.to_string();
-                let p = v["parakeet"].as_str()?.to_string();
-                let term = v["term"].as_str().unwrap_or("").to_string();
-                let key = format!("{}|{}|{}", orig.to_lowercase(), q.to_lowercase(), p.to_lowercase());
-                if seen.insert(key) { Some((orig, q, p, term)) } else { None }
-            })
-            .collect();
+        // Read unique corpus triplets from DB (already clean)
+        let triplets = {
+            let db = state2.db.lock().unwrap();
+            db.corpus_unique_triplets().unwrap_or_default()
+        };
 
         let total = triplets.len();
         {
@@ -1549,20 +1513,23 @@ pub async fn api_scan_results(
 
 // ==================== Pipeline Status ====================
 
-pub async fn api_view_corpus() -> Result<Response, AppError> {
-    let path = "data/corpus_dashboard.jsonl";
-    let content = std::fs::read_to_string(path).unwrap_or_default();
-    let pairs: Vec<serde_json::Value> = content.lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect();
+pub async fn api_view_corpus(
+    State(state): State<Arc<AppState>>,
+) -> Result<Response, AppError> {
+    let pairs = {
+        let db = state.db.lock().unwrap();
+        db.corpus_pairs_all().map_err(err)?
+    };
     Ok(Json(serde_json::json!({"pairs": pairs})).into_response())
 }
 
-pub async fn api_reset_corpus() -> Result<Response, AppError> {
-    let path = "data/corpus_dashboard.jsonl";
-    if std::path::Path::new(path).exists() {
-        std::fs::remove_file(path).map_err(|e| err(anyhow::anyhow!("Failed to remove corpus: {e}")))?;
-    }
+pub async fn api_reset_corpus(
+    State(state): State<Arc<AppState>>,
+) -> Result<Response, AppError> {
+    let db = state.db.lock().unwrap();
+    db.reset_corpus().map_err(err)?;
+    // Also clean up old JSONL file if it exists
+    let _ = std::fs::remove_file("data/corpus_dashboard.jsonl");
     Ok(Json(serde_json::json!({"ok": true})).into_response())
 }
 
@@ -1591,14 +1558,11 @@ pub async fn api_pipeline_status(
     };
 
     // Check filesystem for corpus / training data / adapters
-    let corpus_exists = std::path::Path::new("data/corpus_dashboard.jsonl").exists();
-    let corpus_lines = if corpus_exists {
-        std::fs::read_to_string("data/corpus_dashboard.jsonl")
-            .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
-            .unwrap_or(0)
-    } else {
-        0
+    let corpus_lines = {
+        let db = state.db.lock().unwrap();
+        db.corpus_pair_count().unwrap_or(0) as usize
     };
+    let corpus_exists = corpus_lines > 0;
 
     let training_data_exists = std::path::Path::new("training/data/train.jsonl").exists();
     let train_count = if training_data_exists {

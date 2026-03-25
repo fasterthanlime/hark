@@ -59,6 +59,17 @@ CREATE TABLE IF NOT EXISTS candidate_sentences (
     imported_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS corpus_pairs (
+    id INTEGER PRIMARY KEY,
+    term TEXT NOT NULL,
+    original TEXT NOT NULL,
+    qwen TEXT NOT NULL,
+    parakeet TEXT NOT NULL,
+    sentence TEXT NOT NULL,
+    spoken TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_transcriptions_dedup
     ON transcriptions(timestamp, text);
 
@@ -544,6 +555,68 @@ impl Db {
     }
 
     /// All sentence texts (for Markov chain building).
+    // ==================== CORPUS PAIRS ====================
+
+    pub fn insert_corpus_pair(&self, term: &str, original: &str, qwen: &str, parakeet: &str, sentence: &str, spoken: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO corpus_pairs (term, original, qwen, parakeet, sentence, spoken, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![term, original, qwen, parakeet, sentence, spoken, now_str()],
+        )?;
+        Ok(())
+    }
+
+    /// Count existing passes per term in corpus_pairs.
+    pub fn corpus_passes_per_term(&self) -> Result<HashMap<String, usize>> {
+        let mut stmt = self.conn.prepare("SELECT term, COUNT(*) FROM corpus_pairs GROUP BY term")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
+        })?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let (term, count) = row?;
+            map.insert(term, count);
+        }
+        Ok(map)
+    }
+
+    pub fn corpus_pair_count(&self) -> Result<i64> {
+        Ok(self.conn.query_row("SELECT COUNT(*) FROM corpus_pairs", [], |r| r.get(0))?)
+    }
+
+    pub fn corpus_pairs_all(&self) -> Result<Vec<serde_json::Value>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT term, original, qwen, parakeet, sentence, spoken FROM corpus_pairs ORDER BY term COLLATE NOCASE, id"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "term": row.get::<_, String>(0)?,
+                "original": row.get::<_, String>(1)?,
+                "qwen": row.get::<_, String>(2)?,
+                "parakeet": row.get::<_, String>(3)?,
+                "sentence": row.get::<_, String>(4)?,
+                "spoken": row.get::<_, String>(5)?,
+                "clean": true,
+            }))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn reset_corpus(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM corpus_pairs", [])?;
+        Ok(())
+    }
+
+    /// Get unique clean triplets for evaluation (deduplicated by original+qwen+parakeet).
+    pub fn corpus_unique_triplets(&self) -> Result<Vec<(String, String, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT term, original, qwen, parakeet FROM corpus_pairs"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     pub fn all_sentence_texts(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare("SELECT text FROM sentences UNION SELECT text FROM candidate_sentences")?;
         let rows = stmt.query_map([], |row| row.get(0))?;
