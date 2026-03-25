@@ -2674,57 +2674,72 @@
                             {corpusData && (() => {
                                 const f = corpusFilter.toLowerCase();
                                 const filtered = f ? corpusData.filter(p =>
-                                    (p.term||p.original||'').toLowerCase().includes(f) ||
+                                    (p.term||'').toLowerCase().includes(f) ||
                                     (p.qwen||'').toLowerCase().includes(f) ||
-                                    (p.parakeet||'').toLowerCase().includes(f)
+                                    (p.parakeet||'').toLowerCase().includes(f) ||
+                                    (p.sentence||p.original||'').toLowerCase().includes(f)
                                 ) : corpusData;
-                                // Group by term, deduplicate ASR outputs
+                                // Group by term
                                 const groups = {};
-                                filtered.forEach(p => {
-                                    const term = p.term || p.original || '?';
-                                    if (!groups[term]) groups[term] = {total: 0, asr: {}};
-                                    groups[term].total++;
-                                    // Collect unique ASR outputs with counts
-                                    const outputs = [p.qwen, p.parakeet].filter(Boolean);
-                                    outputs.forEach(o => {
-                                        const key = o.toLowerCase().replace(/[.,!?]/g, '').trim();
-                                        if (!groups[term].asr[key]) groups[term].asr[key] = {text: o, count: 0, correct: false};
-                                        groups[term].asr[key].count++;
-                                        if (key === term.toLowerCase()) groups[term].asr[key].correct = true;
-                                    });
+                                filtered.forEach((p, idx) => {
+                                    const term = p.term || '?';
+                                    if (!groups[term]) groups[term] = [];
+                                    groups[term].push({...p, idx});
                                 });
                                 const terms = Object.keys(groups).sort((a,b) => a.localeCompare(b, undefined, {sensitivity:'base'}));
                                 return (
-                                    <table className="corpus-table">
-                                        <thead>
-                                            <tr>
-                                                <th>Term</th>
-                                                <th>Passes</th>
-                                                <th>ASR Outputs</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {terms.map(term => {
-                                                const g = groups[term];
-                                                const outputs = Object.values(g.asr).sort((a,b) => b.count - a.count);
-                                                return (
-                                                    <tr key={term} className="group-row">
-                                                        <td className="term-cell">{term}</td>
-                                                        <td style={{padding:'6px 10px',color:'var(--text-muted)',textAlign:'center'}}>{g.total}</td>
-                                                        <td style={{padding:'6px 10px'}}>
-                                                            {outputs.map((o, i) => (
-                                                                <span key={i} style={{marginRight:12,whiteSpace:'nowrap'}}>
-                                                                    <span style={{color: o.correct ? 'var(--success)' : 'var(--error)'}}>{o.text}</span>
-                                                                    <span className={`count-badge ${o.correct ? 'correct' : 'wrong'}`}>{o.count}</span>
-                                                                </span>
-                                                            ))}
-                                                        </td>
-                                                    </tr>
-                                                );
-                                            })}
-                                        </tbody>
-                                        <tfoot><tr><td colSpan={3} className="corpus-total">{filtered.length} pairs across {terms.length} terms</td></tr></tfoot>
-                                    </table>
+                                    <div>
+                                        {terms.map(term => {
+                                            const passes = groups[term];
+                                            return (
+                                                <div key={term} style={{marginBottom:16,borderBottom:'2px solid var(--border)',paddingBottom:12}}>
+                                                    <div style={{display:'flex',alignItems:'baseline',gap:8,marginBottom:8}}>
+                                                        <span style={{fontWeight:700,fontSize:15}}>{term}</span>
+                                                        <span style={{color:'var(--text-muted)',fontSize:12}}>{passes.length} passes</span>
+                                                    </div>
+                                                    {passes.map((p, i) => {
+                                                        const tt = p.term_time;
+                                                        const hasDetail = p.sentence || p.qwen_full;
+                                                        return (
+                                                            <div key={i} style={{marginBottom:8,padding:'6px 10px',background:'rgba(255,255,255,0.02)',borderRadius:6,fontSize:12,lineHeight:1.6}}>
+                                                                {p.sentence && <div style={{color:'var(--text-muted)'}}>
+                                                                    <b>Sentence:</b> {p.sentence}
+                                                                </div>}
+                                                                {p.spoken && p.spoken !== p.sentence && <div style={{color:'var(--text-muted)'}}>
+                                                                    <b>Spoken:</b> {p.spoken}
+                                                                </div>}
+                                                                {tt && <div style={{color:'var(--text-muted)'}}>
+                                                                    <b>Term time:</b> {tt[0]?.toFixed(2)}s – {tt[1]?.toFixed(2)}s
+                                                                </div>}
+                                                                <div style={{display:'flex',gap:24,marginTop:4}}>
+                                                                    <div>
+                                                                        <span style={{color:'var(--text-muted)'}}>Qwen: </span>
+                                                                        <span style={{color:'var(--error)',fontWeight:600}}>{p.qwen || '—'}</span>
+                                                                        {p.qwen_full && p.qwen_full !== p.qwen && <span style={{color:'var(--text-muted)',marginLeft:6,fontSize:11}}>full: {p.qwen_full}</span>}
+                                                                    </div>
+                                                                    <div>
+                                                                        <span style={{color:'var(--text-muted)'}}>Parakeet: </span>
+                                                                        <span style={{color:'var(--error)',fontWeight:600}}>{p.parakeet || '—'}</span>
+                                                                        {p.parakeet_full && p.parakeet_full !== p.parakeet && <span style={{color:'var(--text-muted)',marginLeft:6,fontSize:11}}>full: {p.parakeet_full}</span>}
+                                                                    </div>
+                                                                </div>
+                                                                {p.alignment && <details style={{marginTop:4}}>
+                                                                    <summary style={{color:'var(--text-muted)',fontSize:11,cursor:'pointer'}}>Alignment ({p.alignment.length} words)</summary>
+                                                                    <div style={{fontFamily:'monospace',fontSize:10,color:'var(--text-muted)',marginTop:2}}>
+                                                                        {p.alignment.map((a,j) => {
+                                                                            const inRange = tt && a.s >= tt[0] - 0.05 && a.e <= tt[1] + 0.05;
+                                                                            return <span key={j} style={{marginRight:6,color:inRange?'var(--accent)':'inherit'}}>{a.w}({a.s}-{a.e})</span>;
+                                                                        })}
+                                                                    </div>
+                                                                </details>}
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            );
+                                        })}
+                                        <div className="corpus-total">{filtered.length} pairs across {terms.length} terms</div>
+                                    </div>
                                 );
                             })()}
                         </div>

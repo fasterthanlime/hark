@@ -496,21 +496,28 @@ async fn run_corpus_job(
 
             // 3) Align each ASR output against the same audio, then extract
             //    the word(s) that overlap with the target term's time range
-            let qwen = extract_asr_at_time_range(
+            let qwen_extracted = extract_asr_at_time_range(
                 &state.aligner, &full_16k, &qwen_full, term_start, term_end,
             );
-            let parakeet = extract_asr_at_time_range(
+            let parakeet_extracted = extract_asr_at_time_range(
                 &state.aligner, &full_16k, &parakeet_full, term_start, term_end,
             );
 
-            // Write both ASR outputs as separate training pairs
-            // original = the sentence with correct spelling
-            // qwen/parakeet = what ASR heard
+            // Serialize alignment for debugging
+            let orig_align_json: Vec<serde_json::Value> = orig_align.iter().map(|a| {
+                serde_json::json!({"w": a.word, "s": (a.start_time * 100.0).round() / 100.0, "e": (a.end_time * 100.0).round() / 100.0})
+            }).collect();
+
             writeln!(file, "{}", serde_json::json!({
-                "original": sentence,
-                "qwen": qwen,
-                "parakeet": parakeet,
                 "term": item.term,
+                "sentence": sentence,
+                "spoken": spoken,
+                "qwen_full": qwen_full,
+                "parakeet_full": parakeet_full,
+                "qwen": qwen_extracted,
+                "parakeet": parakeet_extracted,
+                "term_time": [term_start, term_end],
+                "alignment": orig_align_json,
             }))?;
             count += 1;
 
