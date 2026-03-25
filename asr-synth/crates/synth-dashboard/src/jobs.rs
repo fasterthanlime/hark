@@ -167,6 +167,52 @@ fn find_term_time_range(
     None
 }
 
+/// Get all word boundary times (start of each word) from alignment items.
+fn word_boundaries(items: &[qwen3_asr::ForcedAlignItem]) -> Vec<f64> {
+    let mut bounds: Vec<f64> = items.iter().map(|a| a.start_time).collect();
+    if let Some(last) = items.last() {
+        bounds.push(last.end_time);
+    }
+    bounds
+}
+
+/// Find a consensus boundary near `target_time` across multiple alignment boundary lists.
+/// Returns the boundary time if all lists have a boundary within `tolerance` of each other.
+fn find_consensus_boundary(all_boundaries: &[&[f64]], target_time: f64, tolerance: f64, after: bool) -> Option<f64> {
+    // For each alignment, find the nearest boundary after (or before) target_time
+    let mut candidates = Vec::new();
+    for bounds in all_boundaries {
+        let nearest = if after {
+            bounds.iter().copied().filter(|&t| t >= target_time - 0.05).next()
+        } else {
+            bounds.iter().copied().rev().filter(|&t| t <= target_time + 0.05).next()
+        };
+        candidates.push(nearest?);
+    }
+
+    // Check if all candidates agree within tolerance
+    let min = candidates.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = candidates.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if max - min <= tolerance {
+        // Return the average as the consensus boundary
+        Some(candidates.iter().sum::<f64>() / candidates.len() as f64)
+    } else {
+        None
+    }
+}
+
+/// Extract words from an alignment that fall within a time range.
+fn words_in_range(items: &[qwen3_asr::ForcedAlignItem], start: f64, end: f64) -> String {
+    let words: Vec<&str> = items.iter()
+        .filter(|a| {
+            let mid = (a.start_time + a.end_time) / 2.0;
+            mid >= start - 0.05 && mid <= end + 0.05
+        })
+        .map(|a| a.word.as_str())
+        .collect();
+    words.join(" ")
+}
+
 /// Align an ASR transcription against audio, then extract the words
 /// that overlap with a given time range.
 fn extract_asr_at_time_range(
@@ -178,26 +224,43 @@ fn extract_asr_at_time_range(
 ) -> String {
     if asr_text.is_empty() { return String::new(); }
 
-    // Align the ASR output against the audio
     let asr_align = aligner.align(samples_16k, asr_text).unwrap_or_default();
     if asr_align.is_empty() { return asr_text.to_string(); }
 
-    // Collect words whose time range overlaps with [start, end]
-    let mut words = Vec::new();
-    for item in &asr_align {
-        // Check overlap: word overlaps if its midpoint is within the range (±small margin)
-        let mid = (item.start_time + item.end_time) / 2.0;
-        if mid >= start - 0.05 && mid <= end + 0.05 {
-            words.push(item.word.as_str());
-        }
-    }
+    let result = words_in_range(&asr_align, start, end);
+    if result.is_empty() { asr_text.to_string() } else { result }
+}
 
-    if words.is_empty() {
-        // No overlap found — fall back to full text
-        asr_text.to_string()
-    } else {
-        words.join(" ")
-    }
+/// Extract ASR words using consensus boundaries from all three alignments.
+/// Returns (qwen_extract, parakeet_extract, clean) where clean=false means
+/// boundaries didn't agree and the result may be noisy.
+fn extract_with_consensus(
+    orig_align: &[qwen3_asr::ForcedAlignItem],
+    qwen_align: &[qwen3_asr::ForcedAlignItem],
+    parakeet_align: &[qwen3_asr::ForcedAlignItem],
+    term_start: f64,
+    term_end: f64,
+) -> (String, String, bool) {
+    let orig_bounds = word_boundaries(orig_align);
+    let qwen_bounds = word_boundaries(qwen_align);
+    let parakeet_bounds = word_boundaries(parakeet_align);
+    let all_bounds: Vec<&[f64]> = vec![&orig_bounds, &qwen_bounds, &parakeet_bounds];
+
+    // Find consensus start boundary (before term)
+    let cons_start = find_consensus_boundary(&all_bounds, term_start, 0.15, false)
+        .unwrap_or(term_start);
+    // Find consensus end boundary (after term)
+    let cons_end = find_consensus_boundary(&all_bounds, term_end, 0.15, true)
+        .unwrap_or(term_end);
+
+    let qwen = words_in_range(qwen_align, cons_start, cons_end);
+    let parakeet = words_in_range(parakeet_align, cons_start, cons_end);
+
+    // Check if boundaries were clean (consensus found for both)
+    let start_clean = find_consensus_boundary(&all_bounds, term_start, 0.15, false).is_some();
+    let end_clean = find_consensus_boundary(&all_bounds, term_end, 0.15, true).is_some();
+
+    (qwen, parakeet, start_clean && end_clean)
 }
 
 /// Strip carrier phrase prefix variants from ASR output.
@@ -500,12 +563,13 @@ async fn run_corpus_job(
             let qwen_full = qwen_full.unwrap_or_default();
             let parakeet_full = parakeet_full.unwrap_or_default();
 
-            // 3) Align each ASR output against the audio → extract words at the term's time range
-            let qwen_extracted = extract_asr_at_time_range(
-                &state.aligner, &full_16k, &qwen_full, term_start, term_end,
-            );
-            let parakeet_extracted = extract_asr_at_time_range(
-                &state.aligner, &full_16k, &parakeet_full, term_start, term_end,
+            // 3) Align each ASR output against the audio
+            let qwen_align = state.aligner.align(&full_16k, &qwen_full).unwrap_or_default();
+            let parakeet_align = state.aligner.align(&full_16k, &parakeet_full).unwrap_or_default();
+
+            // 4) Use consensus boundaries across all three alignments to extract cleanly
+            let (qwen_extracted, parakeet_extracted, clean) = extract_with_consensus(
+                &orig_align, &qwen_align, &parakeet_align, term_start, term_end,
             );
 
             // Serialize alignments for debugging
@@ -514,9 +578,6 @@ async fn run_corpus_job(
                     serde_json::json!({"w": a.word, "s": (a.start_time * 100.0).round() / 100.0, "e": (a.end_time * 100.0).round() / 100.0})
                 }).collect()
             };
-            // Re-align ASR outputs for debug display (extract_asr_at_time_range already did this internally)
-            let qwen_align = state.aligner.align(&full_16k, &qwen_full).unwrap_or_default();
-            let parakeet_align = state.aligner.align(&full_16k, &parakeet_full).unwrap_or_default();
 
             writeln!(file, "{}", serde_json::json!({
                 "term": item.term,
@@ -526,6 +587,7 @@ async fn run_corpus_job(
                 "parakeet_full": parakeet_full,
                 "qwen": qwen_extracted,
                 "parakeet": parakeet_extracted,
+                "clean": clean,
                 "term_time": [term_start, term_end],
                 "orig_alignment": fmt_align(&orig_align),
                 "qwen_alignment": fmt_align(&qwen_align),

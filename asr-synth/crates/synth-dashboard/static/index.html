@@ -2553,6 +2553,7 @@
             const [error, setError] = useState(null);
             const [corpusData, setCorpusData] = useState(null);
             const [corpusFilter, setCorpusFilter] = useState('');
+            const [expandedTerm, setExpandedTerm] = useState(null);
             const dialogRef = useRef(null);
             const [backend, setBackend] = useState('pocket-hq');
             const [corpusLimit, setCorpusLimit] = useState(200);
@@ -2696,93 +2697,103 @@
                                     groups[term].push({...p, idx});
                                 });
                                 const terms = Object.keys(groups).sort((a,b) => a.localeCompare(b, undefined, {sensitivity:'base'}));
+                                // Build summary per term: unique ASR outputs with counts
+                                const summaries = {};
+                                terms.forEach(term => {
+                                    const passes = groups[term];
+                                    const asr = {};
+                                    let cleanCount = 0;
+                                    passes.forEach(p => {
+                                        if (p.clean) cleanCount++;
+                                        [p.qwen, p.parakeet].filter(Boolean).forEach(o => {
+                                            const key = o.toLowerCase().replace(/[.,!?]/g,'').trim();
+                                            if (!asr[key]) asr[key] = {text: o, count: 0, correct: key === term.toLowerCase()};
+                                            asr[key].count++;
+                                        });
+                                    });
+                                    summaries[term] = {asr: Object.values(asr).sort((a,b) => b.count - a.count), cleanCount, total: passes.length};
+                                });
+
+                                const renderPassDetail = (p, i) => {
+                                    const tt = p.term_time;
+                                    return (
+                                        <div key={i} style={{marginBottom:10,padding:'8px 10px',background:'rgba(255,255,255,0.02)',borderRadius:6,fontSize:12,lineHeight:1.6}}>
+                                            {p.sentence && <div style={{color:'var(--text-muted)'}}><b>Sentence:</b> {p.sentence}</div>}
+                                            {p.spoken && p.spoken !== p.sentence && <div style={{color:'var(--text-muted)'}}><b>Spoken:</b> {p.spoken}</div>}
+                                            {tt && <div style={{color:'var(--text-muted)'}}>
+                                                <b>Term time:</b> {tt[0]?.toFixed(2)}s – {tt[1]?.toFixed(2)}s
+                                                {p.clean === false && <span style={{marginLeft:8,color:'var(--warning)',fontSize:11}}>noisy</span>}
+                                                {p.clean === true && <span style={{marginLeft:8,color:'var(--success)',fontSize:11}}>clean</span>}
+                                            </div>}
+                                            <div style={{display:'flex',gap:24,marginTop:4}}>
+                                                <div><span style={{color:'var(--text-muted)'}}>Qwen: </span><span style={{color:'var(--error)',fontWeight:600}}>{p.qwen||'—'}</span>
+                                                    {p.qwen_full && p.qwen_full !== p.qwen && <span style={{color:'var(--text-muted)',marginLeft:6,fontSize:11}}>full: {p.qwen_full}</span>}
+                                                </div>
+                                                <div><span style={{color:'var(--text-muted)'}}>Parakeet: </span><span style={{color:'var(--error)',fontWeight:600}}>{p.parakeet||'—'}</span>
+                                                    {p.parakeet_full && p.parakeet_full !== p.parakeet && <span style={{color:'var(--text-muted)',marginLeft:6,fontSize:11}}>full: {p.parakeet_full}</span>}
+                                                </div>
+                                            </div>
+                                            {(p.orig_alignment || p.qwen_alignment) && (() => {
+                                                const allItems = [...(p.orig_alignment||[]),...(p.qwen_alignment||[]),...(p.parakeet_alignment||[])];
+                                                const maxTime = allItems.length ? Math.max(...allItems.map(a=>a.e)) : 1;
+                                                const pct = t => (t/maxTime*100).toFixed(2)+'%';
+                                                const renderTimeline = (label, items, color) => items && (
+                                                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:3}}>
+                                                        <span style={{fontSize:9,color:'var(--text-muted)',width:55,textAlign:'right',flexShrink:0,fontWeight:600}}>{label}</span>
+                                                        <div style={{position:'relative',flex:1,height:22,background:'rgba(255,255,255,0.03)',borderRadius:3,overflow:'hidden'}}>
+                                                            {tt && <div style={{position:'absolute',left:pct(tt[0]),width:pct(tt[1]-tt[0]),top:0,bottom:0,background:'rgba(88,166,255,0.12)',borderLeft:'1px solid rgba(88,166,255,0.4)',borderRight:'1px solid rgba(88,166,255,0.4)'}} />}
+                                                            {items.map((a,j) => {
+                                                                const inRange = tt && a.s < tt[1]+0.02 && a.e > tt[0]-0.02;
+                                                                return (<div key={j} title={`${a.w} (${a.s}s–${a.e}s)`} style={{
+                                                                    position:'absolute',left:pct(a.s),width:pct(Math.max(a.e-a.s,0.02)),top:2,bottom:2,borderRadius:2,
+                                                                    background:inRange?color:'rgba(255,255,255,0.08)',border:`1px solid ${inRange?color:'rgba(255,255,255,0.12)'}`,
+                                                                    display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden',
+                                                                }}><span style={{fontSize:8,color:inRange?'#fff':'var(--text-muted)',whiteSpace:'nowrap',padding:'0 2px'}}>{a.w}</span></div>);
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                );
+                                                return (
+                                                    <div style={{marginTop:6}}>
+                                                        {renderTimeline('Original', p.orig_alignment, 'rgba(88,166,255,0.6)')}
+                                                        {renderTimeline('Qwen', p.qwen_alignment, 'rgba(210,153,34,0.7)')}
+                                                        {renderTimeline('Parakeet', p.parakeet_alignment, 'rgba(163,113,247,0.7)')}
+                                                        <div style={{display:'flex',justifyContent:'space-between',fontSize:9,color:'var(--text-muted)',marginTop:1,paddingLeft:61}}>
+                                                            <span>0s</span><span>{maxTime.toFixed(1)}s</span>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })()}
+                                        </div>
+                                    );
+                                };
+
                                 return (
                                     <div>
                                         {terms.map(term => {
-                                            const passes = groups[term];
+                                            const s = summaries[term];
+                                            const expanded = expandedTerm === term;
                                             return (
-                                                <div key={term} style={{marginBottom:16,borderBottom:'2px solid var(--border)',paddingBottom:12}}>
-                                                    <div style={{display:'flex',alignItems:'baseline',gap:8,marginBottom:8}}>
-                                                        <span style={{fontWeight:700,fontSize:15}}>{term}</span>
-                                                        <span style={{color:'var(--text-muted)',fontSize:12}}>{passes.length} passes</span>
+                                                <div key={term} style={{marginBottom:2,borderBottom:'1px solid var(--border)'}}>
+                                                    <div onClick={() => setExpandedTerm(expanded ? null : term)}
+                                                        style={{display:'flex',alignItems:'center',gap:10,padding:'8px 4px',cursor:'pointer',userSelect:'none'}}>
+                                                        <span style={{fontSize:11,color:'var(--text-muted)',width:12}}>{expanded ? '▼' : '▶'}</span>
+                                                        <span style={{fontWeight:700,fontSize:14,minWidth:100}}>{term}</span>
+                                                        <span style={{color:'var(--text-muted)',fontSize:11}}>{s.total} passes{s.cleanCount < s.total ? `, ${s.cleanCount} clean` : ''}</span>
+                                                        <div style={{flex:1,display:'flex',gap:8,flexWrap:'wrap',justifyContent:'flex-end'}}>
+                                                            {s.asr.map((o,i) => (
+                                                                <span key={i} style={{whiteSpace:'nowrap',fontSize:12}}>
+                                                                    <span style={{color:o.correct?'var(--success)':'var(--error)'}}>{o.text}</span>
+                                                                    <span className={`count-badge ${o.correct?'correct':'wrong'}`}>{o.count}</span>
+                                                                </span>
+                                                            ))}
+                                                        </div>
                                                     </div>
-                                                    {passes.map((p, i) => {
-                                                        const tt = p.term_time;
-                                                        const hasDetail = p.sentence || p.qwen_full;
-                                                        return (
-                                                            <div key={i} style={{marginBottom:8,padding:'6px 10px',background:'rgba(255,255,255,0.02)',borderRadius:6,fontSize:12,lineHeight:1.6}}>
-                                                                {p.sentence && <div style={{color:'var(--text-muted)'}}>
-                                                                    <b>Sentence:</b> {p.sentence}
-                                                                </div>}
-                                                                {p.spoken && p.spoken !== p.sentence && <div style={{color:'var(--text-muted)'}}>
-                                                                    <b>Spoken:</b> {p.spoken}
-                                                                </div>}
-                                                                {tt && <div style={{color:'var(--text-muted)'}}>
-                                                                    <b>Term time:</b> {tt[0]?.toFixed(2)}s – {tt[1]?.toFixed(2)}s
-                                                                    {p.spoken_term && <span style={{marginLeft:8}}><b>Searching for:</b> "{p.spoken_term}"</span>}
-                                                                </div>}
-                                                                <div style={{display:'flex',gap:24,marginTop:4}}>
-                                                                    <div>
-                                                                        <span style={{color:'var(--text-muted)'}}>Qwen: </span>
-                                                                        <span style={{color:'var(--error)',fontWeight:600}}>{p.qwen || '—'}</span>
-                                                                        {p.qwen_full && p.qwen_full !== p.qwen && <span style={{color:'var(--text-muted)',marginLeft:6,fontSize:11}}>full: {p.qwen_full}</span>}
-                                                                    </div>
-                                                                    <div>
-                                                                        <span style={{color:'var(--text-muted)'}}>Parakeet: </span>
-                                                                        <span style={{color:'var(--error)',fontWeight:600}}>{p.parakeet || '—'}</span>
-                                                                        {p.parakeet_full && p.parakeet_full !== p.parakeet && <span style={{color:'var(--text-muted)',marginLeft:6,fontSize:11}}>full: {p.parakeet_full}</span>}
-                                                                    </div>
-                                                                </div>
-                                                                {(p.orig_alignment || p.alignment) && (() => {
-                                                                    const allItems = [
-                                                                        ...(p.orig_alignment || p.alignment || []),
-                                                                        ...(p.qwen_alignment || []),
-                                                                        ...(p.parakeet_alignment || []),
-                                                                    ];
-                                                                    const maxTime = allItems.length ? Math.max(...allItems.map(a => a.e)) : 1;
-                                                                    const pct = t => (t / maxTime * 100).toFixed(2) + '%';
-
-                                                                    const renderTimeline = (label, items, color) => items && (
-                                                                        <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:3}}>
-                                                                            <span style={{fontSize:9,color:'var(--text-muted)',width:55,textAlign:'right',flexShrink:0,fontWeight:600}}>{label}</span>
-                                                                            <div style={{position:'relative',flex:1,height:22,background:'rgba(255,255,255,0.03)',borderRadius:3,overflow:'hidden'}}>
-                                                                                {tt && <div style={{
-                                                                                    position:'absolute',left:pct(tt[0]),width:pct(tt[1]-tt[0]),
-                                                                                    top:0,bottom:0,background:'rgba(88,166,255,0.12)',borderLeft:'1px solid rgba(88,166,255,0.4)',borderRight:'1px solid rgba(88,166,255,0.4)',
-                                                                                }} />}
-                                                                                {items.map((a,j) => {
-                                                                                    const inRange = tt && a.s < tt[1] + 0.02 && a.e > tt[0] - 0.02;
-                                                                                    return (
-                                                                                        <div key={j} title={`${a.w} (${a.s}s–${a.e}s)`} style={{
-                                                                                            position:'absolute',left:pct(a.s),width:pct(Math.max(a.e-a.s,0.02)),
-                                                                                            top:2,bottom:2,borderRadius:2,
-                                                                                            background:inRange ? color : 'rgba(255,255,255,0.08)',
-                                                                                            border:`1px solid ${inRange ? color : 'rgba(255,255,255,0.12)'}`,
-                                                                                            display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden',
-                                                                                        }}>
-                                                                                            <span style={{fontSize:8,color:inRange?'#fff':'var(--text-muted)',whiteSpace:'nowrap',padding:'0 2px'}}>{a.w}</span>
-                                                                                        </div>
-                                                                                    );
-                                                                                })}
-                                                                            </div>
-                                                                        </div>
-                                                                    );
-
-                                                                    return (
-                                                                        <details style={{marginTop:6}} open>
-                                                                            <summary style={{color:'var(--text-muted)',fontSize:11,cursor:'pointer',marginBottom:4}}>Alignments</summary>
-                                                                            {renderTimeline('Original', p.orig_alignment || p.alignment, 'rgba(88,166,255,0.6)')}
-                                                                            {renderTimeline('Qwen', p.qwen_alignment, 'rgba(210,153,34,0.7)')}
-                                                                            {renderTimeline('Parakeet', p.parakeet_alignment, 'rgba(163,113,247,0.7)')}
-                                                                            <div style={{display:'flex',justifyContent:'space-between',fontSize:9,color:'var(--text-muted)',marginTop:1,paddingLeft:61}}>
-                                                                                <span>0s</span><span>{maxTime.toFixed(1)}s</span>
-                                                                            </div>
-                                                                        </details>
-                                                                    );
-                                                                })()}
-                                                            </div>
-                                                        );
-                                                    })}
+                                                    {expanded && (
+                                                        <div style={{padding:'4px 4px 12px 26px'}}>
+                                                            {groups[term].map((p,i) => renderPassDetail(p, i))}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             );
                                         })}
