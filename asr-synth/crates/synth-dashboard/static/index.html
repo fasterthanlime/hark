@@ -949,11 +949,20 @@
         }
 
         dialog::backdrop {
-            background: rgba(0,0,0,0.6);
-            backdrop-filter: blur(4px);
+            background: rgba(0,0,0,0.65);
+            backdrop-filter: blur(6px);
         }
         dialog {
-            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            margin: 0;
+            box-shadow: 0 12px 48px rgba(0,0,0,0.6);
+        }
+        dialog[open] {
+            display: flex;
+            flex-direction: column;
         }
         .corpus-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 12px; }
         .corpus-table th { padding: 8px 10px; font-weight: 600; text-align: left; border-bottom: 2px solid var(--border); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); }
