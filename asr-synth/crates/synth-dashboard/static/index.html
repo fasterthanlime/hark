@@ -1025,12 +1025,18 @@
         }
 
         // ==================== TTS ====================
+        let _ttsAbort = null;
         async function fetchTtsBuffer(text, backend) {
+            // Abort any previous in-flight TTS request
+            if (_ttsAbort) { _ttsAbort.abort(); }
+            const controller = new AbortController();
+            _ttsAbort = controller;
             const body = {text};
             if (backend) body.backend = backend;
             const res = await fetch('/api/tts/preview', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(body),
+                signal: controller.signal,
             });
             if (!res.ok) throw new Error(`TTS ${res.status}: ${await res.text()}`);
             const arrayBuf = await res.arrayBuffer();
@@ -2718,7 +2724,7 @@
                             setTimeout(() => suggestPronRef.current?.focus(), 50);
                         };
                         const doPlay = () => {
-                            // Read current pronunciation directly from the input to avoid stale state
+                            stopPlayback();
                             const currentPron = suggestPronRef.current?.value ?? pron;
                             const currentSpoken = s.sentence ? (() => {
                                 const idx = s.sentence.toLowerCase().indexOf(s.term.toLowerCase());
