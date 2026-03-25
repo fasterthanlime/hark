@@ -268,7 +268,7 @@ impl RemoteTtsBackend for OpenAiTtsBackend {
                 .post("https://api.openai.com/v1/audio/speech")
                 .bearer_auth(&self.api_key)
                 .json(&serde_json::json!({
-                    "model": "tts-1-hd",
+                    "model": "tts-1",
                     "input": text,
                     "voice": "onyx",
                     "response_format": "pcm",
