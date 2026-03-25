@@ -950,6 +950,18 @@ async fn main() -> anyhow::Result<()> {
         Ok(Json(serde_json::json!({"ok": true})).into_response())
     }
 
+    #[derive(Deserialize)]
+    struct RejectSuggestionBody { term: String }
+
+    async fn api_author_reject_suggestion(
+        State(state): State<Arc<AppState>>,
+        Json(body): Json<RejectSuggestionBody>,
+    ) -> Result<Response, AppError> {
+        let db = state.db.lock().unwrap();
+        db.reject_suggestion(&body.term).map_err(err)?;
+        Ok(Json(serde_json::json!({"ok": true})).into_response())
+    }
+
     async fn api_author_stats(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
         let db = state.db.lock().unwrap();
         let total = db.authored_sentence_count().map_err(err)?;
@@ -1009,12 +1021,13 @@ async fn main() -> anyhow::Result<()> {
         let api_key = std::env::var("OPENAI_API_KEY")
             .map_err(|_| err(anyhow::anyhow!("OPENAI_API_KEY not set")))?;
 
-        let (existing_terms, sentences) = {
+        let (existing_terms, sentences, rejected) = {
             let db = state.db.lock().unwrap();
             let vocab = db.list_reviewed_vocab().map_err(err)?;
             let terms: Vec<String> = vocab.iter().map(|v| v.term.clone()).collect();
             let sents = db.all_authored_sentences().map_err(err)?;
-            (terms, sents)
+            let rejected = db.list_rejected_suggestions().map_err(err)?;
+            (terms, sents, rejected)
         };
 
         let client = reqwest::Client::new();
@@ -1028,7 +1041,10 @@ async fn main() -> anyhow::Result<()> {
                     "content": "You help build a vocabulary of technical terms that speech recognition gets wrong. Given existing vocab and example sentences, suggest 20 more terms that the user likely uses and that ASR would struggle with. Focus on: programming tools, crate names, acronyms, technical jargon, project names, non-English-word identifiers. Do NOT suggest common English words or hyphenated compound words. For each term, provide a natural example sentence that uses it in context (the kind of thing a developer would say out loud). Output JSON: {\"suggestions\": [{\"term\": \"...\", \"pronunciation\": \"how a human would say it phonetically\", \"sentence\": \"a natural sentence using the term\"}]}"
                 }, {
                     "role": "user",
-                    "content": format!("Existing vocab: {}\n\nExample sentences:\n{}", existing_terms.join(", "), sentences.iter().take(30).cloned().collect::<Vec<_>>().join("\n"))
+                    "content": format!("Existing vocab: {}\n\nPreviously rejected (do NOT suggest these again): {}\n\nExample sentences:\n{}",
+                        existing_terms.join(", "),
+                        if rejected.is_empty() { "(none)".to_string() } else { rejected.join(", ") },
+                        sentences.iter().take(30).cloned().collect::<Vec<_>>().join("\n"))
                 }],
                 "response_format": {"type": "json_object"},
             }))
@@ -1109,6 +1125,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/author/sentences/{id}/delete", post(api_author_sentence_delete))
         .route("/api/author/spellcheck", post(api_author_spellcheck))
         .route("/api/author/suggest-vocab", post(api_author_suggest_vocab))
+        .route("/api/author/reject-suggestion", post(api_author_reject_suggestion))
         .with_state(state);
 
     let addr = format!("{}:{}", cli.host, cli.port);

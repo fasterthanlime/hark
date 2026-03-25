@@ -1945,10 +1945,16 @@
                                     setNewTermExists(list.some(r => r.term.toLowerCase() === v.toLowerCase()));
                                 }).catch(() => {}); } else { setNewTermExists(false); }
                             }}
-                            onKeyDown={e => {if (e.key === 'Enter') addTerm();}} />
+                            onKeyDown={e => {
+                                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); addTerm(); }
+                                else if (e.key === 'Enter') { e.preventDefault(); previewNewTerm(); }
+                            }} />
                         <input placeholder="Override (optional)" value={newOverride} onChange={e => {setNewOverride(e.target.value); setNewPreviewed(false);}}
-                            onKeyDown={e => {if (e.key === 'Enter') addTerm();}} />
-                        <button className="btn btn-sm btn-primary" onClick={addTerm} disabled={!newTerm.trim()}>{newPreviewed ? 'Save' : 'Preview'}</button>
+                            onKeyDown={e => {
+                                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); addTerm(); }
+                                else if (e.key === 'Enter') { e.preventDefault(); previewNewTerm(); }
+                            }} />
+                        <button className="btn btn-sm btn-primary" onClick={addTerm} disabled={!newTerm.trim()}>{newPreviewed ? 'Save (&#8984;&#9166;)' : 'Preview (&#9166;)'}</button>
                         {newTermExists && <span style={{fontSize:11,color:'var(--warning)'}}>already exists</span>}
                     </div>
                     {loading ? <p>Loading...</p> : vocab.length === 0 ? (
@@ -2687,6 +2693,7 @@
                             setTimeout(() => suggestPronRef.current?.focus(), 50);
                         };
                         const doSkip = () => {
+                            api('/api/author/reject-suggestion', {method:'POST', body: JSON.stringify({term: s.term})}).catch(() => {});
                             setSuggestions(prev => prev.filter((_, j) => j !== suggestIdx));
                             setSuggestIdx(i => Math.min(i, suggestions.length - 2));
                             setTimeout(() => suggestPronRef.current?.focus(), 50);
@@ -2711,17 +2718,18 @@
                                 <input ref={suggestPronRef} value={pron}
                                     onChange={e => setSuggestions(prev => prev.map((x, j) => j === suggestIdx ? {...x, _override: e.target.value} : x))}
                                     onKeyDown={e => {
-                                        if (e.key === 'Enter') { e.preventDefault(); doAdd(); }
+                                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); doAdd(); }
+                                        else if (e.key === 'Enter') { e.preventDefault(); doPlay(); }
                                         else if (e.key === 'Escape') { e.preventDefault(); doSkip(); }
-                                        else if (e.key === ' ' && e.ctrlKey) { e.preventDefault(); doPlay(); }
                                     }}
                                     autoFocus
                                     style={{padding:'6px 10px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:4,color:'var(--accent)',fontSize:15,fontFamily:'Jost,sans-serif',width:200,textAlign:'center'}} />
                                 <button onClick={doPlay} style={{background:'none',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',cursor:'pointer',padding:'4px 10px',fontSize:13}}>&#9654;</button>
                             </div>
                             <div style={{display:'flex',gap:8,justifyContent:'center'}}>
-                                <button className="btn btn-primary" onClick={doAdd}>Add (Enter)</button>
+                                <button className="btn btn-primary" onClick={doAdd}>Add (&#8984;&#9166;)</button>
                                 <button className="btn" onClick={doSkip}>Skip (Esc)</button>
+                                <span style={{fontSize:10,color:'var(--text-muted)',marginLeft:8}}>Enter = play</span>
                             </div>
                         </div>
                         );
@@ -2744,9 +2752,11 @@
                             <div style={{display:'flex',gap:8}}>
                                 <input ref={inputRef} type="text" value={sentence} onChange={e => setSentence(e.target.value)}
                                     placeholder={`Type a sentence containing "${term.term}"...`}
-                                    onKeyDown={e => { if (e.key === 'Enter' && sentence.trim()) submit(); }}
+                                    onKeyDown={e => {
+                                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && sentence.trim()) { e.preventDefault(); submit(); }
+                                    }}
                                     style={{flex:1,padding:'10px 14px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text)',fontFamily:'Jost,sans-serif',fontSize:15}} />
-                                <button className="btn btn-primary" onClick={submit} disabled={saving || !sentence.trim()}>Save</button>
+                                <button className="btn btn-primary" onClick={submit} disabled={saving || !sentence.trim()}>Save (&#8984;&#9166;)</button>
                                 <button className="btn" onClick={skip} style={{color:'var(--text-muted)'}}>Skip</button>
                             </div>
                         </div>

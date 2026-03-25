@@ -213,6 +213,13 @@ impl Db {
             )"
         ).ok();
 
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS rejected_suggestions (
+                term TEXT PRIMARY KEY COLLATE NOCASE,
+                rejected_at TEXT NOT NULL
+            )"
+        ).ok();
+
         Ok(Db { conn })
     }
 
@@ -298,6 +305,23 @@ impl Db {
     /// Get all authored sentences as plain text (for Markov chain building).
     pub fn all_authored_sentences(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare("SELECT sentence FROM authored_sentences")?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    // ==================== REJECTED SUGGESTIONS ====================
+
+    pub fn reject_suggestion(&self, term: &str) -> Result<()> {
+        let now = now_str();
+        self.conn.execute(
+            "INSERT OR IGNORE INTO rejected_suggestions (term, rejected_at) VALUES (?1, ?2)",
+            params![term, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_rejected_suggestions(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT term FROM rejected_suggestions")?;
         let rows = stmt.query_map([], |row| row.get(0))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
