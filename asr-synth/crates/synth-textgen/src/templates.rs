@@ -262,6 +262,27 @@ fn extract_history_sentences(
     }
 }
 
+/// Process a single text paragraph: normalize, split into sentences, match vocab terms,
+/// build spoken forms. Used by the incremental import endpoint.
+pub fn extract_sentences(
+    text: &str,
+    term_lookup: &HashMap<String, &VocabEntry>,
+    overrides: &HashMap<String, String>,
+) -> Vec<GeneratedSentence> {
+    let mut candidates = Vec::new();
+    flush_paragraph(text, term_lookup, &mut candidates);
+
+    let vocab: Vec<VocabEntry> = term_lookup.values().map(|v| (*v).clone()).collect();
+
+    candidates
+        .into_iter()
+        .map(|(text, terms)| {
+            let spoken = build_spoken_form(&text, &terms, &vocab, Some(overrides));
+            GeneratedSentence { text, spoken, vocab_terms: terms }
+        })
+        .collect()
+}
+
 /// Check if a paragraph contains any vocab terms. If so, split into sentences
 /// and add matching ones to the output.
 /// Normalize fancy/smart punctuation to plain ASCII equivalents.

@@ -1797,7 +1797,9 @@
 
                     {importResult && (
                         <div style={{marginTop: 12, fontSize: 13, color: 'var(--success)'}}>
-                            Imported {importResult.imported} new sentences. {importResult.new_vocab > 0 ? `${importResult.new_vocab} new vocab terms.` : ''}
+                            {importResult.new_vocab > 0 || importResult.imported > 0
+                                ? `+${importResult.new_vocab} vocab, +${importResult.imported} sentences (${importResult.lines_scanned} lines scanned). Import again for more.`
+                                : 'No new content found. Source may be fully scanned.'}
                         </div>
                     )}
                 </div>

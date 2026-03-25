@@ -178,7 +178,39 @@ impl Db {
                 created_at TEXT NOT NULL
             )"
         ).ok();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS import_offsets (
+                source TEXT PRIMARY KEY,
+                byte_offset INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )"
+        ).ok();
         Ok(Db { conn })
+    }
+
+    // ==================== IMPORT OFFSETS ====================
+
+    pub fn get_import_offset(&self, source: &str) -> Result<u64> {
+        let result = self.conn.query_row(
+            "SELECT byte_offset FROM import_offsets WHERE source = ?1",
+            params![source],
+            |r| r.get::<_, i64>(0),
+        );
+        match result {
+            Ok(v) => Ok(v as u64),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(0),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn set_import_offset(&self, source: &str, offset: u64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO import_offsets (source, byte_offset, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(source) DO UPDATE SET byte_offset = excluded.byte_offset, updated_at = excluded.updated_at",
+            params![source, offset as i64, now_str()],
+        )?;
+        Ok(())
     }
 
     // ==================== VOCAB ====================

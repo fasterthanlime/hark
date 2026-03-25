@@ -210,11 +210,13 @@ async fn api_sentences_list(
     Ok(Json(list).into_response())
 }
 
-/// Scan sources, extract vocab, find sentences, detect unknown words, store directly as sentences.
-/// Single pass — no intermediate candidates step.
+/// Scan sources incrementally, extract vocab, find sentences.
+/// Reads each source file from where the last import left off,
+/// stops after ~200 new vocab terms are discovered. Re-import to get the next batch.
 #[derive(Deserialize)]
 struct ImportParams {
     source: Option<String>, // "all" (default), "hark", "claude", "codex"
+    limit: Option<usize>,   // new vocab target (default 200)
 }
 
 async fn api_candidates_import(
@@ -224,6 +226,7 @@ async fn api_candidates_import(
     let docs_root = state.docs_root.clone();
     let state2 = state.clone();
     let source = params.source.unwrap_or_else(|| "all".to_string());
+    let vocab_limit = params.limit.unwrap_or(200);
 
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         eprintln!("[import] extracting vocab from {docs_root}...");
@@ -235,60 +238,129 @@ async fn api_candidates_import(
             db.get_spoken_overrides()?
         };
 
-        let sources = {
-            let hark = shellexpand::tilde("~/Library/Application Support/hark/transcription_log.jsonl").to_string();
-            let claude = shellexpand::tilde("~/.claude/history.jsonl").to_string();
-            let codex = shellexpand::tilde("~/.codex/history.jsonl").to_string();
-            let files = match source.as_str() {
-                "hark" => vec![hark],
-                "claude" => vec![claude],
-                "codex" => vec![codex],
-                _ => vec![claude, codex, hark],
-            };
-            synth_textgen::templates::TextSources {
-                blog_dir: None,
-                history_files: files,
-            }
+        // Build term lookup for sentence matching
+        let term_lookup: std::collections::HashMap<String, &synth_textgen::corpus::VocabEntry> = vocab
+            .iter()
+            .map(|v| (v.term.to_lowercase(), v))
+            .collect();
+
+        let hark = shellexpand::tilde("~/Library/Application Support/hark/transcription_log.jsonl").to_string();
+        let claude = shellexpand::tilde("~/.claude/history.jsonl").to_string();
+        let codex = shellexpand::tilde("~/.codex/history.jsonl").to_string();
+        let files: Vec<(&str, String)> = match source.as_str() {
+            "hark" => vec![("hark", hark)],
+            "claude" => vec![("claude", claude)],
+            "codex" => vec![("codex", codex)],
+            _ => vec![("hark", hark), ("claude", claude), ("codex", codex)],
         };
 
-        eprintln!("[import] scanning {:?} for sentences...", sources.history_files);
-        let sentences = synth_textgen::templates::generate(
-            &vocab, usize::MAX, Some(&overrides), Some(&sources),
-        );
-        eprintln!("[import] {} sentences found", sentences.len());
+        let mut total_new_vocab = 0usize;
+        let mut total_inserted = 0usize;
+        let mut total_lines = 0usize;
 
-        let db = state2.db.lock().unwrap();
-        let mut inserted = 0usize;
-        let mut new_vocab = 0usize;
-        let total = sentences.len();
-        for (i, s) in sentences.iter().enumerate() {
-            if i > 0 && i % 500 == 0 {
-                eprintln!("[import] {i}/{total} ({inserted} new)");
+        for (name, path) in &files {
+            let start_offset = {
+                let db = state2.db.lock().unwrap();
+                db.get_import_offset(name)?
+            };
+
+            let file_len = match std::fs::metadata(path) {
+                Ok(m) => m.len(),
+                Err(_) => { eprintln!("[import] {name}: file not found: {path}"); continue; }
+            };
+
+            if start_offset >= file_len {
+                eprintln!("[import] {name}: already fully scanned ({start_offset}/{file_len} bytes)");
+                continue;
             }
-            let unknown = tts::detect_unknown_words(&s.text);
-            let unknown_json = serde_json::to_string(&unknown)?;
 
-            // Insert unknown words as vocab entries
-            for w in &unknown {
-                if db.insert_candidate_vocab(w, &w.to_lowercase())? {
-                    new_vocab += 1;
+            eprintln!("[import] {name}: resuming from byte {start_offset}/{file_len}");
+
+            use std::io::{BufRead, Seek};
+            let mut file = std::io::BufReader::new(std::fs::File::open(path)?);
+            file.seek(std::io::SeekFrom::Start(start_offset))?;
+
+            // If resuming mid-file, skip partial first line
+            if start_offset > 0 {
+                let mut discard = String::new();
+                file.read_line(&mut discard)?;
+            }
+
+            let mut new_vocab = 0usize;
+            let mut inserted = 0usize;
+            let mut lines = 0usize;
+            let mut last_offset = start_offset;
+
+            let mut line_buf = String::new();
+            loop {
+                line_buf.clear();
+                let bytes_read = file.read_line(&mut line_buf)?;
+                if bytes_read == 0 { break; } // EOF
+                last_offset = file.stream_position()?;
+                lines += 1;
+
+                let line = line_buf.trim();
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                let text = v["display"].as_str().or_else(|| v["text"].as_str()).unwrap_or("");
+                if text.len() < 20 || text.len() > 300
+                    || text.contains("[Pasted") || text.contains("[Image")
+                    || text.starts_with('/') || text.starts_with("> ")
+                    || text.contains('`') || text.contains("${")
+                    || text.contains("::") || text.contains("//") || text.contains("->")
+                { continue; }
+
+                // Process this text through the sentence pipeline
+                let sentences = synth_textgen::templates::extract_sentences(
+                    text, &term_lookup, &overrides,
+                );
+
+                let db = state2.db.lock().unwrap();
+                for s in &sentences {
+                    let unknown = tts::detect_unknown_words(&s.text);
+                    let unknown_json = serde_json::to_string(&unknown)?;
+
+                    for w in &unknown {
+                        if db.insert_candidate_vocab(w, &w.to_lowercase())? {
+                            new_vocab += 1;
+                        }
+                    }
+
+                    let vocab_json = serde_json::to_string(&s.vocab_terms)?;
+                    if db.insert_sentence_from_candidate(&s.text, &s.spoken, &vocab_json, &unknown_json)? {
+                        inserted += 1;
+                    }
+                }
+                drop(db);
+
+                // Stop once we've found enough new vocab
+                if total_new_vocab + new_vocab >= vocab_limit {
+                    eprintln!("[import] {name}: hit vocab limit ({new_vocab} new vocab from {lines} lines)");
+                    break;
                 }
             }
 
-            // Insert directly as a sentence ready for review
-            let vocab_json = serde_json::to_string(&s.vocab_terms)?;
-            // Insert directly as sentence (skips duplicates)
-            if db.insert_sentence_from_candidate(&s.text, &s.spoken, &vocab_json, &unknown_json)? {
-                inserted += 1;
+            // Save progress
+            {
+                let db = state2.db.lock().unwrap();
+                db.set_import_offset(name, last_offset)?;
             }
+
+            let pct = if file_len > 0 { last_offset * 100 / file_len } else { 100 };
+            eprintln!("[import] {name}: {lines} lines, {inserted} sentences, {new_vocab} vocab ({pct}% of file)");
+
+            total_new_vocab += new_vocab;
+            total_inserted += inserted;
+            total_lines += lines;
+
+            if total_new_vocab >= vocab_limit { break; }
         }
 
-        eprintln!("[import] done. {inserted} sentences, {new_vocab} new vocab entries");
+        eprintln!("[import] done. {total_inserted} sentences, {total_new_vocab} new vocab");
 
         Ok(serde_json::json!({
-            "imported": inserted,
-            "total_sentences": total,
-            "new_vocab": new_vocab,
+            "imported": total_inserted,
+            "lines_scanned": total_lines,
+            "new_vocab": total_new_vocab,
         }))
     })
     .await
