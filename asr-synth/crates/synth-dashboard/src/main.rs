@@ -1029,7 +1029,7 @@ async fn main() -> anyhow::Result<()> {
         let resp = client.post("https://api.openai.com/v1/chat/completions")
             .header("Authorization", format!("Bearer {api_key}"))
             .json(&serde_json::json!({
-                "model": "gpt-4o-mini",
+                "model": "gpt-5.4-mini",
                 "temperature": 0.8,
                 "messages": [{
                     "role": "system",
@@ -1046,7 +1046,7 @@ async fn main() -> anyhow::Result<()> {
 
         let body: serde_json::Value = resp.json().await.map_err(|e| err(e))?;
         let content = body["choices"][0]["message"]["content"].as_str().unwrap_or("{}");
-        let parsed: serde_json::Value = serde_json::from_str(content).unwrap_or(serde_json::json!({"suggestions": []}));
+        let mut parsed: serde_json::Value = serde_json::from_str(content).unwrap_or(serde_json::json!({"suggestions": []}));
 
         Ok(Json(parsed).into_response())
     }
@@ -1071,7 +1071,7 @@ async fn main() -> anyhow::Result<()> {
         let resp = client.post("https://api.openai.com/v1/chat/completions")
             .header("Authorization", format!("Bearer {api_key}"))
             .json(&serde_json::json!({
-                "model": "gpt-4o-mini",
+                "model": "gpt-5.4-mini",
                 "temperature": 0,
                 "messages": [{
                     "role": "system",
@@ -1113,21 +1113,26 @@ async fn main() -> anyhow::Result<()> {
             (terms, sents, rejected)
         };
 
+        let all_excluded: Vec<String> = existing_terms.iter()
+            .cloned()
+            .chain(rejected.iter().cloned())
+            .collect();
+        let user_msg = format!("DO NOT SUGGEST any of these (already in vocab or previously rejected): {}\n\nExample sentences for style reference:\n{}",
+            all_excluded.join(", "),
+            sentences.iter().take(30).cloned().collect::<Vec<String>>().join("\n"));
+
         let client = reqwest::Client::new();
         let resp = client.post("https://api.openai.com/v1/chat/completions")
             .header("Authorization", format!("Bearer {api_key}"))
             .json(&serde_json::json!({
-                "model": "gpt-4o-mini",
+                "model": "gpt-5.4",
                 "temperature": 0.7,
                 "messages": [{
                     "role": "system",
                     "content": "You help build a vocabulary of technical terms that speech recognition gets wrong. Given existing vocab and example sentences, suggest 20 more terms that the user likely uses and that ASR would struggle with. Focus on: programming tools, crate names, acronyms, technical jargon, project names, non-English-word identifiers. Do NOT suggest common English words or hyphenated compound words. For each term, provide a short description (what it is), a pronunciation (how a human would say it), and a natural example sentence. Output JSON: {\"suggestions\": [{\"term\": \"...\", \"description\": \"short description of what this is\", \"pronunciation\": \"how a human would say it phonetically\", \"sentence\": \"a natural sentence using the term\"}]}"
                 }, {
                     "role": "user",
-                    "content": format!("Existing vocab: {}\n\nPreviously rejected (do NOT suggest these again): {}\n\nExample sentences:\n{}",
-                        existing_terms.join(", "),
-                        if rejected.is_empty() { "(none)".to_string() } else { rejected.join(", ") },
-                        sentences.iter().take(30).cloned().collect::<Vec<_>>().join("\n"))
+                    "content": user_msg
                 }],
                 "response_format": {"type": "json_object"},
             }))
