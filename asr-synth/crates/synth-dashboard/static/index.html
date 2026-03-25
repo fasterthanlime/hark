@@ -2669,19 +2669,31 @@
                                 <h3 style={{margin:0}}>Suggested Vocab</h3>
                                 <button onClick={() => setSuggestions(null)} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer'}}>&times;</button>
                             </div>
-                            {suggestions.map((s, i) => (
-                                <div key={i} style={{padding:'6px 0',borderBottom:'1px solid rgba(255,255,255,0.04)',fontSize:12,display:'flex',gap:8,alignItems:'center'}}>
-                                    <span style={{fontWeight:700,fontFamily:'monospace',minWidth:100}}>{s.term}</span>
-                                    <span style={{color:'var(--text-muted)'}}>"{s.pronunciation}"</span>
-                                    <span style={{color:'var(--text-muted)',fontSize:11,flex:1}}>{s.reason}</span>
-                                    <button className="btn btn-sm" onClick={async () => {
-                                        await api('/api/vocab', {method:'POST', body: JSON.stringify({term: s.term, spoken_override: s.pronunciation})});
-                                        setSuggestions(prev => prev.filter((_, j) => j !== i));
-                                        loadStats();
-                                    }} style={{color:'var(--success)',borderColor:'var(--success)'}}>Add</button>
-                                    <button className="btn btn-sm" onClick={() => setSuggestions(prev => prev.filter((_, j) => j !== i))}>Skip</button>
+                            {suggestions.map((s, i) => {
+                                // Build spoken sentence by replacing term with pronunciation
+                                const spokenSentence = s.sentence ? (() => {
+                                    const idx = s.sentence.toLowerCase().indexOf(s.term.toLowerCase());
+                                    if (idx >= 0) return s.sentence.slice(0, idx) + s.pronunciation + s.sentence.slice(idx + s.term.length);
+                                    return s.sentence;
+                                })() : s.pronunciation;
+                                return (
+                                <div key={i} style={{padding:'8px 0',borderBottom:'1px solid rgba(255,255,255,0.04)',fontSize:12}}>
+                                    <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                                        <span style={{fontWeight:700,fontFamily:'monospace',minWidth:100,fontSize:14}}>{s.term}</span>
+                                        <span style={{color:'var(--accent)'}}>"{s.pronunciation}"</span>
+                                        <PlayBtn text={spokenSentence} small />
+                                        <div style={{flex:1}} />
+                                        <button className="btn btn-sm" onClick={async () => {
+                                            await api('/api/vocab', {method:'POST', body: JSON.stringify({term: s.term, spoken_override: s.pronunciation})});
+                                            setSuggestions(prev => prev.filter((_, j) => j !== i));
+                                            loadStats();
+                                        }} style={{color:'var(--success)',borderColor:'var(--success)'}}>Add</button>
+                                        <button className="btn btn-sm" onClick={() => setSuggestions(prev => prev.filter((_, j) => j !== i))}>Skip</button>
+                                    </div>
+                                    {s.sentence && <div style={{marginTop:3,color:'var(--text-muted)',fontSize:11,fontStyle:'italic'}}>"{s.sentence}"</div>}
                                 </div>
-                            ))}
+                                );
+                            })}
                             {suggestions.length === 0 && <div style={{color:'var(--text-muted)'}}>All reviewed!</div>}
                         </div>
                     )}

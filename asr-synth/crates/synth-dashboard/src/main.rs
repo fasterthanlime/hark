@@ -986,7 +986,7 @@ async fn main() -> anyhow::Result<()> {
                 "temperature": 0,
                 "messages": [{
                     "role": "system",
-                    "content": "You are a proofreader. The user will give you numbered sentences. Find typos, misspellings, and grammar errors. Ignore technical terms, crate names, tool names — they're intentional. Output JSON array of objects: {\"id\": number, \"original\": \"the wrong word\", \"suggestion\": \"the fix\", \"reason\": \"brief explanation\"}. If no issues found, output []."
+                    "content": "You are a proofreader. The user will give you numbered sentences about programming. Find typos, misspellings, and grammar errors. Ignore technical terms, crate names, tool names, acronyms — they're intentional. Output JSON: {\"issues\": [{\"id\": number, \"original\": \"the wrong word\", \"suggestion\": \"the fix\", \"reason\": \"brief explanation\"}]}. If no issues found, output {\"issues\": []}."
                 }, {
                     "role": "user",
                     "content": lines.join("\n")
@@ -1025,7 +1025,7 @@ async fn main() -> anyhow::Result<()> {
                 "temperature": 0.7,
                 "messages": [{
                     "role": "system",
-                    "content": "You help build a vocabulary of technical terms that speech recognition gets wrong. Given existing vocab and example sentences, suggest 20 more terms that the user likely uses and that ASR would struggle with. Focus on: programming tools, crate names, acronyms, technical jargon, project names, non-English-word identifiers. Do NOT suggest common English words or hyphenated compound words. Output JSON: {\"suggestions\": [{\"term\": \"...\", \"pronunciation\": \"...\", \"reason\": \"...\"}]}"
+                    "content": "You help build a vocabulary of technical terms that speech recognition gets wrong. Given existing vocab and example sentences, suggest 20 more terms that the user likely uses and that ASR would struggle with. Focus on: programming tools, crate names, acronyms, technical jargon, project names, non-English-word identifiers. Do NOT suggest common English words or hyphenated compound words. For each term, provide a natural example sentence that uses it in context (the kind of thing a developer would say out loud). Output JSON: {\"suggestions\": [{\"term\": \"...\", \"pronunciation\": \"how a human would say it phonetically\", \"sentence\": \"a natural sentence using the term\"}]}"
                 }, {
                     "role": "user",
                     "content": format!("Existing vocab: {}\n\nExample sentences:\n{}", existing_terms.join(", "), sentences.iter().take(30).cloned().collect::<Vec<_>>().join("\n"))
