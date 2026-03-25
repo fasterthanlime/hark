@@ -211,13 +211,25 @@ fn words_in_range(items: &[qwen3_asr::ForcedAlignItem], start: f64, end: f64) ->
 /// 3. Find the closest tri-boundary to the LEFT of the term start.
 /// 4. Find the closest tri-boundary to the RIGHT of the term end.
 /// 5. Slice all 3 lanes with [left, right).
+struct ConsensusResult {
+    original: String,
+    qwen: String,
+    parakeet: String,
+    cons_range: (f64, f64),
+    clean: bool,
+    debug: serde_json::Value,
+}
+
 fn extract_with_consensus(
     orig_align: &[qwen3_asr::ForcedAlignItem],
     qwen_align: &[qwen3_asr::ForcedAlignItem],
     parakeet_align: &[qwen3_asr::ForcedAlignItem],
     term_start: f64,
     term_end: f64,
-) -> (String, String, String, (f64, f64), bool) {
+) -> ConsensusResult {
+    let r2 = |v: f64| (v * 1000.0).round() / 1000.0;
+    let rv = |v: &[f64]| -> Vec<f64> { v.iter().map(|&x| r2(x)).collect() };
+
     let orig_b = lane_boundaries(orig_align);
     let qwen_b = lane_boundaries(qwen_align);
     let para_b = lane_boundaries(parakeet_align);
@@ -240,7 +252,18 @@ fn extract_with_consensus(
     let qwen = words_in_range(qwen_align, start, end);
     let parakeet = words_in_range(parakeet_align, start, end);
 
-    (original, qwen, parakeet, (start, end), clean)
+    let debug = serde_json::json!({
+        "orig_bounds": rv(&orig_b),
+        "qwen_bounds": rv(&qwen_b),
+        "para_bounds": rv(&para_b),
+        "tri_bounds": rv(&tri),
+        "term_start": r2(term_start),
+        "term_end": r2(term_end),
+        "left_chosen": left.map(r2),
+        "right_chosen": right.map(r2),
+    });
+
+    ConsensusResult { original, qwen, parakeet, cons_range: (start, end), clean, debug }
 }
 
 /// Strip carrier phrase prefix variants from ASR output.
@@ -547,32 +570,32 @@ async fn run_corpus_job(
             let qwen_align = state.aligner.align(&full_16k, &qwen_full).unwrap_or_default();
             let parakeet_align = state.aligner.align(&full_16k, &parakeet_full).unwrap_or_default();
 
-            // 4) Use consensus boundaries across all three alignments to extract cleanly
-            let (orig_extracted, qwen_extracted, parakeet_extracted, cons_range, clean) =
-                extract_with_consensus(&orig_align, &qwen_align, &parakeet_align, term_start, term_end);
+            // 4) Tri-boundary consensus extraction
+            let cons = extract_with_consensus(&orig_align, &qwen_align, &parakeet_align, term_start, term_end);
 
             // Serialize alignments for debugging
             let fmt_align = |items: &[qwen3_asr::ForcedAlignItem]| -> Vec<serde_json::Value> {
                 items.iter().map(|a| {
-                    serde_json::json!({"w": a.word, "s": (a.start_time * 100.0).round() / 100.0, "e": (a.end_time * 100.0).round() / 100.0})
+                    serde_json::json!({"w": a.word, "s": (a.start_time * 1000.0).round() / 1000.0, "e": (a.end_time * 1000.0).round() / 1000.0})
                 }).collect()
             };
 
             writeln!(file, "{}", serde_json::json!({
                 "term": item.term,
-                "original": orig_extracted,
-                "qwen": qwen_extracted,
-                "parakeet": parakeet_extracted,
-                "clean": clean,
+                "original": cons.original,
+                "qwen": cons.qwen,
+                "parakeet": cons.parakeet,
+                "clean": cons.clean,
                 "sentence": sentence,
                 "spoken": spoken,
                 "qwen_full": qwen_full,
                 "parakeet_full": parakeet_full,
                 "term_time": [term_start, term_end],
-                "cons_time": [cons_range.0, cons_range.1],
+                "cons_time": [cons.cons_range.0, cons.cons_range.1],
                 "orig_alignment": fmt_align(&orig_align),
                 "qwen_alignment": fmt_align(&qwen_align),
                 "parakeet_alignment": fmt_align(&parakeet_align),
+                "tri_debug": cons.debug,
             }))?;
             count += 1;
 

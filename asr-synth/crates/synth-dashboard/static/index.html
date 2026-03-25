@@ -2752,6 +2752,10 @@
                                             </div>
                                             {p.qwen_full && <div style={{color:'var(--text-muted)',fontSize:11,marginTop:2}}>Q full: {p.qwen_full}</div>}
                                             {p.parakeet_full && <div style={{color:'var(--text-muted)',fontSize:11}}>P full: {p.parakeet_full}</div>}
+                                            {p.tri_debug && <details style={{marginTop:4}}>
+                                                <summary style={{color:'var(--text-muted)',fontSize:10,cursor:'pointer'}}>Tri-boundary debug</summary>
+                                                <pre style={{fontSize:9,color:'var(--text-muted)',margin:'4px 0',whiteSpace:'pre-wrap',fontFamily:'monospace'}}>{JSON.stringify(p.tri_debug, null, 2)}</pre>
+                                            </details>}
                                             {(p.orig_alignment || p.qwen_alignment) && (() => {
                                                 const allItems = [...(p.orig_alignment||[]),...(p.qwen_alignment||[]),...(p.parakeet_alignment||[])];
                                                 const maxTime = allItems.length ? Math.max(...allItems.map(a=>a.e)) : 1;
