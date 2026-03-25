@@ -2766,7 +2766,7 @@
                                                         <div style={{position:'relative',flex:1,height:22,background:'rgba(255,255,255,0.03)',borderRadius:3,overflow:'hidden'}}>
                                                             {tt && <div style={{position:'absolute',left:pct(tt[0]),width:pct(tt[1]-tt[0]),top:0,bottom:0,background:'rgba(88,166,255,0.12)',borderLeft:'1px solid rgba(88,166,255,0.4)',borderRight:'1px solid rgba(88,166,255,0.4)'}} />}
                                                             {items.map((a,j) => {
-                                                                const inRange = tt && a.s < tt[1]+0.02 && a.e > tt[0]-0.02;
+                                                                const inRange = tt && a.s >= tt[0] && a.s < tt[1];
                                                                 return (<div key={j} title={`${a.w} (${a.s}s–${a.e}s)`} style={{
                                                                     position:'absolute',left:pct(a.s),width:pct(Math.max(a.e-a.s,0.02)),top:2,bottom:2,borderRadius:2,
                                                                     background:inRange?color:'rgba(255,255,255,0.08)',border:`1px solid ${inRange?color:'rgba(255,255,255,0.12)'}`,
