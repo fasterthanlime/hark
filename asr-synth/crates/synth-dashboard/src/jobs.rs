@@ -385,7 +385,7 @@ async fn run_corpus_job(
             // Apply any other vocab overrides to the rest of the sentence
             let spoken = apply_overrides_to_sentence(&spoken, &overrides);
 
-            // TTS the full sentence
+            // TTS the full Markov sentence
             let audio = match state.tts.generate(tts_backend, &spoken).await {
                 Ok(mut a) => { a.normalize(); a }
                 Err(e) => {
@@ -396,8 +396,8 @@ async fn run_corpus_job(
                 }
             };
 
-            // Resample
-            let samples_16k = match tts::resample_to_16k(&audio.samples, audio.sample_rate) {
+            // Resample full sentence to 16kHz
+            let full_16k = match tts::resample_to_16k(&audio.samples, audio.sample_rate) {
                 Ok(s) => s,
                 Err(e) => {
                     let db = state.db.lock().unwrap();
@@ -407,9 +407,50 @@ async fn run_corpus_job(
                 }
             };
 
-            // Dual ASR
+            // Forced alignment: find where the target term is in the audio
+            let align_items = state.aligner.align(&full_16k, &spoken).unwrap_or_default();
+
+            // Find the aligner word(s) that correspond to the spoken form of our term
+            let spoken_term_lower = item.spoken.to_lowercase();
+            let spoken_term_words: Vec<&str> = spoken_term_lower.split_whitespace().collect();
+
+            let mut term_start = None;
+            let mut term_end = None;
+
+            // Walk alignment items, try to find a contiguous span matching the spoken term
+            'align: for i in 0..align_items.len() {
+                let mut concat = String::new();
+                for j in i..align_items.len().min(i + spoken_term_words.len() + 2) {
+                    if !concat.is_empty() { concat.push(' '); }
+                    concat.push_str(&align_items[j].word.to_lowercase());
+                    let concat_clean: String = concat.chars().filter(|c| c.is_alphanumeric() || *c == ' ').collect();
+                    let target_clean: String = spoken_term_lower.chars().filter(|c| c.is_alphanumeric() || *c == ' ').collect();
+                    if concat_clean.trim() == target_clean.trim() {
+                        term_start = Some(align_items[i].start_time);
+                        term_end = Some(align_items[j].end_time);
+                        break 'align;
+                    }
+                }
+            }
+
+            // If alignment didn't find the term, fall back to the whole audio
+            let (start_time, end_time) = match (term_start, term_end) {
+                (Some(s), Some(e)) => (s, e),
+                _ => (0.0, full_16k.len() as f64 / 16000.0),
+            };
+
+            // Crop audio to the term's time range (with small padding)
+            let crop_start = ((start_time - 0.08).max(0.0) * 16000.0) as usize;
+            let crop_end = ((end_time + 0.08) * 16000.0).min(full_16k.len() as f64) as usize;
+            let cropped = if crop_start < crop_end && crop_end <= full_16k.len() {
+                full_16k[crop_start..crop_end].to_vec()
+            } else {
+                full_16k.clone()
+            };
+
+            // Run dual ASR on the CROPPED audio (just the term)
             let state_q = state.clone();
-            let samples_q = samples_16k.clone();
+            let samples_q = cropped.clone();
             let qwen_task = tokio::task::spawn_blocking(move || -> String {
                 state_q.asr
                     .transcribe_samples(&samples_q, qwen3_asr::TranscribeOptions::default().with_language("english"))
@@ -417,10 +458,9 @@ async fn run_corpus_job(
                     .unwrap_or_default()
             });
             let state_p = state.clone();
-            let samples_p = samples_16k;
             let parakeet_task = tokio::task::spawn_blocking(move || -> String {
                 let mut p = state_p.parakeet.lock().unwrap();
-                p.transcribe_samples(samples_p.to_vec(), 16000, 1, None)
+                p.transcribe_samples(cropped.to_vec(), 16000, 1, None)
                     .map(|r| r.text)
                     .unwrap_or_default()
             });
