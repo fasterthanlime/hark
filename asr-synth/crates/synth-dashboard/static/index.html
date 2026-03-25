@@ -2554,6 +2554,7 @@
             const [corpusData, setCorpusData] = useState(null);
             const [corpusFilter, setCorpusFilter] = useState('');
             const [expandedTerm, setExpandedTerm] = useState(null);
+            const [showNoisy, setShowNoisy] = useState(false);
             const dialogRef = useRef(null);
             const [backend, setBackend] = useState('pocket-hq');
             const [corpusLimit, setCorpusLimit] = useState(200);
@@ -2683,6 +2684,9 @@
                     }} onClick={e => { if (e.target === dialogRef.current) dialogRef.current.close(); }}>
                         <div style={{padding:'16px 20px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', gap:12}}>
                             <h3 style={{margin:0, flex:1}}>Corpus Pairs {corpusData && <span style={{fontWeight:300,fontSize:14,color:'var(--text-muted)'}}>({corpusData.length})</span>}</h3>
+                            <label style={{fontSize:11,color:'var(--text-muted)',display:'flex',alignItems:'center',gap:4,cursor:'pointer'}}>
+                                <input type="checkbox" checked={showNoisy} onChange={e => setShowNoisy(e.target.checked)} /> Show noisy
+                            </label>
                             <input type="text" placeholder="Filter..." value={corpusFilter} onChange={e => setCorpusFilter(e.target.value)}
                                 style={{padding:'4px 10px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text)',fontFamily:'Jost,sans-serif',fontSize:13,width:200}} />
                             <button onClick={() => dialogRef.current.close()} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:18}}>&times;</button>
@@ -2690,12 +2694,13 @@
                         <div style={{overflow:'auto', maxHeight:'calc(80vh - 60px)', padding:'0 20px 16px'}}>
                             {corpusData && (() => {
                                 const f = corpusFilter.toLowerCase();
-                                const filtered = f ? corpusData.filter(p =>
+                                let filtered = showNoisy ? corpusData : corpusData.filter(p => p.clean !== false);
+                                if (f) filtered = filtered.filter(p =>
                                     (p.term||'').toLowerCase().includes(f) ||
                                     (p.qwen||'').toLowerCase().includes(f) ||
                                     (p.parakeet||'').toLowerCase().includes(f) ||
                                     (p.sentence||p.original||'').toLowerCase().includes(f)
-                                ) : corpusData;
+                                );
                                 // Group by term
                                 const groups = {};
                                 filtered.forEach((p, idx) => {

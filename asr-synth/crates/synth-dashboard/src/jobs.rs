@@ -178,23 +178,28 @@ fn word_boundaries(items: &[qwen3_asr::ForcedAlignItem]) -> Vec<f64> {
 
 /// Find a consensus boundary near `target_time` across multiple alignment boundary lists.
 /// Returns the boundary time if all lists have a boundary within `tolerance` of each other.
+/// `after=true`: find the nearest boundary >= target_time (end of term)
+/// `after=false`: find the nearest boundary <= target_time (start of term)
 fn find_consensus_boundary(all_boundaries: &[&[f64]], target_time: f64, tolerance: f64, after: bool) -> Option<f64> {
-    // For each alignment, find the nearest boundary after (or before) target_time
     let mut candidates = Vec::new();
     for bounds in all_boundaries {
         let nearest = if after {
-            bounds.iter().copied().filter(|&t| t >= target_time - 0.05).next()
+            // Find the smallest boundary that is >= target_time (or close to it)
+            bounds.iter().copied()
+                .filter(|&t| t >= target_time - 0.08)
+                .min_by(|a, b| a.partial_cmp(b).unwrap())
         } else {
-            bounds.iter().copied().rev().filter(|&t| t <= target_time + 0.05).next()
+            // Find the largest boundary that is <= target_time (or close to it)
+            bounds.iter().copied()
+                .filter(|&t| t <= target_time + 0.08)
+                .max_by(|a, b| a.partial_cmp(b).unwrap())
         };
         candidates.push(nearest?);
     }
 
-    // Check if all candidates agree within tolerance
     let min = candidates.iter().copied().fold(f64::INFINITY, f64::min);
     let max = candidates.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     if max - min <= tolerance {
-        // Return the average as the consensus boundary
         Some(candidates.iter().sum::<f64>() / candidates.len() as f64)
     } else {
         None
