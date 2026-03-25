@@ -654,7 +654,7 @@ async fn run_corpus_job(
                 let t = std::time::Instant::now();
                 let result = state2.tts.generate(&backend, &spoken).await;
                 let ms = t.elapsed().as_millis();
-                eprintln!("[tts] {} ms — {}", ms, &spoken.chars().take(40).collect::<String>());
+                eprintln!("[tts:{}] {} ms — {}", backend, ms, &spoken.chars().take(40).collect::<String>());
                 result
             })
         }).collect();
