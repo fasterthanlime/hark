@@ -341,26 +341,15 @@ fn is_cjk_char(ch: char) -> bool {
         || (0xF900..=0xFAFF).contains(&code)
 }
 
-fn is_kept_char(ch: char) -> bool {
-    if ch == '\'' {
-        return true;
-    }
-    ch.is_alphanumeric()
-}
-
-fn clean_token(token: &str) -> String {
-    token.chars().filter(|&ch| is_kept_char(ch)).collect()
-}
-
 /// Split text into words, handling space-separated languages and CJK characters.
-/// Each CJK character becomes its own "word". Punctuation is stripped.
+/// Keeps all characters (hyphens, dots, etc.) — the aligner model can handle them.
 fn split_words(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     for segment in text.split_whitespace() {
-        let cleaned = clean_token(segment);
-        if cleaned.is_empty() {
+        if segment.is_empty() {
             continue;
         }
+        let cleaned = segment;
         // Split CJK characters into individual tokens
         let mut buf = String::new();
         for ch in cleaned.chars() {
