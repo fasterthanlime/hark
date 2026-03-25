@@ -309,7 +309,7 @@ fn extract_with_consensus(
 
     let tris = compute_tri_boundaries(
         &orig_b, &qwen_b, &para_b,
-        orig_align, qwen_align, parakeet_align, 0.03,
+        orig_align, qwen_align, parakeet_align, 0.05,
     );
 
     // Left: walk right-to-left, find first where before_matches
