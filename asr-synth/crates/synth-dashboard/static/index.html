@@ -2636,7 +2636,7 @@
                             {liveStats && <div className="stat-card"><div className="value">{liveStats.pairs_written}</div><div className="label">This Run</div></div>}
                             {liveStats && <div className="stat-card"><div className="value">{liveStats.items_done}/{liveStats.items_total}</div><div className="label">Terms</div></div>}
                             {liveStats?.pairs_per_sec > 0 && <div className="stat-card"><div className="value">{liveStats.pairs_per_sec}</div><div className="label">pairs/sec</div></div>}
-                            {liveStats?.tts_sec > 0 && <div className="stat-card"><div className="value" style={{fontSize:16}}>TTS {liveStats.tts_sec}s / ASR {liveStats.asr_sec}s / Align {liveStats.align_sec}s</div><div className="label">Time Breakdown</div></div>}
+                            {liveStats?.avg_tts_ms > 0 && <div className="stat-card"><div className="value" style={{fontSize:16}}>TTS {liveStats.avg_tts_ms}ms / ASR {liveStats.avg_asr_ms}ms / Align {liveStats.avg_align_ms}ms</div><div className="label">Avg per pair</div></div>}
                             {liveStats?.errors > 0 && <div className="stat-card"><div className="value" style={{color:'var(--error)'}}>{liveStats.errors}</div><div className="label">Errors</div></div>}
                         </div>
 

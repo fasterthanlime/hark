@@ -568,9 +568,9 @@ async fn run_corpus_job(
             "items_total": work.len(),
             "errors": errors,
             "pairs_per_sec": (pairs_per_sec * 10.0).round() / 10.0,
-            "tts_sec": (tts_ms as f64 / 1000.0 * 10.0).round() / 10.0,
-            "asr_sec": (asr_ms as f64 / 1000.0 * 10.0).round() / 10.0,
-            "align_sec": (align_ms as f64 / 1000.0 * 10.0).round() / 10.0,
+            "avg_tts_ms": if count > 0 { (tts_ms as f64 / count as f64).round() as u64 } else { 0 },
+            "avg_asr_ms": if count > 0 { (asr_ms as f64 / count as f64).round() as u64 } else { 0 },
+            "avg_align_ms": if count > 0 { (align_ms as f64 / count as f64).round() as u64 } else { 0 },
         }).to_string());
     };
 
