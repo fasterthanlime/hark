@@ -34,6 +34,11 @@ impl MarkovChain {
         let mut fwd_counts: HashMap<String, HashMap<String, u32>> = HashMap::new();
         let mut bwd_counts: HashMap<String, HashMap<String, u32>> = HashMap::new();
 
+        const BANNED: &[&str] = &[
+            "fuck", "fucking", "shit", "jesus", "christ", "damn", "idiot",
+            "idk", "omg", "lol", "lmao", "rofl", "wtf", "stfu", "smh",
+        ];
+
         for sentence in sentences {
             let words: Vec<&str> = sentence.split_whitespace().collect();
             if words.len() < 3 { continue; }
@@ -42,6 +47,8 @@ impl MarkovChain {
             let mut prev = SENTENCE_START.to_string();
             for &w in &words {
                 let lower = w.to_lowercase();
+                let clean: String = lower.chars().filter(|c| c.is_alphanumeric()).collect();
+                if BANNED.contains(&clean.as_str()) { continue; }
                 *fwd_counts.entry(prev.clone()).or_default().entry(lower.clone()).or_default() += 1;
                 *bwd_counts.entry(lower.clone()).or_default().entry(prev).or_default() += 1;
                 prev = lower;
