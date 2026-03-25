@@ -1065,6 +1065,14 @@ pub async fn api_scan_results(
 
 // ==================== Pipeline Status ====================
 
+pub async fn api_reset_corpus() -> Result<Response, AppError> {
+    let path = "data/corpus_dashboard.jsonl";
+    if std::path::Path::new(path).exists() {
+        std::fs::remove_file(path).map_err(|e| err(anyhow::anyhow!("Failed to remove corpus: {e}")))?;
+    }
+    Ok(Json(serde_json::json!({"ok": true})).into_response())
+}
+
 pub async fn api_pipeline_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Response, AppError> {

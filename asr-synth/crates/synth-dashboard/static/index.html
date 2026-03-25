@@ -2578,7 +2578,12 @@
                         <h3>1. Generate Corpus</h3>
                         <p style={{color: 'var(--text-muted)', fontSize: 13, marginBottom: 12}}>
                             {status.approved_count} sentences + {status.vocab_reviewed || 0} vocab × {corpusPasses} passes → TTS → dual ASR → training pairs.
-                            {status.corpus_exists && <span style={{color: 'var(--success)'}}> {status.corpus_lines} pairs in corpus.</span>}
+                            {status.corpus_exists && <span style={{color: 'var(--success)'}}> {status.corpus_lines} pairs in corpus.{' '}
+                                <a href="#" style={{color:'var(--text-muted)',fontSize:11}} onClick={async e => {
+                                    e.preventDefault();
+                                    if (confirm('Delete all corpus pairs?')) { await api('/api/pipeline/reset-corpus', {method:'POST'}); load(); }
+                                }}>Reset</a>
+                            </span>}
                             {' '}Runs incrementally.
                         </p>
                         <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
