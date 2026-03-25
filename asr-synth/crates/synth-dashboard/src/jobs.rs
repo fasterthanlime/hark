@@ -465,14 +465,13 @@ async fn run_corpus_job(
                 }
             };
 
-            // 1) Align the ORIGINAL text against the audio to find the term's time range
-            let orig_align = state.aligner.align(&full_16k, &spoken).unwrap_or_default();
-            let spoken_term_lower = item.spoken.to_lowercase();
-
-            let (term_start, term_end) = find_term_time_range(&orig_align, &spoken_term_lower)
+            // 1) Align the ORIGINAL sentence against the audio → find the term's time range
+            let orig_align = state.aligner.align(&full_16k, &sentence).unwrap_or_default();
+            let term_lower = item.term.to_lowercase();
+            let (term_start, term_end) = find_term_time_range(&orig_align, &term_lower)
                 .unwrap_or((0.0, full_16k.len() as f64 / 16000.0));
 
-            // 2) Run dual ASR on the FULL audio (natural context → better transcription)
+            // 2) Run dual ASR on the FULL audio
             let state_q = state.clone();
             let samples_q = full_16k.clone();
             let qwen_task = tokio::task::spawn_blocking(move || -> String {
@@ -494,8 +493,7 @@ async fn run_corpus_job(
             let qwen_full = qwen_full.unwrap_or_default();
             let parakeet_full = parakeet_full.unwrap_or_default();
 
-            // 3) Align each ASR output against the same audio, then extract
-            //    the word(s) that overlap with the target term's time range
+            // 3) Align each ASR output against the audio → extract words at the term's time range
             let qwen_extracted = extract_asr_at_time_range(
                 &state.aligner, &full_16k, &qwen_full, term_start, term_end,
             );
@@ -503,14 +501,18 @@ async fn run_corpus_job(
                 &state.aligner, &full_16k, &parakeet_full, term_start, term_end,
             );
 
-            // Serialize alignment for debugging
-            let orig_align_json: Vec<serde_json::Value> = orig_align.iter().map(|a| {
-                serde_json::json!({"w": a.word, "s": (a.start_time * 100.0).round() / 100.0, "e": (a.end_time * 100.0).round() / 100.0})
-            }).collect();
+            // Serialize alignments for debugging
+            let fmt_align = |items: &[qwen3_asr::ForcedAlignItem]| -> Vec<serde_json::Value> {
+                items.iter().map(|a| {
+                    serde_json::json!({"w": a.word, "s": (a.start_time * 100.0).round() / 100.0, "e": (a.end_time * 100.0).round() / 100.0})
+                }).collect()
+            };
+            // Re-align ASR outputs for debug display (extract_asr_at_time_range already did this internally)
+            let qwen_align = state.aligner.align(&full_16k, &qwen_full).unwrap_or_default();
+            let parakeet_align = state.aligner.align(&full_16k, &parakeet_full).unwrap_or_default();
 
             writeln!(file, "{}", serde_json::json!({
                 "term": item.term,
-                "spoken_term": item.spoken,
                 "sentence": sentence,
                 "spoken": spoken,
                 "qwen_full": qwen_full,
@@ -518,7 +520,9 @@ async fn run_corpus_job(
                 "qwen": qwen_extracted,
                 "parakeet": parakeet_extracted,
                 "term_time": [term_start, term_end],
-                "alignment": orig_align_json,
+                "orig_alignment": fmt_align(&orig_align),
+                "qwen_alignment": fmt_align(&qwen_align),
+                "parakeet_alignment": fmt_align(&parakeet_align),
             }))?;
             count += 1;
 

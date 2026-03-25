@@ -2733,15 +2733,25 @@
                                                                         {p.parakeet_full && p.parakeet_full !== p.parakeet && <span style={{color:'var(--text-muted)',marginLeft:6,fontSize:11}}>full: {p.parakeet_full}</span>}
                                                                     </div>
                                                                 </div>
-                                                                {p.alignment && <details style={{marginTop:4}}>
-                                                                    <summary style={{color:'var(--text-muted)',fontSize:11,cursor:'pointer'}}>Alignment ({p.alignment.length} words)</summary>
-                                                                    <div style={{fontFamily:'monospace',fontSize:10,color:'var(--text-muted)',marginTop:2}}>
-                                                                        {p.alignment.map((a,j) => {
-                                                                            const inRange = tt && a.s >= tt[0] - 0.05 && a.e <= tt[1] + 0.05;
-                                                                            return <span key={j} style={{marginRight:6,color:inRange?'var(--accent)':'inherit'}}>{a.w}({a.s}-{a.e})</span>;
-                                                                        })}
-                                                                    </div>
-                                                                </details>}
+                                                                {(p.orig_alignment || p.alignment) && (() => {
+                                                                    const renderAlign = (label, items) => items && (
+                                                                        <div style={{marginTop:2}}>
+                                                                            <span style={{color:'var(--text-muted)',fontSize:10,fontWeight:600}}>{label}: </span>
+                                                                            {items.map((a,j) => {
+                                                                                const inRange = tt && a.s < tt[1] + 0.02 && a.e > tt[0] - 0.02;
+                                                                                return <span key={j} style={{marginRight:5,fontFamily:'monospace',fontSize:10,color:inRange?'var(--accent)':'var(--text-muted)'}}>{a.w}({a.s}-{a.e})</span>;
+                                                                            })}
+                                                                        </div>
+                                                                    );
+                                                                    return (
+                                                                        <details style={{marginTop:4}}>
+                                                                            <summary style={{color:'var(--text-muted)',fontSize:11,cursor:'pointer'}}>Alignments</summary>
+                                                                            {renderAlign('Original', p.orig_alignment || p.alignment)}
+                                                                            {renderAlign('Qwen ASR', p.qwen_alignment)}
+                                                                            {renderAlign('Parakeet ASR', p.parakeet_alignment)}
+                                                                        </details>
+                                                                    );
+                                                                })()}
                                                             </div>
                                                         );
                                                     })}
