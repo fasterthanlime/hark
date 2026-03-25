@@ -930,65 +930,123 @@ pub async fn api_start_prepare_job(
 
     let state2 = state.clone();
     tokio::task::spawn_blocking(move || {
-        // Export corpus from DB to JSONL for synth_train::prepare
-        {
-            let db = state2.db.lock().unwrap();
-            std::fs::create_dir_all("data").ok();
-            let pairs = db.corpus_pairs_all().unwrap_or_default();
-            let mut f = std::io::BufWriter::new(std::fs::File::create("data/corpus_dashboard.jsonl").unwrap());
-            for p in &pairs {
-                let _ = writeln!(f, "{}", serde_json::json!({
-                    "original": p["original"], "qwen": p["qwen"], "parakeet": p["parakeet"],
-                }));
-            }
-        }
+        use rand::seq::SliceRandom;
 
-        let config = synth_train::PrepareConfig {
-            input: "data/corpus_dashboard.jsonl".into(),
-            total_examples,
-            error_rate,
-            ..Default::default()
+        // Load corpus pairs: term + fragment errors
+        let corpus_pairs: Vec<(String, String, String, String)> = { // (term, original, qwen, parakeet)
+            let db = state2.db.lock().unwrap();
+            db.corpus_unique_triplets().unwrap_or_default()
         };
 
-        let result = synth_train::prepare(&config, |msg| {
+        // Load sentences for Markov chain
+        let all_texts = {
             let db = state2.db.lock().unwrap();
-            let _ = db.append_job_log(job_id, msg);
+            db.all_sentence_texts().unwrap_or_default()
+        };
+
+        if corpus_pairs.is_empty() {
+            let db = state2.db.lock().unwrap();
+            let _ = db.append_job_log(job_id, "ERROR: No corpus pairs. Generate corpus first.");
+            let _ = db.finish_job(job_id, "failed", None);
+            return;
+        }
+
+        {
+            let db = state2.db.lock().unwrap();
+            let _ = db.append_job_log(job_id, &format!(
+                "Building Markov chain from {} sentences, {} corpus pairs...",
+                all_texts.len(), corpus_pairs.len()
+            ));
+        }
+
+        let chain = MarkovChain::build(&all_texts);
+        let mut rng = rand::rngs::StdRng::from_os_rng();
+
+        let n_error = (total_examples as f64 * error_rate).round() as usize;
+        let n_identity = total_examples - n_error;
+
+        {
+            let db = state2.db.lock().unwrap();
+            let _ = db.append_job_log(job_id, &format!(
+                "Generating {} error + {} identity = {} total examples",
+                n_error, n_identity, total_examples
+            ));
+        }
+
+        let mut examples = Vec::with_capacity(total_examples);
+        let mut correction_count = 0usize;
+        let mut identity_count = 0usize;
+
+        // Helper: splice a fragment into a Markov sentence at the term position
+        let splice_fragment = |sentence: &str, term: &str, fragment: &str| -> String {
+            let lower = sentence.to_lowercase();
+            let lower_term = term.to_lowercase();
+            if let Some(pos) = lower.find(&lower_term) {
+                format!("{}{}{}", &sentence[..pos], fragment, &sentence[pos + term.len()..])
+            } else {
+                // Term not found in sentence — just use the fragment
+                fragment.to_string()
+            }
+        };
+
+        // Error examples: pick a corpus pair, generate a sentence, splice errors in
+        for _ in 0..n_error {
+            let (term, original_frag, qwen_frag, keet_frag) = &corpus_pairs[rng.random_range(0..corpus_pairs.len())];
+            let sentence = chain.generate_with(term, 15, &mut rng);
+
+            let full_original = splice_fragment(&sentence, term, original_frag);
+            let full_qwen = splice_fragment(&sentence, term, qwen_frag);
+            let full_keet = splice_fragment(&sentence, term, keet_frag);
+
+            examples.push(serde_json::json!({
+                "prompt": format!("<keet> {}\n<qwen> {}\n<fixd>", full_keet, full_qwen),
+                "completion": format!(" {}<|endoftext|>", full_original),
+            }));
+            correction_count += 1;
+        }
+
+        // Identity examples: generate a sentence, all lanes are the same
+        // Pick random terms so sentences contain vocab words
+        let vocab_terms: Vec<&str> = corpus_pairs.iter().map(|(t, _, _, _)| t.as_str()).collect();
+        for _ in 0..n_identity {
+            let term = vocab_terms[rng.random_range(0..vocab_terms.len())];
+            let sentence = chain.generate_with(term, 15, &mut rng);
+            examples.push(serde_json::json!({
+                "prompt": format!("<keet> {}\n<qwen> {}\n<fixd>", sentence, sentence),
+                "completion": format!(" {}<|endoftext|>", sentence),
+            }));
+            identity_count += 1;
+        }
+
+        examples.shuffle(&mut rng);
+
+        // Fixed 90/10 train/valid split
+        let n = examples.len();
+        let n_train = (n as f64 * 0.9) as usize;
+        let train = &examples[..n_train];
+        let valid = &examples[n_train..];
+
+        std::fs::create_dir_all("training/data").ok();
+        synth_train::write_jsonl("training/data/train.jsonl", train).ok();
+        synth_train::write_jsonl("training/data/valid.jsonl", valid).ok();
+
+        let stats = serde_json::json!({
+            "correction_examples": correction_count,
+            "identity_examples": identity_count,
+            "total": n,
+            "train_count": train.len(),
+            "valid_count": valid.len(),
         });
 
         let db = state2.db.lock().unwrap();
-        match result {
-            Ok(stats) => {
-                let _ = db.append_job_log(
-                    job_id,
-                    &format!(
-                        "Done: {} error + {} identity = {} total ({} train / {} valid)",
-                        stats.correction_examples,
-                        stats.identity_examples,
-                        stats.total,
-                        stats.train_count,
-                        stats.valid_count,
-                    ),
-                );
-                let _ = db.finish_job(
-                    job_id,
-                    "completed",
-                    Some(
-                        &serde_json::json!({
-                            "correction_examples": stats.correction_examples,
-                            "identity_examples": stats.identity_examples,
-                            "total": stats.total,
-                            "train_count": stats.train_count,
-                            "valid_count": stats.valid_count,
-                        })
-                        .to_string(),
-                    ),
-                );
-            }
-            Err(e) => {
-                let _ = db.append_job_log(job_id, &format!("ERROR: {e}"));
-                let _ = db.finish_job(job_id, "failed", None);
-            }
-        }
+        let _ = db.append_job_log(
+            job_id,
+            &format!(
+                "Done: {} error + {} identity = {} total ({} train / {} valid)",
+                correction_count, identity_count, n, train.len(), valid.len(),
+            ),
+        );
+        let _ = db.finish_job(job_id, "completed", Some(&stats.to_string()));
     });
 
     Ok(Json(serde_json::json!({"job_id": job_id})).into_response())
