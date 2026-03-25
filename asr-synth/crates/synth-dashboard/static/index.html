@@ -2718,7 +2718,14 @@
                             setTimeout(() => suggestPronRef.current?.focus(), 50);
                         };
                         const doPlay = () => {
-                            fetchTtsBuffer(spokenSentence).then(buf => playBuffer(buf)).catch(() => {});
+                            // Read current pronunciation directly from the input to avoid stale state
+                            const currentPron = suggestPronRef.current?.value ?? pron;
+                            const currentSpoken = s.sentence ? (() => {
+                                const idx = s.sentence.toLowerCase().indexOf(s.term.toLowerCase());
+                                if (idx >= 0) return s.sentence.slice(0, idx) + currentPron + s.sentence.slice(idx + s.term.length);
+                                return s.sentence;
+                            })() : currentPron;
+                            fetchTtsBuffer(currentSpoken).then(buf => playBuffer(buf)).catch(() => {});
                         };
                         return (
                         <div className="card" style={{marginBottom:12}}>
