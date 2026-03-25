@@ -179,20 +179,86 @@ fn lane_boundaries(items: &[qwen3_asr::ForcedAlignItem]) -> Vec<f64> {
     b
 }
 
-/// Compute tri-boundaries: times where all 3 lanes have a boundary within epsilon.
-fn tri_boundaries(
-    orig: &[f64], qwen: &[f64], para: &[f64], epsilon: f64,
-) -> Vec<f64> {
-    let mut result = Vec::new();
-    for &t in orig {
-        let q_match = qwen.iter().any(|&q| (q - t).abs() <= epsilon);
-        let p_match = para.iter().any(|&p| (p - t).abs() <= epsilon);
-        if q_match && p_match {
-            result.push(t);
+/// A tri-boundary: a time where all 3 lanes have a boundary,
+/// annotated with the word before/after in each lane.
+struct TriBoundary {
+    time: f64,
+    before: (Option<String>, Option<String>, Option<String>), // orig, qwen, para
+    after: (Option<String>, Option<String>, Option<String>),
+}
+
+impl TriBoundary {
+    /// The words before the boundary all match across lanes.
+    fn before_matches(&self) -> bool {
+        match (&self.before.0, &self.before.1, &self.before.2) {
+            (Some(a), Some(b), Some(c)) => {
+                a.to_lowercase() == b.to_lowercase() && b.to_lowercase() == c.to_lowercase()
+            }
+            (None, None, None) => true, // all empty = start of audio
+            _ => false,
         }
     }
-    result.dedup_by(|a, b| (*a - *b).abs() < epsilon);
-    result
+    /// The words after the boundary all match across lanes.
+    fn after_matches(&self) -> bool {
+        match (&self.after.0, &self.after.1, &self.after.2) {
+            (Some(a), Some(b), Some(c)) => {
+                a.to_lowercase() == b.to_lowercase() && b.to_lowercase() == c.to_lowercase()
+            }
+            (None, None, None) => true, // all empty = end of audio
+            _ => false,
+        }
+    }
+}
+
+/// Find the word ending just before `time` in an alignment.
+fn word_before(items: &[qwen3_asr::ForcedAlignItem], time: f64, eps: f64) -> Option<String> {
+    items.iter().rev()
+        .find(|a| a.end_time <= time + eps && a.end_time >= time - eps)
+        .or_else(|| items.iter().rev().find(|a| a.end_time <= time + eps))
+        .map(|a| a.word.clone())
+}
+
+/// Find the word starting just after `time` in an alignment.
+fn word_after(items: &[qwen3_asr::ForcedAlignItem], time: f64, eps: f64) -> Option<String> {
+    items.iter()
+        .find(|a| a.start_time >= time - eps && a.start_time <= time + eps)
+        .or_else(|| items.iter().find(|a| a.start_time >= time - eps))
+        .map(|a| a.word.clone())
+}
+
+/// Compute annotated tri-boundaries.
+fn compute_tri_boundaries(
+    orig_b: &[f64], qwen_b: &[f64], para_b: &[f64],
+    orig_align: &[qwen3_asr::ForcedAlignItem],
+    qwen_align: &[qwen3_asr::ForcedAlignItem],
+    para_align: &[qwen3_asr::ForcedAlignItem],
+    epsilon: f64,
+) -> Vec<TriBoundary> {
+    let mut times = Vec::new();
+    for &t in orig_b {
+        let q_match = qwen_b.iter().any(|&q| (q - t).abs() <= epsilon);
+        let p_match = para_b.iter().any(|&p| (p - t).abs() <= epsilon);
+        if q_match && p_match {
+            times.push(t);
+        }
+    }
+    times.dedup_by(|a, b| (*a - *b).abs() < epsilon);
+
+    times.into_iter().map(|t| {
+        TriBoundary {
+            time: t,
+            before: (
+                word_before(orig_align, t, epsilon),
+                word_before(qwen_align, t, epsilon),
+                word_before(para_align, t, epsilon),
+            ),
+            after: (
+                word_after(orig_align, t, epsilon),
+                word_after(qwen_align, t, epsilon),
+                word_after(para_align, t, epsilon),
+            ),
+        }
+    }).collect()
 }
 
 /// Extract words from an alignment that START within [start, end).
@@ -204,13 +270,6 @@ fn words_in_range(items: &[qwen3_asr::ForcedAlignItem], start: f64, end: f64) ->
         .join(" ")
 }
 
-/// Extract triplets using tri-boundaries.
-///
-/// 1. Compute boundaries per lane (every word start + end).
-/// 2. Find tri-boundaries: times where all 3 lanes agree (within 30ms).
-/// 3. Find the closest tri-boundary to the LEFT of the term start.
-/// 4. Find the closest tri-boundary to the RIGHT of the term end.
-/// 5. Slice all 3 lanes with [left, right).
 struct ConsensusResult {
     original: String,
     qwen: String,
@@ -220,6 +279,14 @@ struct ConsensusResult {
     debug: serde_json::Value,
 }
 
+/// Extract triplets using annotated tri-boundaries.
+///
+/// 1. Compute tri-boundaries with before/after word annotations.
+/// 2. For the LEFT boundary: walk tri-boundaries right-to-left from the term start,
+///    pick the first one where `before` matches across all 3 lanes.
+/// 3. For the RIGHT boundary: walk left-to-right from the term end,
+///    pick the first one where `after` matches across all 3 lanes.
+/// 4. Slice all 3 lanes with [left, right).
 fn extract_with_consensus(
     orig_align: &[qwen3_asr::ForcedAlignItem],
     qwen_align: &[qwen3_asr::ForcedAlignItem],
@@ -228,21 +295,25 @@ fn extract_with_consensus(
     term_end: f64,
 ) -> ConsensusResult {
     let r2 = |v: f64| (v * 1000.0).round() / 1000.0;
-    let rv = |v: &[f64]| -> Vec<f64> { v.iter().map(|&x| r2(x)).collect() };
 
     let orig_b = lane_boundaries(orig_align);
     let qwen_b = lane_boundaries(qwen_align);
     let para_b = lane_boundaries(parakeet_align);
 
-    let tri = tri_boundaries(&orig_b, &qwen_b, &para_b, 0.03);
+    let tris = compute_tri_boundaries(
+        &orig_b, &qwen_b, &para_b,
+        orig_align, qwen_align, parakeet_align, 0.03,
+    );
 
-    // Closest tri-boundary <= term_start
-    let left = tri.iter().copied().rev()
-        .find(|&t| t <= term_start + 0.01);
+    // Left: walk right-to-left, find first where before_matches
+    let left = tris.iter().rev()
+        .find(|tb| tb.time <= term_start + 0.01 && tb.before_matches())
+        .map(|tb| tb.time);
 
-    // Closest tri-boundary >= term_end
-    let right = tri.iter().copied()
-        .find(|&t| t >= term_end - 0.01);
+    // Right: walk left-to-right, find first where after_matches
+    let right = tris.iter()
+        .find(|tb| tb.time >= term_end - 0.01 && tb.after_matches())
+        .map(|tb| tb.time);
 
     let start = left.unwrap_or(term_start);
     let end = right.unwrap_or(term_end);
@@ -252,11 +323,22 @@ fn extract_with_consensus(
     let qwen = words_in_range(qwen_align, start, end);
     let parakeet = words_in_range(parakeet_align, start, end);
 
+    let rv = |v: &[f64]| -> Vec<f64> { v.iter().map(|&x| r2(x)).collect() };
+    let tri_debug: Vec<serde_json::Value> = tris.iter().map(|tb| {
+        serde_json::json!({
+            "t": r2(tb.time),
+            "before": [&tb.before.0, &tb.before.1, &tb.before.2],
+            "after": [&tb.after.0, &tb.after.1, &tb.after.2],
+            "bm": tb.before_matches(),
+            "am": tb.after_matches(),
+        })
+    }).collect();
+
     let debug = serde_json::json!({
         "orig_bounds": rv(&orig_b),
         "qwen_bounds": rv(&qwen_b),
         "para_bounds": rv(&para_b),
-        "tri_bounds": rv(&tri),
+        "tri_boundaries": tri_debug,
         "term_start": r2(term_start),
         "term_end": r2(term_end),
         "left_chosen": left.map(r2),
