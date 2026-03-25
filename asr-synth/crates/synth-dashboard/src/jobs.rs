@@ -29,6 +29,7 @@ pub async fn api_stop_job(
 #[derive(Deserialize)]
 pub struct CorpusJobBody {
     pub tts_backend: Option<String>,
+    pub limit: Option<usize>, // max items to process this run (default: all)
 }
 
 #[derive(Deserialize)]
@@ -72,7 +73,8 @@ pub async fn api_start_corpus_job(
     check_no_running_jobs(&state)?;
 
     let tts_backend = body.tts_backend.unwrap_or_else(|| "openai".to_string());
-    let config_json = serde_json::json!({"tts_backend": tts_backend}).to_string();
+    let limit = body.limit.unwrap_or(usize::MAX);
+    let config_json = serde_json::json!({"tts_backend": tts_backend, "limit": limit}).to_string();
 
     let job_id = {
         let db = state.db.lock().unwrap();
@@ -82,7 +84,7 @@ pub async fn api_start_corpus_job(
     let state2 = state.clone();
     let backend = tts_backend.clone();
     tokio::spawn(async move {
-        let result = run_corpus_job(&state2, job_id, &backend).await;
+        let result = run_corpus_job(&state2, job_id, &backend, limit).await;
         let db = state2.db.lock().unwrap();
         match result {
             Ok(count) => {
@@ -106,6 +108,7 @@ async fn run_corpus_job(
     state: &Arc<AppState>,
     job_id: i64,
     tts_backend: &str,
+    limit: usize,
 ) -> anyhow::Result<usize> {
     // Collect both approved sentences AND reviewed vocab terms
     let (sentences, vocab_terms) = {
@@ -119,28 +122,50 @@ async fn run_corpus_job(
         items.push((s.text.clone(), s.spoken.clone()));
     }
     for v in &vocab_terms {
-        // Vocab terms: "original" is the term, spoken is the pronunciation
         items.push((v.term.clone(), v.spoken().to_string()));
     }
-    let total = items.len();
+
+    // Load existing corpus to skip already-processed items
+    std::fs::create_dir_all("data").ok();
+    let corpus_path = "data/corpus_dashboard.jsonl";
+    let existing: std::collections::HashSet<String> = std::fs::read_to_string(corpus_path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            serde_json::from_str::<serde_json::Value>(l).ok()
+                .and_then(|v| v["original"].as_str().map(|s| s.to_string()))
+        })
+        .collect();
+
+    // Filter to items not yet in the corpus
+    let pending: Vec<_> = items.into_iter()
+        .filter(|(orig, _)| !existing.contains(orig))
+        .collect();
+    let batch_size = pending.len().min(limit);
+    let batch = &pending[..batch_size];
 
     {
         let db = state.db.lock().unwrap();
         db.append_job_log(job_id, &format!(
-            "Starting corpus generation: {} sentences + {} vocab terms = {total} items, backend: {tts_backend}",
-            sentences.len(), vocab_terms.len()
+            "Corpus: {} sentences + {} vocab, {} already done, {} to process (limit {}{})  backend: {tts_backend}",
+            sentences.len(), vocab_terms.len(), existing.len(), batch_size,
+            if limit == usize::MAX { "".to_string() } else { format!(", max {limit}") },
+            ""
         ))?;
     }
 
-    // Ensure data directory exists
-    std::fs::create_dir_all("data").ok();
+    // Append to existing file
     let mut file = std::io::BufWriter::new(
-        std::fs::File::create("data/corpus_dashboard.jsonl")
-            .map_err(|e| anyhow::anyhow!("Failed to create corpus file: {e}"))?,
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(corpus_path)
+            .map_err(|e| anyhow::anyhow!("Failed to open corpus file: {e}"))?,
     );
 
     let mut count = 0;
-    for (i, (original, spoken)) in items.iter().enumerate() {
+    let total = batch_size;
+    for (i, (original, spoken)) in batch.iter().enumerate() {
         if state.job_cancel.load(Ordering::Relaxed) {
             let db = state.db.lock().unwrap();
             let _ = db.append_job_log(job_id, "Stopped by user.");
