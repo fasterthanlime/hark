@@ -116,13 +116,16 @@ async fn run_corpus_job(
         (db.list_approved_sentences()?, db.list_reviewed_vocab()?)
     };
 
-    // Build unified list of (original_text, spoken_text) items
-    let mut items: Vec<(String, String)> = Vec::new();
+    // Build unified list of (original_text, spoken_text, is_short) items
+    // Short items (vocab terms, ≤3 words) need carrier phrase wrapping for good TTS
+    let mut items: Vec<(String, String, bool)> = Vec::new();
     for s in &sentences {
-        items.push((s.text.clone(), s.spoken.clone()));
+        items.push((s.text.clone(), s.spoken.clone(), false));
     }
     for v in &vocab_terms {
-        items.push((v.term.clone(), v.spoken().to_string()));
+        let spoken = v.spoken().to_string();
+        let is_short = spoken.split_whitespace().count() <= 3;
+        items.push((v.term.clone(), spoken, is_short));
     }
 
     // Load existing corpus to skip already-processed items
@@ -139,7 +142,7 @@ async fn run_corpus_job(
 
     // Filter to items not yet in the corpus
     let pending: Vec<_> = items.into_iter()
-        .filter(|(orig, _)| !existing.contains(orig))
+        .filter(|(orig, _, _)| !existing.contains(orig))
         .collect();
     let batch_size = pending.len().min(limit);
     let batch = &pending[..batch_size];
@@ -165,7 +168,7 @@ async fn run_corpus_job(
 
     let mut count = 0;
     let total = batch_size;
-    for (i, (original, spoken)) in batch.iter().enumerate() {
+    for (i, (original, spoken, is_short)) in batch.iter().enumerate() {
         if state.job_cancel.load(Ordering::Relaxed) {
             let db = state.db.lock().unwrap();
             let _ = db.append_job_log(job_id, "Stopped by user.");
@@ -173,8 +176,15 @@ async fn run_corpus_job(
         }
         let text_preview: String = original.chars().take(50).collect();
 
+        // For short items (vocab terms), wrap in carrier phrase for better TTS
+        let tts_text = if *is_short {
+            format!("The word is: {}.", spoken.replace('-', " "))
+        } else {
+            spoken.clone()
+        };
+
         // TTS (async for remote backends)
-        let audio = match state.tts.generate(tts_backend, spoken).await {
+        let mut audio = match state.tts.generate(tts_backend, &tts_text).await {
             Ok(mut a) => {
                 a.normalize();
                 a
@@ -185,6 +195,23 @@ async fn run_corpus_job(
                 continue;
             }
         };
+
+        // If carrier phrase was used, align and crop to just the target word(s)
+        if *is_short {
+            if let Ok(full_16k) = tts::resample_to_16k(&audio.samples, audio.sample_rate) {
+                let carrier_items = state.aligner.align(&full_16k, &tts_text).unwrap_or_default();
+                let skip = 3; // "The", "word", "is"
+                if carrier_items.len() > skip {
+                    let start_time = carrier_items[skip].start_time;
+                    let end_time = carrier_items.last().map(|it| it.end_time).unwrap_or(start_time + 1.0);
+                    let start_sample = ((start_time - 0.05).max(0.0) * audio.sample_rate as f64) as usize;
+                    let end_sample = ((end_time + 0.1) * audio.sample_rate as f64).min(audio.samples.len() as f64) as usize;
+                    if start_sample < end_sample && end_sample <= audio.samples.len() {
+                        audio.samples = audio.samples[start_sample..end_sample].to_vec();
+                    }
+                }
+            }
+        }
 
         // Resample to 16kHz for ASR
         let samples_16k = match tts::resample_to_16k(&audio.samples, audio.sample_rate) {
