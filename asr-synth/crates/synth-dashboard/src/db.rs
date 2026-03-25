@@ -736,8 +736,9 @@ impl Db {
 
     /// Get IDs of kept vocab terms that haven't been reviewed yet
     pub fn unreviewed_vocab_ids(&self, limit: i64) -> Result<Vec<i64>> {
+        // Include both unreviewed terms AND reviewed terms missing overrides
         let mut stmt = self.conn.prepare(
-            "SELECT id FROM vocab WHERE curated = 'kept' AND reviewed = 0 ORDER BY id LIMIT ?1"
+            "SELECT id FROM vocab WHERE curated = 'kept' AND (reviewed = 0 OR spoken_override IS NULL) ORDER BY id LIMIT ?1"
         )?;
         let rows = stmt.query_map(params![limit], |row| row.get(0))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -761,8 +762,10 @@ impl Db {
 
     /// All reviewed (approved) vocab terms for corpus generation.
     pub fn list_reviewed_vocab(&self) -> Result<Vec<VocabRow>> {
+        // Only use terms that have been reviewed AND have a pronunciation override.
+        // Terms without overrides have unreliable auto-pronunciations that TTS will mangle.
         let mut stmt = self.conn.prepare(
-            "SELECT id, term, spoken_auto, spoken_override, reviewed FROM vocab WHERE reviewed = 1 AND (curated IS NULL OR curated = 'kept')"
+            "SELECT id, term, spoken_auto, spoken_override, reviewed FROM vocab WHERE reviewed = 1 AND spoken_override IS NOT NULL AND (curated IS NULL OR curated = 'kept')"
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(VocabRow {
@@ -790,12 +793,13 @@ impl Db {
     }
 
     pub fn vocab_review_counts(&self) -> Result<(i64, i64, i64)> {
-        // (reviewed, unreviewed, total kept)
-        let reviewed: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM vocab WHERE curated = 'kept' AND reviewed = 1", [], |r| r.get(0))?;
-        let unreviewed: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM vocab WHERE curated = 'kept' AND reviewed = 0", [], |r| r.get(0))?;
-        Ok((reviewed, unreviewed, reviewed + unreviewed))
+        // "reviewed" = has override (actually usable for corpus generation)
+        // "to review" = unreviewed OR missing override
+        let done: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM vocab WHERE curated = 'kept' AND reviewed = 1 AND spoken_override IS NOT NULL", [], |r| r.get(0))?;
+        let to_review: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM vocab WHERE curated = 'kept' AND (reviewed = 0 OR spoken_override IS NULL)", [], |r| r.get(0))?;
+        Ok((done, to_review, done + to_review))
     }
 
     pub fn set_vocab_curated(&self, term: &str, status: &str) -> Result<()> {
