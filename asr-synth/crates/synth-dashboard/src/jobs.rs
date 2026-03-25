@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
 
@@ -6,6 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use rand::prelude::*;
 use serde::Deserialize;
 
 use crate::tts;
@@ -13,6 +15,148 @@ use crate::{err, AppError, AppState};
 use parakeet_rs::Transcriber;
 
 use std::sync::atomic::Ordering;
+
+// ==================== Markov Chain ====================
+
+/// Word-level bigram Markov chain for generating sentences containing a target word.
+struct MarkovChain {
+    /// word → [(next_word, count)]
+    forward: HashMap<String, Vec<(String, u32)>>,
+    /// word → [(prev_word, count)]
+    backward: HashMap<String, Vec<(String, u32)>>,
+}
+
+const SENTENCE_START: &str = "<S>";
+const SENTENCE_END: &str = "</S>";
+
+impl MarkovChain {
+    fn build(sentences: &[String]) -> Self {
+        let mut fwd_counts: HashMap<String, HashMap<String, u32>> = HashMap::new();
+        let mut bwd_counts: HashMap<String, HashMap<String, u32>> = HashMap::new();
+
+        for sentence in sentences {
+            let words: Vec<&str> = sentence.split_whitespace().collect();
+            if words.len() < 3 { continue; }
+
+            // Forward: <S> → w0 → w1 → ... → </S>
+            let mut prev = SENTENCE_START.to_string();
+            for &w in &words {
+                let lower = w.to_lowercase();
+                *fwd_counts.entry(prev.clone()).or_default().entry(lower.clone()).or_default() += 1;
+                *bwd_counts.entry(lower.clone()).or_default().entry(prev).or_default() += 1;
+                prev = lower;
+            }
+            *fwd_counts.entry(prev).or_default().entry(SENTENCE_END.to_string()).or_default() += 1;
+        }
+
+        let to_vec = |m: HashMap<String, HashMap<String, u32>>| -> HashMap<String, Vec<(String, u32)>> {
+            m.into_iter()
+                .map(|(k, counts)| (k, counts.into_iter().collect()))
+                .collect()
+        };
+
+        MarkovChain {
+            forward: to_vec(fwd_counts),
+            backward: to_vec(bwd_counts),
+        }
+    }
+
+    /// Pick a random next word weighted by frequency.
+    fn sample(choices: &[(String, u32)], rng: &mut impl Rng) -> Option<String> {
+        if choices.is_empty() { return None; }
+        let total: u32 = choices.iter().map(|(_, c)| c).sum();
+        let mut pick = rng.random_range(0..total);
+        for (word, count) in choices {
+            if pick < *count { return Some(word.clone()); }
+            pick -= count;
+        }
+        Some(choices.last().unwrap().0.clone())
+    }
+
+    /// Generate a sentence containing `target_word` (lowercased).
+    /// Returns None if the word isn't in the chain at all.
+    fn generate_with(&self, target_word: &str, max_words: usize, rng: &mut impl Rng) -> Option<String> {
+        let target_lower = target_word.to_lowercase();
+
+        // Build forward from target
+        let mut forward_words = Vec::new();
+        let mut cur = target_lower.clone();
+        for _ in 0..max_words / 2 {
+            let choices = self.forward.get(&cur)?;
+            let next = Self::sample(choices, rng)?;
+            if next == SENTENCE_END { break; }
+            forward_words.push(next.clone());
+            cur = next;
+        }
+
+        // Build backward from target
+        let mut backward_words = Vec::new();
+        cur = target_lower.clone();
+        for _ in 0..max_words / 2 {
+            let choices = self.backward.get(&cur);
+            let Some(choices) = choices else { break; };
+            let prev = Self::sample(choices, rng)?;
+            if prev == SENTENCE_START { break; }
+            backward_words.push(prev.clone());
+            cur = prev;
+        }
+        backward_words.reverse();
+
+        // Assemble: backward + target + forward
+        let mut words = backward_words;
+        words.push(target_word.to_string()); // preserve original casing
+        words.extend(forward_words);
+
+        if words.len() < 3 {
+            // Too short — fall back to a simple template
+            return Some(format!("The {} configuration is important.", target_word));
+        }
+
+        // Capitalize first word
+        if let Some(first) = words.first_mut() {
+            let mut chars = first.chars();
+            if let Some(c) = chars.next() {
+                *first = c.to_uppercase().to_string() + chars.as_str();
+            }
+        }
+
+        Some(words.join(" "))
+    }
+}
+
+/// Apply pronunciation overrides to all vocab words in a sentence.
+fn apply_overrides_to_sentence(sentence: &str, overrides: &HashMap<String, String>) -> String {
+    let mut result = sentence.to_string();
+    // Sort by length descending to replace longer terms first
+    let mut terms: Vec<_> = overrides.iter().collect();
+    terms.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    for (term, spoken) in terms {
+        if spoken == term { continue; }
+        let lower_result = result.to_lowercase();
+        let lower_term = term.to_lowercase();
+        if let Some(pos) = lower_result.find(&lower_term) {
+            result = format!("{}{}{}", &result[..pos], spoken, &result[pos + term.len()..]);
+        }
+    }
+    result
+}
+
+/// Strip carrier phrase prefix variants from ASR output.
+fn strip_carrier_prefix(text: &str) -> String {
+    let lower = text.to_lowercase();
+    // Try various forms ASR might produce for "The word is: X"
+    for prefix in &["the word is ", "the word is: ", "the word is, "] {
+        if let Some(rest) = lower.strip_prefix(prefix) {
+            // Return with original casing from the position after prefix
+            let idx = prefix.len();
+            if idx < text.len() {
+                return text[idx..].trim_start_matches(|c: char| c == ':' || c == ',' || c == ' ').to_string();
+            }
+            return rest.to_string();
+        }
+    }
+    text.to_string()
+}
 
 // ==================== Cancel ====================
 
@@ -113,27 +257,30 @@ async fn run_corpus_job(
     limit: usize,
     target_passes: usize,
 ) -> anyhow::Result<usize> {
-    // Collect both approved sentences AND reviewed vocab terms
-    let (sentences, vocab_terms) = {
+    // Collect reviewed vocab terms + approved sentences
+    let (vocab_terms, all_texts) = {
         let db = state.db.lock().unwrap();
-        (db.list_approved_sentences()?, db.list_reviewed_vocab()?)
+        (db.list_reviewed_vocab()?, db.all_sentence_texts()?)
     };
 
-    // Build unified list of (original_text, spoken_text, is_short) items
-    let mut items: Vec<(String, String, bool)> = Vec::new();
-    for s in &sentences {
-        items.push((s.text.clone(), s.spoken.clone(), false));
+    // Build Markov chain from all sentence texts
+    {
+        let db = state.db.lock().unwrap();
+        db.append_job_log(job_id, &format!("Building Markov chain from {} sentences...", all_texts.len()))?;
     }
-    for v in &vocab_terms {
-        let spoken = v.spoken().to_string();
-        let is_short = spoken.split_whitespace().count() <= 3;
-        items.push((v.term.clone(), spoken, is_short));
+    let chain = MarkovChain::build(&all_texts);
+
+    // Build work items from vocab terms
+    struct WorkItem {
+        term: String,
+        spoken: String,
+        passes_needed: usize,
     }
 
-    // Count existing passes per original in the corpus file
+    // Count existing passes per term in the corpus file
     std::fs::create_dir_all("data").ok();
     let corpus_path = "data/corpus_dashboard.jsonl";
-    let mut existing_passes: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut existing_passes: HashMap<String, usize> = HashMap::new();
     if let Ok(content) = std::fs::read_to_string(corpus_path) {
         for line in content.lines() {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
@@ -145,24 +292,16 @@ async fn run_corpus_job(
     }
     let existing_total: usize = existing_passes.values().sum();
 
-    // Build work list: for each item, how many more passes are needed?
-    struct WorkItem {
-        original: String,
-        spoken: String,
-        is_short: bool,
-        passes_needed: usize,
-    }
     let mut work: Vec<WorkItem> = Vec::new();
     let mut total_passes_needed = 0usize;
-    for (orig, spoken, is_short) in &items {
-        let done = existing_passes.get(orig).copied().unwrap_or(0);
+    for v in &vocab_terms {
+        let done = existing_passes.get(&v.term).copied().unwrap_or(0);
         let needed = target_passes.saturating_sub(done);
         if needed > 0 {
             total_passes_needed += needed;
             work.push(WorkItem {
-                original: orig.clone(),
-                spoken: spoken.clone(),
-                is_short: *is_short,
+                term: v.term.clone(),
+                spoken: v.spoken().to_string(),
                 passes_needed: needed,
             });
         }
@@ -173,8 +312,8 @@ async fn run_corpus_job(
     {
         let db = state.db.lock().unwrap();
         db.append_job_log(job_id, &format!(
-            "Corpus: {} items × {} passes, {} pairs exist, {} passes needed, running {} (limit {})\nBackend: {tts_backend}",
-            items.len(), target_passes, existing_total, total_passes_needed, passes_to_run,
+            "Corpus: {} vocab terms × {} passes, {} pairs exist, {} needed, running {} (limit {})\nBackend: {tts_backend}",
+            vocab_terms.len(), target_passes, existing_total, total_passes_needed, passes_to_run,
             if limit == usize::MAX { "∞".to_string() } else { limit.to_string() },
         ))?;
     }
@@ -203,18 +342,18 @@ async fn run_corpus_job(
         }).to_string());
     };
 
+    let mut rng = rand::rngs::StdRng::from_os_rng();
+
+    // Get spoken overrides for building spoken forms of Markov sentences
+    let overrides = {
+        let db = state.db.lock().unwrap();
+        db.get_spoken_overrides().unwrap_or_default()
+    };
+
     'outer: for item in &work {
         if count >= passes_to_run { break; }
 
-        let text_preview: String = item.original.chars().take(40).collect();
         let passes_this_item = item.passes_needed.min(passes_to_run - count);
-
-        // For short items, build carrier phrase
-        let tts_text = if item.is_short {
-            format!("The word is: {}.", item.spoken.replace('-', " "))
-        } else {
-            item.spoken.clone()
-        };
 
         for pass in 0..passes_this_item {
             if state.job_cancel.load(Ordering::Relaxed) {
@@ -223,40 +362,46 @@ async fn run_corpus_job(
                 break 'outer;
             }
 
-            // TTS
-            let mut audio = match state.tts.generate(tts_backend, &tts_text).await {
+            // Generate a Markov sentence containing this term
+            let sentence = chain.generate_with(&item.term, 15, &mut rng)
+                .unwrap_or_else(|| format!("Please check the {} setting.", item.term));
+
+            // Build spoken form: replace the term with its spoken pronunciation
+            let spoken = {
+                let lower_sentence = sentence.to_lowercase();
+                let lower_term = item.term.to_lowercase();
+                if let Some(pos) = lower_sentence.find(&lower_term) {
+                    // Replace the term occurrence with the spoken form
+                    let before = &sentence[..pos];
+                    let after = &sentence[pos + item.term.len()..];
+                    // Apply overrides to surrounding words too
+                    let spoken_term = &item.spoken;
+                    format!("{before}{spoken_term}{after}")
+                } else {
+                    sentence.clone()
+                }
+            };
+
+            // Apply any other vocab overrides to the rest of the sentence
+            let spoken = apply_overrides_to_sentence(&spoken, &overrides);
+
+            // TTS the full sentence
+            let audio = match state.tts.generate(tts_backend, &spoken).await {
                 Ok(mut a) => { a.normalize(); a }
                 Err(e) => {
                     let db = state.db.lock().unwrap();
-                    let _ = db.append_job_log(job_id, &format!("TTS FAILED: {e} — {text_preview}"));
+                    let _ = db.append_job_log(job_id, &format!("TTS FAILED: {e} — {}", &sentence.chars().take(40).collect::<String>()));
                     errors += 1;
                     continue;
                 }
             };
-
-            // Carrier phrase: align + crop
-            if item.is_short {
-                if let Ok(full_16k) = tts::resample_to_16k(&audio.samples, audio.sample_rate) {
-                    let carrier_items = state.aligner.align(&full_16k, &tts_text).unwrap_or_default();
-                    let skip = 3;
-                    if carrier_items.len() > skip {
-                        let start_time = carrier_items[skip].start_time;
-                        let end_time = carrier_items.last().map(|it| it.end_time).unwrap_or(start_time + 1.0);
-                        let start_sample = ((start_time - 0.05).max(0.0) * audio.sample_rate as f64) as usize;
-                        let end_sample = ((end_time + 0.1) * audio.sample_rate as f64).min(audio.samples.len() as f64) as usize;
-                        if start_sample < end_sample && end_sample <= audio.samples.len() {
-                            audio.samples = audio.samples[start_sample..end_sample].to_vec();
-                        }
-                    }
-                }
-            }
 
             // Resample
             let samples_16k = match tts::resample_to_16k(&audio.samples, audio.sample_rate) {
                 Ok(s) => s,
                 Err(e) => {
                     let db = state.db.lock().unwrap();
-                    let _ = db.append_job_log(job_id, &format!("Resample FAILED: {e} — {text_preview}"));
+                    let _ = db.append_job_log(job_id, &format!("Resample FAILED: {e}"));
                     errors += 1;
                     continue;
                 }
@@ -267,7 +412,7 @@ async fn run_corpus_job(
             let samples_q = samples_16k.clone();
             let qwen_task = tokio::task::spawn_blocking(move || -> String {
                 state_q.asr
-                    .transcribe_samples(&samples_q, qwen3_asr::TranscribeOptions::default())
+                    .transcribe_samples(&samples_q, qwen3_asr::TranscribeOptions::default().with_language("english"))
                     .map(|r| r.text)
                     .unwrap_or_default()
             });
@@ -284,25 +429,29 @@ async fn run_corpus_job(
             let qwen = qwen.unwrap_or_default();
             let parakeet = parakeet.unwrap_or_default();
 
+            // Write both ASR outputs as separate training pairs
+            // original = the sentence with correct spelling
+            // qwen/parakeet = what ASR heard
             writeln!(file, "{}", serde_json::json!({
-                "original": item.original,
-                "parakeet": parakeet,
+                "original": sentence,
                 "qwen": qwen,
+                "parakeet": parakeet,
+                "term": item.term,
             }))?;
             count += 1;
 
-            // Log every pass for first item, then every Nth
+            // Log
             if pass == 0 || (count % 10) == 0 {
                 let db = state.db.lock().unwrap();
                 let _ = db.append_job_log(job_id, &format!(
-                    "[{}/{}] {text_preview} (pass {}/{}): Q=\"{}\" P=\"{}\"",
-                    items_done + 1, work.len(), pass + 1, passes_this_item,
-                    &qwen.chars().take(30).collect::<String>(),
-                    &parakeet.chars().take(30).collect::<String>(),
+                    "[{}/{}] \"{}\" pass {}/{}: \"{}\"",
+                    items_done + 1, work.len(), item.term,
+                    pass + 1, passes_this_item,
+                    &sentence.chars().take(50).collect::<String>(),
                 ));
             }
 
-            // Update live stats periodically
+            // Update live stats
             if count % 5 == 0 {
                 file.flush()?;
                 update_stats(state, job_id, count, items_done, errors);
@@ -835,7 +984,7 @@ async fn run_vocab_scan(
 
             let qwen_task = tokio::task::spawn_blocking(move || -> String {
                 state_q.asr
-                    .transcribe_samples(&seg_q, qwen3_asr::TranscribeOptions::default())
+                    .transcribe_samples(&seg_q, qwen3_asr::TranscribeOptions::default().with_language("english"))
                     .map(|r| r.text)
                     .unwrap_or_default()
             });

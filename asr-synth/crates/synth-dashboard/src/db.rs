@@ -543,6 +543,13 @@ impl Db {
         Ok((approved, rejected, total))
     }
 
+    /// All sentence texts (for Markov chain building).
+    pub fn all_sentence_texts(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT text FROM sentences UNION SELECT text FROM candidate_sentences")?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     pub fn list_approved_sentences(&self) -> Result<Vec<SentenceRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, text, spoken, vocab_terms, unknown_words, status, wav_path, alignment_json, tts_backend, parakeet_output, qwen_output, human_wav_path FROM sentences WHERE status = 'approved' ORDER BY id"
