@@ -764,9 +764,9 @@ impl Db {
     /// All reviewed (approved) vocab terms for corpus generation.
     pub fn list_reviewed_vocab(&self) -> Result<Vec<VocabRow>> {
         // Only use terms that have been reviewed AND have a pronunciation override.
-        // Terms without overrides have unreliable auto-pronunciations that TTS will mangle.
+        // Skip hyphenated terms — they're compound names where each part is a normal word.
         let mut stmt = self.conn.prepare(
-            "SELECT id, term, spoken_auto, spoken_override, reviewed FROM vocab WHERE reviewed = 1 AND spoken_override IS NOT NULL AND (curated IS NULL OR curated = 'kept')"
+            "SELECT id, term, spoken_auto, spoken_override, reviewed FROM vocab WHERE reviewed = 1 AND spoken_override IS NOT NULL AND (curated IS NULL OR curated = 'kept') AND term NOT LIKE '%-%'"
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(VocabRow {
