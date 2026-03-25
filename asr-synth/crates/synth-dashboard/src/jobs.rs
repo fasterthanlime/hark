@@ -1410,6 +1410,11 @@ pub async fn api_start_eval_job(
         let mut corrected_words = 0usize;
 
         for (i, (original, qwen, parakeet, term)) in triplets.iter().enumerate() {
+            if state2.job_cancel.load(Ordering::Relaxed) {
+                let db = state2.db.lock().unwrap();
+                let _ = db.append_job_log(job_id, "Stopped by user.");
+                break;
+            }
             let original: &str = original;
             let qwen: &str = qwen;
             let parakeet: &str = parakeet;
