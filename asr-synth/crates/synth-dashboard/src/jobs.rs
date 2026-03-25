@@ -93,6 +93,7 @@ async fn run_corpus_pass(
     protected_terms: &std::collections::HashSet<String>,
     dual_asr: bool,
 ) -> anyhow::Result<CorpusPassResult> {
+    tracing::debug!(term = %term.0, dual_asr, written = %written.0, "run_corpus_pass");
     // ASR — always run Qwen, optionally run Parakeet
     let state_q = state.clone();
     let samples_q = full_16k.to_vec();
@@ -118,6 +119,8 @@ async fn run_corpus_pass(
     };
     let qwen_full = qwen_task.await.unwrap_or_default();
 
+    tracing::debug!(qwen = %qwen_full, parakeet = %parakeet_full, "ASR results");
+
     // Alignment — written sentence is ground truth, spoken sentence for visualization
     let orig_alignment = state.aligner.align(full_16k, &written.0).unwrap_or_default();
     let spoken_alignment = state.aligner.align(full_16k, &spoken.0).unwrap_or_default();
@@ -135,10 +138,14 @@ async fn run_corpus_pass(
         Vec::new()
     };
 
+    tracing::debug!(term_found = term_found_range.is_some(), term_start, term_end, "alignment done");
+
     let extraction = extract_with_consensus(
         &orig_alignment, &qwen_alignment, &parakeet_alignment,
         term_start, term_end, protected_terms,
     );
+
+    tracing::debug!(clean = extraction.clean, orig = %extraction.original, qwen = %extraction.qwen, para = %extraction.parakeet, "extraction");
 
     Ok(CorpusPassResult {
         sentence: written.clone(),
@@ -918,11 +925,18 @@ async fn run_corpus_job(
             let cons = &result.extraction;
             let cons_time_json = serde_json::to_string(&[cons.cons_range.0, cons.cons_range.1]).ok();
             let db = state.db.lock().unwrap();
-            let _ = db.insert_corpus_pair(
+            if let Err(e) = db.insert_corpus_pair(
                 &pi.term, &cons.original, &cons.qwen, &cons.parakeet, &pi.sentence, &pi.spoken,
                 Some(&fmt_alignment(&result.orig_alignment)), Some(&fmt_alignment(&result.qwen_alignment)), Some(&fmt_alignment(&result.parakeet_alignment)),
                 cons_time_json.as_deref(),
-            );
+            ) {
+                tracing::error!("insert_corpus_pair failed for term '{}': {e}", pi.term);
+                let _ = db.append_job_log(job_id, &format!("DB ERROR: {e}"));
+                errors += 1;
+            }
+        } else {
+            tracing::debug!("noisy extraction for '{}': orig='{}' qwen='{}' keet='{}'",
+                pi.term, result.extraction.original, result.extraction.qwen, result.extraction.parakeet);
         }
         count += 1;
         items_done = pi.item_idx + 1;
