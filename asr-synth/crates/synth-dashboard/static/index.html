@@ -2752,9 +2752,6 @@
                                             </div>
                                             {p.qwen_full && <div style={{color:'var(--text-muted)',fontSize:11,marginTop:2}}>Q full: {p.qwen_full}</div>}
                                             {p.parakeet_full && <div style={{color:'var(--text-muted)',fontSize:11}}>P full: {p.parakeet_full}</div>}
-                                                    {p.parakeet_full && p.parakeet_full !== p.parakeet && <span style={{color:'var(--text-muted)',marginLeft:6,fontSize:11}}>full: {p.parakeet_full}</span>}
-                                                </div>
-                                            </div>
                                             {(p.orig_alignment || p.qwen_alignment) && (() => {
                                                 const allItems = [...(p.orig_alignment||[]),...(p.qwen_alignment||[]),...(p.parakeet_alignment||[])];
                                                 const maxTime = allItems.length ? Math.max(...allItems.map(a=>a.e)) : 1;
