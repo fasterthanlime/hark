@@ -1065,6 +1065,15 @@ pub async fn api_scan_results(
 
 // ==================== Pipeline Status ====================
 
+pub async fn api_view_corpus() -> Result<Response, AppError> {
+    let path = "data/corpus_dashboard.jsonl";
+    let content = std::fs::read_to_string(path).unwrap_or_default();
+    let pairs: Vec<serde_json::Value> = content.lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    Ok(Json(serde_json::json!({"pairs": pairs})).into_response())
+}
+
 pub async fn api_reset_corpus() -> Result<Response, AppError> {
     let path = "data/corpus_dashboard.jsonl";
     if std::path::Path::new(path).exists() {

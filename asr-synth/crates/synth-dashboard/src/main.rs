@@ -904,6 +904,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/jobs/curate", post(jobs::api_start_curate_job))
         .route("/api/jobs/stop", post(jobs::api_stop_job))
         .route("/api/pipeline/status", get(jobs::api_pipeline_status))
+        .route("/api/pipeline/corpus", get(jobs::api_view_corpus))
         .route("/api/pipeline/reset-corpus", post(jobs::api_reset_corpus))
         .route("/api/pipeline/scan-results", get(jobs::api_scan_results))
         .route("/api/correct", post(jobs::api_correct))
