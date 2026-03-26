@@ -110,18 +110,19 @@ pub fn prepare(config: &PrepareConfig, mut on_status: impl FnMut(&str)) -> Resul
     // Error examples: randomly sample from corpus pairs (with replacement)
     for _ in 0..n_error {
         let (original, parakeet, qwen) = &corpus_pairs[rng.random_range(0..corpus_pairs.len())];
+        let prompt = build_correction_prompt(parakeet, qwen);
         examples.push(serde_json::json!({
-            "prompt": format!("<keet> {}\n<qwen> {}\n<fixd>", parakeet, qwen),
+            "prompt": prompt,
             "completion": format!(" {}<|endoftext|>", original),
         }));
         correction_count += 1;
     }
 
-    // Identity examples: same shape, but both ASR lanes have the correct text
+    // Identity examples: same shape, but ASR output matches the correct text
     for _ in 0..n_identity {
         let text = &originals[rng.random_range(0..originals.len())];
         examples.push(serde_json::json!({
-            "prompt": format!("<keet> {}\n<qwen> {}\n<fixd>", text, text),
+            "prompt": format!("<qwen> {}\n<fixd>", text),
             "completion": format!(" {}<|endoftext|>", text),
         }));
         identity_count += 1;
