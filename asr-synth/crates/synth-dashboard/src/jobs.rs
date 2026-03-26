@@ -2150,6 +2150,26 @@ pub async fn api_add_alt_spelling(
     Ok(Json(serde_json::json!({"ok": true, "retroactive_updates": updated})).into_response())
 }
 
+// ==================== Confusions Review ====================
+
+pub async fn api_confusions_next(
+    State(state): State<Arc<AppState>>,
+) -> Result<Response, AppError> {
+    let db = state.db.lock().unwrap();
+    let item = db.next_unreviewed_confusion().map_err(err)?;
+    let progress = db.confusions_review_progress().map_err(err)?;
+    let can_mark_alt = item.as_ref().map(|i| {
+        let term = i["term"].as_str().unwrap_or("");
+        let original = i["original"].as_str().unwrap_or("");
+        term.to_lowercase() == original.to_lowercase()
+    }).unwrap_or(false);
+    Ok(Json(serde_json::json!({
+        "item": item,
+        "progress": progress,
+        "can_mark_alt": can_mark_alt,
+    })).into_response())
+}
+
 /// Preview training data: returns sample prompts from the training set so the user
 /// can see exactly what the model will be trained on.
 pub async fn api_preview_training(

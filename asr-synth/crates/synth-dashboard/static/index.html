@@ -1766,7 +1766,7 @@
             const links = [
                 ['#/', 'Vocab'],
                 ['#/author', 'Author'],
-                ['#/corpus', 'Corpus'],
+                ['#/confusions', 'Confusions'],
                 ['#/train', 'Train'],
                 ['#/eval', 'Eval'],
                 ['#/tests', 'Tests'],
@@ -3129,12 +3129,15 @@
 
             return (
                 <div className="container">
-                    <h2>Corpus</h2>
+                    <div style={{display:'flex',alignItems:'center',gap:16,marginBottom:16}}>
+                        <h2 style={{margin:0}}>Confusions</h2>
+                        <a href="#/confusions/review" style={{padding:'6px 16px',background:'var(--success)',color:'#fff',borderRadius:6,fontWeight:600,fontSize:14,textDecoration:'none'}}>Review</a>
+                    </div>
                     {error && <div className="pipeline-error" style={{marginBottom:12}}>{error}</div>}
 
                     <div className="card" style={{marginBottom: 16}}>
                         <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
-                            <h3 style={{margin:0,flex:1}}>Generate Corpus {corpusRunning && <span style={{display:'inline-block',width:10,height:10,borderRadius:'50%',background:'var(--success)',marginLeft:8,animation:'pulse 1s ease-in-out infinite'}} />}</h3>
+                            <h3 style={{margin:0,flex:1}}>Generate {corpusRunning && <span style={{display:'inline-block',width:10,height:10,borderRadius:'50%',background:'var(--success)',marginLeft:8,animation:'pulse 1s ease-in-out infinite'}} />}</h3>
                             {(status.corpus_exists || liveStats?.new_mistakes > 0) && <>
                                 <a href="#" style={{color:'var(--success)',fontSize:13,fontWeight:600}} onClick={async e => {
                                     e.preventDefault();
@@ -4425,6 +4428,165 @@
             );
         }
 
+        // ==================== CONFUSIONS REVIEW (full-screen) ====================
+        function ConfusionsReview() {
+            const [data, setData] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [busy, setBusy] = useState(null);
+            const [playing, setPlaying] = useState(false);
+            const sourceRef = useRef(null);
+            const audioBufRef = useRef(null);
+
+            const playSegment = (buf, start, end) => {
+                if (sourceRef.current) try { sourceRef.current.stop(); } catch(e) {}
+                const source = audioCtx.createBufferSource();
+                source.buffer = buf;
+                source.connect(audioCtx.destination);
+                source.onended = () => { if (sourceRef.current === source) setPlaying(false); };
+                if (start != null && end != null && end > start) {
+                    source.start(0, start, end - start);
+                } else {
+                    source.start(0);
+                }
+                sourceRef.current = source;
+                setPlaying(true);
+            };
+
+            const stopAudio = () => {
+                if (sourceRef.current) try { sourceRef.current.stop(); } catch(e) {}
+                setPlaying(false);
+            };
+
+            const loadNext = async () => {
+                setLoading(true);
+                stopAudio();
+                try {
+                    const d = await api('/api/confusions/next');
+                    setData(d);
+                    if (d.item?.audio_b64) {
+                        const buf = await decodeAudioB64(d.item.audio_b64);
+                        audioBufRef.current = buf;
+                        // Auto-play the segment around the confusion
+                        const ct = d.item.cons_time;
+                        if (ct && ct.length === 2) {
+                            playSegment(buf, ct[0], ct[1]);
+                        } else {
+                            playSegment(buf, null, null);
+                        }
+                    } else {
+                        audioBufRef.current = null;
+                    }
+                } catch(e) { console.error(e); }
+                setLoading(false);
+            };
+
+            const act = async (action) => {
+                if (busy || !data?.item) return;
+                stopAudio();
+                setBusy(action);
+                try {
+                    const id = data.item.id;
+                    if (action === 'approve') {
+                        await api('/api/pipeline/approve-corpus-pair', {method:'POST', body: JSON.stringify({id})});
+                    } else if (action === 'reject') {
+                        await api('/api/pipeline/reject-corpus-pair', {method:'POST', body: JSON.stringify({id})});
+                    } else if (action === 'alt') {
+                        await api('/api/pipeline/alt-spelling', {method:'POST', body: JSON.stringify({term: data.item.term, alt_spelling: data.item.qwen})});
+                    }
+                    await loadNext();
+                } catch(e) { console.error(e); }
+                setBusy(null);
+            };
+
+            const replay = () => {
+                if (!audioBufRef.current) return;
+                const ct = data?.item?.cons_time;
+                if (ct && ct.length === 2) {
+                    playSegment(audioBufRef.current, ct[0], ct[1]);
+                } else {
+                    playSegment(audioBufRef.current, null, null);
+                }
+            };
+
+            const playFull = () => {
+                if (!audioBufRef.current) return;
+                playSegment(audioBufRef.current, null, null);
+            };
+
+            useEffect(() => { loadNext(); }, []);
+
+            // Keyboard shortcuts
+            useEffect(() => {
+                const handler = (e) => {
+                    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+                    if (e.key === 'o' || e.key === 'ArrowRight') { e.preventDefault(); act('approve'); }
+                    else if (e.key === 'n' || e.key === 'ArrowLeft') { e.preventDefault(); act('reject'); }
+                    else if (e.key === 'a') { e.preventDefault(); if (data?.can_mark_alt) act('alt'); }
+                    else if (e.key === ' ') { e.preventDefault(); if (playing) stopAudio(); else replay(); }
+                    else if (e.key === 'f') { e.preventDefault(); playFull(); }
+                };
+                window.addEventListener('keydown', handler);
+                return () => window.removeEventListener('keydown', handler);
+            });
+
+            const item = data?.item;
+            const progress = data?.progress;
+
+            return (
+                <div className="review-fullscreen">
+                    <div className="review-topbar">
+                        <a href="#/confusions" style={{color:'var(--text-muted)',textDecoration:'none',fontSize:14}}>{'\u2190'} Back</a>
+                        <div style={{flex:1}} />
+                        {progress && <span style={{color:'var(--text-muted)',fontSize:13}}>
+                            {progress.reviewed} reviewed / {progress.remaining} remaining
+                        </span>}
+                    </div>
+                    <div className="review-body">
+                        {loading ? <div style={{color:'var(--text-muted)'}}>Loading...</div>
+                        : !item ? <div style={{textAlign:'center'}}>
+                            <div style={{fontSize:48,marginBottom:16}}>{'\\o/'}</div>
+                            <div style={{fontSize:18,color:'var(--text-muted)'}}>No unreviewed confusions!</div>
+                            <a href="#/confusions" style={{color:'var(--success)',marginTop:12,display:'inline-block'}}>Back to Confusions</a>
+                        </div>
+                        : <div className="review-card" style={{maxWidth:700,width:'100%'}}>
+                            <div style={{textAlign:'center',marginBottom:24}}>
+                                <div style={{fontSize:13,color:'var(--text-muted)',marginBottom:8}}>
+                                    term: <b style={{color:'var(--text)'}}>{item.term}</b>
+                                    <span style={{marginLeft:12,fontSize:11,color:'var(--text-muted)'}}>({'\u00d7'}{item.hit_count})</span>
+                                </div>
+                                <div style={{fontSize:24,fontFamily:'monospace',marginBottom:4}}>
+                                    <span style={{color:'rgba(88,166,255,0.9)'}}>{item.original}</span>
+                                    <span style={{color:'var(--text-muted)',margin:'0 12px'}}>{'\u2192'}</span>
+                                    <span style={{color:'rgba(210,153,34,0.9)'}}>{item.qwen}</span>
+                                </div>
+                                <div style={{fontSize:12,color:'var(--text-muted)',marginTop:8}}>{item.sentence}</div>
+                            </div>
+                            <div style={{display:'flex',justifyContent:'center',gap:8,marginBottom:16}}>
+                                <button onClick={replay} style={{background:'none',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',cursor:'pointer',padding:'4px 12px',fontSize:12}}>
+                                    {playing ? '\u23F8' : '\u25B6'} segment
+                                </button>
+                                <button onClick={playFull} style={{background:'none',border:'1px solid var(--border)',borderRadius:4,color:'var(--text-muted)',cursor:'pointer',padding:'4px 12px',fontSize:12}}>
+                                    {'\u25B6'} full
+                                </button>
+                            </div>
+                            {busy && <div style={{textAlign:'center',color:'var(--text-muted)',fontSize:13,marginBottom:8}}>{busy}...</div>}
+                        </div>}
+                    </div>
+                    {item && !loading && <div className="review-actions">
+                        <button onClick={() => act('reject')} style={{background:'rgba(255,100,100,0.15)',border:'1px solid rgba(255,100,100,0.4)',borderRadius:8,color:'rgba(255,100,100,0.9)',cursor:'pointer',padding:'12px 32px',fontSize:16,fontWeight:600}}>
+                            {'\u2715'} Reject <span style={{fontSize:11,fontWeight:400,opacity:0.6}}>(N)</span>
+                        </button>
+                        {data?.can_mark_alt && <button onClick={() => act('alt')} style={{background:'rgba(100,200,255,0.1)',border:'1px solid rgba(100,200,255,0.3)',borderRadius:8,color:'rgba(100,200,255,0.9)',cursor:'pointer',padding:'12px 24px',fontSize:16,fontWeight:600}}>
+                            Alt <span style={{fontSize:11,fontWeight:400,opacity:0.6}}>(A)</span>
+                        </button>}
+                        <button onClick={() => act('approve')} style={{background:'rgba(100,200,100,0.15)',border:'1px solid rgba(100,200,100,0.4)',borderRadius:8,color:'rgba(100,200,100,0.9)',cursor:'pointer',padding:'12px 32px',fontSize:16,fontWeight:600}}>
+                            {'\u2713'} Approve <span style={{fontSize:11,fontWeight:400,opacity:0.6}}>(O)</span>
+                        </button>
+                    </div>}
+                </div>
+            );
+        }
+
         function App() {
             const hash = useHash();
             let page;
@@ -4433,7 +4595,8 @@
             else if (hash.startsWith('#/vocab')) page = <VocabPage />;
             else if (hash.startsWith('#/review')) page = <ReviewPage />;
             else if (hash.startsWith('#/author')) page = <AuthorPage />;
-            else if (hash.startsWith('#/corpus')) page = <CorpusPage />;
+            else if (hash === '#/confusions/review') page = <ConfusionsReview />;
+            else if (hash.startsWith('#/confusions')) page = <CorpusPage />;
             else if (hash.startsWith('#/train')) page = <TrainPage />;
             else if (hash.startsWith('#/eval')) page = <EvalPage />;
             else if (hash.startsWith('#/tests')) page = <AlgorithmTestsPage />;

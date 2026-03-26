@@ -1211,6 +1211,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/pipeline/reject-corpus-pair", post(jobs::api_reject_corpus_pair))
         .route("/api/pipeline/approve-corpus-pair", post(jobs::api_approve_corpus_pair))
         .route("/api/pipeline/alt-spelling", post(jobs::api_add_alt_spelling))
+        .route("/api/confusions/next", get(jobs::api_confusions_next))
         .route("/api/pipeline/preview-training", get(jobs::api_preview_training))
         .route("/api/pipeline/reset-training", post(jobs::api_reset_training))
         .route("/api/pipeline/scan-results", get(jobs::api_scan_results))

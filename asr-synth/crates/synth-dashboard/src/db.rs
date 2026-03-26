@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use base64::Engine as _;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -797,6 +798,63 @@ impl Db {
             )?;
             Ok((self.conn.last_insert_rowid(), true))
         }
+    }
+
+    /// Get the next unreviewed mistake for the full-screen review flow.
+    /// Returns the highest-hit-count unreviewed mistake.
+    pub fn next_unreviewed_confusion(&self) -> Result<Option<serde_json::Value>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, term, original, qwen, parakeet, sentence, spoken, \
+             orig_alignment, qwen_alignment, parakeet_alignment, cons_time, trim_info, \
+             hit_count, audio_ogg \
+             FROM corpus_pairs \
+             WHERE is_mistake = 1 AND review_status IS NULL \
+             ORDER BY hit_count DESC \
+             LIMIT 1"
+        )?;
+        let row = stmt.query_row([], |row| {
+            let orig_align: Option<String> = row.get(7)?;
+            let qwen_align: Option<String> = row.get(8)?;
+            let para_align: Option<String> = row.get(9)?;
+            let cons_time: Option<String> = row.get(10)?;
+            let trim_info: Option<String> = row.get(11)?;
+            let audio: Option<Vec<u8>> = row.get(13)?;
+            Ok(serde_json::json!({
+                "id": row.get::<_, i64>(0)?,
+                "term": row.get::<_, String>(1)?,
+                "original": row.get::<_, String>(2)?,
+                "qwen": row.get::<_, String>(3)?,
+                "parakeet": row.get::<_, String>(4)?,
+                "sentence": row.get::<_, String>(5)?,
+                "spoken": row.get::<_, String>(6)?,
+                "orig_alignment": orig_align.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
+                "qwen_alignment": qwen_align.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
+                "parakeet_alignment": para_align.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
+                "cons_time": cons_time.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
+                "trim_info": trim_info.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
+                "hit_count": row.get::<_, i64>(12)?,
+                "audio_b64": audio.map(|b| base64::engine::general_purpose::STANDARD.encode(&b)),
+            }))
+        });
+        match row {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Progress for the confusions review: how many reviewed, how many total, how many remaining.
+    pub fn confusions_review_progress(&self) -> Result<serde_json::Value> {
+        let total: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM corpus_pairs WHERE is_mistake = 1", [], |r| r.get(0)
+        )?;
+        let reviewed: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM corpus_pairs WHERE is_mistake = 1 AND review_status IS NOT NULL", [], |r| r.get(0)
+        )?;
+        let remaining: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM corpus_pairs WHERE is_mistake = 1 AND review_status IS NULL", [], |r| r.get(0)
+        )?;
+        Ok(serde_json::json!({"total": total, "reviewed": reviewed, "remaining": remaining}))
     }
 
     pub fn get_corpus_audio(&self, id: i64) -> Result<Option<Vec<u8>>> {
