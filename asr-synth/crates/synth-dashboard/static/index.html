@@ -4469,7 +4469,7 @@
                         // Auto-play the segment around the confusion
                         const ct = d.item.cons_time;
                         if (ct && ct.length === 2) {
-                            playSegment(buf, ct[0], ct[1]);
+                            playSegment(buf, Math.max(0, ct[0] - 0.5), ct[1] + 0.5);
                         } else {
                             playSegment(buf, null, null);
                         }
