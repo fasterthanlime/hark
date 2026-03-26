@@ -1785,7 +1785,7 @@ pub async fn api_start_eval_job(
                 break;
             }
 
-            let prompt = synth_train::build_correction_prompt(&item.parakeet, &item.qwen);
+            let prompt = synth_train::build_correction_prompt("", &item.qwen);
             let result = server.infer(&prompt);
             evaluated += 1;
 
