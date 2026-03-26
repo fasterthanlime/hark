@@ -115,6 +115,9 @@ pub struct StreamingState {
     text: String,
     /// Encoder cache for incremental encoding (avoids re-encoding completed windows)
     encoder_cache: EncoderCache,
+    /// Whether speech has been detected (VAD gate).
+    /// Until this is true, incoming audio is scanned but not buffered.
+    speech_detected: bool,
 }
 
 impl AsrInference {
@@ -131,6 +134,7 @@ impl AsrInference {
             language: String::new(),
             text: String::new(),
             encoder_cache: EncoderCache::new(),
+            speech_detected: false,
         }
     }
 
@@ -144,7 +148,21 @@ impl AsrInference {
         state: &mut StreamingState,
         samples: &[f32],
     ) -> crate::Result<Option<TranscribeResult>> {
-        state.buffer.extend_from_slice(samples);
+        // VAD gate: skip silent audio until we detect speech.
+        // This prevents the ASR from hallucinating on background noise.
+        if !state.speech_detected {
+            if let Some(speech_start) = detect_speech_onset(samples) {
+                state.speech_detected = true;
+                debug!("VAD: speech detected at sample offset {speech_start}");
+                state.buffer.extend_from_slice(&samples[speech_start..]);
+            }
+            // Still no speech — discard these samples
+            if !state.speech_detected {
+                return Ok(None);
+            }
+        } else {
+            state.buffer.extend_from_slice(samples);
+        }
 
         if !try_drain_chunk(state) {
             return Ok(None);
@@ -296,6 +314,28 @@ pub(crate) fn build_prefix(inner: &AsrInferenceInner, state: &StreamingState) ->
     }
 }
 
+/// Simple energy-based voice activity detection.
+///
+/// Scans the samples in 10ms windows (160 samples at 16kHz). Returns the sample
+/// index where speech starts (first window whose RMS exceeds the threshold), or
+/// `None` if no speech is detected.
+///
+/// The threshold is set conservatively — it should catch normal speech but ignore
+/// typical ambient room noise and microphone self-noise.
+fn detect_speech_onset(samples: &[f32]) -> Option<usize> {
+    const WINDOW_SIZE: usize = 160; // 10ms at 16kHz
+    const RMS_THRESHOLD: f32 = 0.01; // ~-40dBFS, well above typical noise floor
+
+    for (i, window) in samples.chunks(WINDOW_SIZE).enumerate() {
+        let sum_sq: f32 = window.iter().map(|s| s * s).sum();
+        let rms = (sum_sq / window.len() as f32).sqrt();
+        if rms > RMS_THRESHOLD {
+            return Some(i * WINDOW_SIZE);
+        }
+    }
+    None
+}
+
 /// Try to drain one full chunk from the buffer into the audio accumulator.
 ///
 /// Returns `true` if a chunk was drained (and `chunk_id` incremented).
@@ -372,6 +412,7 @@ mod tests {
             language: String::new(),
             text: String::new(),
             encoder_cache: EncoderCache::new(),
+            speech_detected: true, // tests bypass VAD
         }
     }
 
@@ -713,5 +754,33 @@ mod tests {
         state.chunk_id = 3;
         state.raw_token_ids = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
         assert_eq!(compute_prefix_ids(&state), Some(&[1, 2, 3, 4, 5][..]));
+    }
+
+    // ── VAD (detect_speech_onset) ──────────────────────────────────────
+
+    #[test]
+    fn test_vad_silence_returns_none() {
+        let silence = vec![0.001; 1600]; // 100ms of near-silence
+        assert_eq!(detect_speech_onset(&silence), None);
+    }
+
+    #[test]
+    fn test_vad_speech_returns_onset() {
+        let mut samples = vec![0.001; 800]; // 50ms silence
+        samples.extend(vec![0.1; 800]);      // 50ms speech
+        assert_eq!(detect_speech_onset(&samples), Some(800)); // window index 5 * 160
+    }
+
+    #[test]
+    fn test_vad_immediate_speech() {
+        let speech = vec![0.05; 320]; // 20ms of speech
+        assert_eq!(detect_speech_onset(&speech), Some(0));
+    }
+
+    #[test]
+    fn test_vad_very_quiet_noise_ignored() {
+        // Noise at -60dBFS (RMS ~0.001) should be below threshold
+        let noise: Vec<f32> = (0..1600).map(|i| 0.001 * (i as f32 * 0.1).sin()).collect();
+        assert_eq!(detect_speech_onset(&noise), None);
     }
 }
