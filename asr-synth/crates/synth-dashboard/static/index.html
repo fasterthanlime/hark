@@ -669,6 +669,7 @@
             animation: pulse 1s infinite;
         }
 
+        @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes pulse {
 
             0%,
@@ -4515,6 +4516,32 @@
 
             useEffect(() => { loadNext(); }, []);
 
+            // Poll for new confusions when queue is empty
+            useEffect(() => {
+                if (loading || data?.item) return;
+                const id = setInterval(async () => {
+                    try {
+                        const d = await api('/api/confusions/next');
+                        if (d.item) {
+                            setData(d);
+                            if (d.item.audio_b64) {
+                                const buf = await decodeAudioB64(d.item.audio_b64);
+                                audioBufRef.current = buf;
+                                const ct = d.item.cons_time;
+                                if (ct && ct.length === 2) {
+                                    playSegment(buf, Math.max(0, ct[0] - 0.5), ct[1] + 0.5);
+                                } else {
+                                    playSegment(buf, null, null);
+                                }
+                            }
+                        } else {
+                            setData(d); // update progress counts
+                        }
+                    } catch(e) {}
+                }, 2000);
+                return () => clearInterval(id);
+            }, [loading, data?.item]);
+
             // Keyboard shortcuts
             useEffect(() => {
                 const handler = (e) => {
@@ -4544,9 +4571,8 @@
                     <div className="review-body">
                         {loading ? <div style={{color:'var(--text-muted)'}}>Loading...</div>
                         : !item ? <div style={{textAlign:'center'}}>
-                            <div style={{fontSize:48,marginBottom:16}}>{'\\o/'}</div>
-                            <div style={{fontSize:18,color:'var(--text-muted)'}}>No unreviewed confusions!</div>
-                            <a href="#/confusions" style={{color:'var(--success)',marginTop:12,display:'inline-block'}}>Back to Confusions</a>
+                            <div style={{fontSize:18,color:'var(--text-muted)',marginBottom:8}}>Waiting for confusions...</div>
+                            <div style={{width:24,height:24,border:'2px solid var(--border)',borderTopColor:'var(--text-muted)',borderRadius:'50%',animation:'spin 1s linear infinite',margin:'0 auto'}} />
                         </div>
                         : <div className="review-card" style={{maxWidth:700,width:'100%'}}>
                             <div style={{textAlign:'center',marginBottom:24}}>
