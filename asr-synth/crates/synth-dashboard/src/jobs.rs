@@ -1748,7 +1748,9 @@ pub async fn api_start_eval_job(
     }
 
     let state2 = state.clone();
+    eprintln!("[eval] Job {job_id} created with {} sentences, {} overrides", sentences.len(), overrides.len());
     tokio::spawn(async move {
+        eprintln!("[eval] Spawned task starting for job {job_id}");
         // Phase 1: TTS + ASR each authored sentence to get realistic ASR output
         let total = sentences.len();
         {
