@@ -1772,6 +1772,11 @@ pub async fn api_start_eval_job(
             // Build spoken form
             let spoken = tts::build_spoken_form(sentence, &overrides);
 
+            {
+                let db = state2.db.lock().unwrap();
+                let _ = db.append_job_log(job_id, &format!("[{}/{}] TTS+ASR: {}", i+1, total, term));
+            }
+
             // TTS
             let audio = match state2.tts.generate("pocket-hq", &spoken).await {
                 Ok(mut a) => { a.normalize(); a }
@@ -1816,27 +1821,33 @@ pub async fn api_start_eval_job(
             return;
         }
 
-        // Phase 2: Start correction model and evaluate
+        // Phase 2: Start correction model (or reuse shared instance) and evaluate
         {
             let db = state2.db.lock().unwrap();
             let _ = db.append_job_log(job_id, &format!(
-                "\nPhase 2: Correction model on {} sentences...\nLoading model {} with adapters {}...",
-                eval_pairs.len(), config.model, config.adapters
+                "\nPhase 2: Correction model on {} sentences...",
+                eval_pairs.len()
             ));
         }
 
-        let server = match tokio::task::spawn_blocking({
-            let config = config.clone();
-            move || synth_train::InferenceServer::start(&config)
-        }).await.unwrap() {
-            Ok(s) => s,
-            Err(e) => {
+        // Ensure shared inference server is running
+        {
+            let mut guard = state2.inference_server.lock().unwrap();
+            if guard.is_none() {
                 let db = state2.db.lock().unwrap();
-                let _ = db.append_job_log(job_id, &format!("Failed to start inference server: {e}"));
-                let _ = db.finish_job(job_id, "failed", None);
-                return;
+                let _ = db.append_job_log(job_id, &format!("Starting inference server ({} + {})...", config.model, config.adapters));
+                drop(db);
+                match synth_train::InferenceServer::start(&config) {
+                    Ok(s) => { *guard = Some(s); }
+                    Err(e) => {
+                        let db = state2.db.lock().unwrap();
+                        let _ = db.append_job_log(job_id, &format!("Failed to start inference server: {e}"));
+                        let _ = db.finish_job(job_id, "failed", None);
+                        return;
+                    }
+                }
             }
-        };
+        }
 
         let total = eval_pairs.len();
         let mut correct = 0usize;
@@ -1860,7 +1871,10 @@ pub async fn api_start_eval_job(
             if asr_was_correct { asr_correct += 1; }
 
             let prompt = synth_train::build_correction_prompt("", asr_qwen);
-            let result = server.infer(&prompt);
+            let result = {
+                let guard = state2.inference_server.lock().unwrap();
+                guard.as_ref().unwrap().infer(&prompt)
+            };
             evaluated += 1;
 
             let (category, corrected_text) = match result {
@@ -1907,8 +1921,6 @@ pub async fn api_start_eval_job(
                 else { format!(" (expected \"{}\")", original) }
             ));
         }
-
-        drop(server);
 
         let asr_accuracy = if evaluated > 0 { asr_correct as f64 / evaluated as f64 * 100.0 } else { 0.0 };
         let post_accuracy = if evaluated > 0 { correct as f64 / evaluated as f64 * 100.0 } else { 0.0 };
