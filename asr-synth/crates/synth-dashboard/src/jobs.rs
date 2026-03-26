@@ -35,18 +35,30 @@ struct WrittenSentence(String);
 struct SpokenSentence(String);
 
 /// Build a written sentence containing the term, and its spoken counterpart.
+/// Generate a (written, spoken) sentence pair for a vocab term.
+/// Tries the LLM generator first if available, falls back to Markov chain.
 fn make_sentence_pair(
+    generator: Option<&synth_train::SentenceGenerator>,
     chain: &MarkovChain,
     term: &WrittenTerm,
     spoken: &SpokenTerm,
+    description: Option<&str>,
     overrides: &std::collections::HashMap<String, String>,
     rng: &mut impl Rng,
 ) -> (WrittenSentence, SpokenSentence) {
+    // Try LLM first
+    if let Some(gen) = generator {
+        if let Ok(Some(sentence)) = gen.generate_sentence_retry(&term.0, description, 3) {
+            let mut all_overrides = overrides.clone();
+            all_overrides.insert(term.0.clone(), spoken.0.clone());
+            let spoken_sentence = tts::build_spoken_form(&sentence, &all_overrides);
+            return (WrittenSentence(sentence), SpokenSentence(spoken_sentence));
+        }
+    }
+
+    // Fallback: Markov chain
     let sentence = chain.generate_with(&term.0, 15, rng);
-    // Build spoken form by applying ALL vocab overrides (not just the target term).
-    // This ensures every vocab term in the sentence gets its pronunciation override.
     let mut all_overrides = overrides.clone();
-    // Ensure the target term's override is present (it should be, but be safe)
     all_overrides.insert(term.0.clone(), spoken.0.clone());
     let spoken_sentence = tts::build_spoken_form(&sentence, &all_overrides);
     (WrittenSentence(sentence), SpokenSentence(spoken_sentence))
@@ -799,13 +811,33 @@ async fn run_corpus_job(
     }
     let chain = MarkovChain::build(&all_texts);
 
+    // Start local LLM sentence generator (falls back to Markov if it fails)
+    let generator = {
+        let db = state.db.lock().unwrap();
+        let _ = db.append_job_log(job_id, "Starting sentence generator (Qwen2.5-1.5B-Instruct)...");
+        drop(db);
+        match synth_train::SentenceGenerator::start(&synth_train::SentenceGeneratorConfig::default()) {
+            Ok(g) => {
+                let db = state.db.lock().unwrap();
+                let _ = db.append_job_log(job_id, "Sentence generator ready.");
+                Some(g)
+            }
+            Err(e) => {
+                let db = state.db.lock().unwrap();
+                let _ = db.append_job_log(job_id, &format!("Sentence generator failed: {e} — falling back to Markov chains"));
+                None
+            }
+        }
+    };
+
     let endless = max_rounds == 0;
     {
         let db = state.db.lock().unwrap();
         db.append_job_log(job_id, &format!(
-            "Corpus: {} terms, {} rounds, backend: {tts_backend}",
+            "Corpus: {} terms, {} rounds, backend: {tts_backend}, sentences: {}",
             vocab_terms.len(),
             if endless { "\u{221e}".to_string() } else { max_rounds.to_string() },
+            if generator.is_some() { "LLM" } else { "Markov" },
         ))?;
     }
 
@@ -844,6 +876,10 @@ async fn run_corpus_job(
         .collect();
     let chain_clone = chain.clone();
     let overrides_clone = overrides.clone();
+    // Build description map for LLM context
+    let descriptions: HashMap<String, String> = vocab_terms.iter()
+        .filter_map(|v| v.description.as_ref().map(|d| (v.term.clone(), d.clone())))
+        .collect();
     let producer = tokio::spawn(async move {
         use rand::seq::SliceRandom;
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(tts_concurrency));
@@ -863,7 +899,8 @@ async fn run_corpus_job(
             let (term, spoken_term) = vocab_for_producer.choose(&mut rng).unwrap().clone();
             let written = WrittenTerm(term.clone());
             let spoken_t = SpokenTerm(spoken_term);
-            let (ws, ss) = make_sentence_pair(&chain_clone, &written, &spoken_t, &overrides_clone, &mut rng);
+            let desc = descriptions.get(&term).map(|s| s.as_str());
+            let (ws, ss) = make_sentence_pair(generator.as_ref(), &chain_clone, &written, &spoken_t, desc, &overrides_clone, &mut rng);
 
             let item = RoundItem { term, sentence: ws.0, spoken: ss.0 };
             let tx = tx.clone();
@@ -1951,7 +1988,7 @@ pub async fn api_test_term(
     let mut attempts = 0;
     loop {
         attempts += 1;
-        let pair = make_sentence_pair(&chain, &written, &spoken, &overrides, &mut rng);
+        let pair = make_sentence_pair(None, &chain, &written, &spoken, None, &overrides, &mut rng);
         written_sentence = pair.0;
         spoken_sentence = pair.1;
 

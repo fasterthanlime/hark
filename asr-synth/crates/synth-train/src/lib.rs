@@ -415,6 +415,157 @@ impl Drop for InferenceServer {
     }
 }
 
+// ==================== Sentence Generator ====================
+
+/// Configuration for the local LLM sentence generator.
+pub struct SentenceGeneratorConfig {
+    pub model: String,
+    pub port: u16,
+    pub max_tokens: usize,
+    pub temperature: f32,
+}
+
+impl Default for SentenceGeneratorConfig {
+    fn default() -> Self {
+        Self {
+            model: "Qwen/Qwen2.5-1.5B-Instruct".into(),
+            port: 8890,
+            max_tokens: 128,
+            temperature: 0.9,
+        }
+    }
+}
+
+/// A local LLM server for generating natural sentences containing vocab terms.
+/// Wraps mlx_lm.server with an instruct model.
+pub struct SentenceGenerator {
+    child: std::process::Child,
+    port: u16,
+    max_tokens: usize,
+    temperature: f32,
+}
+
+impl SentenceGenerator {
+    /// Start the sentence generator. Blocks until the server is ready.
+    pub fn start(config: &SentenceGeneratorConfig) -> Result<Self> {
+        use std::process::{Command, Stdio};
+
+        eprintln!("[sentgen] Starting mlx_lm.server ({}) on port {}...", config.model, config.port);
+        let child = Command::new("uvx")
+            .args([
+                "--from", "mlx-lm",
+                "mlx_lm.server",
+                "--model", &config.model,
+                "--port", &config.port.to_string(),
+                "--max-tokens", &config.max_tokens.to_string(),
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        let url = format!("http://127.0.0.1:{}/v1/models", config.port);
+        let start = std::time::Instant::now();
+        loop {
+            if start.elapsed() > std::time::Duration::from_secs(120) {
+                anyhow::bail!("sentence generator server failed to start within 120s");
+            }
+            if let Ok(resp) = ureq::get(&url).call() {
+                if resp.status() == 200 { break; }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        eprintln!("[sentgen] Server ready on port {}", config.port);
+
+        Ok(Self {
+            child,
+            port: config.port,
+            max_tokens: config.max_tokens,
+            temperature: config.temperature,
+        })
+    }
+
+    /// Generate a single sentence containing the given term.
+    /// Uses the chat completions API with a constrained prompt.
+    /// Returns None if the model's output doesn't contain the exact term.
+    pub fn generate_sentence(&self, term: &str, description: Option<&str>) -> Result<Option<String>> {
+        let context = description.unwrap_or("a programming/tech term");
+        let system = format!(
+            "You generate single natural English sentences for text-to-speech training data. \
+             Each sentence must sound like something a developer would say out loud, \
+             like in a podcast, code review, or tech talk. \
+             Keep sentences between 8 and 20 words. \
+             Output ONLY the sentence, nothing else."
+        );
+        let user = format!(
+            "Write one sentence containing the exact word \"{term}\" ({context}). \
+             The word must appear exactly as written. Vary the position — \
+             don't always put it at the start."
+        );
+
+        let url = format!("http://127.0.0.1:{}/v1/chat/completions", self.port);
+        let body = serde_json::json!({
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+        });
+
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(15)))
+            .build()
+            .new_agent();
+
+        let mut resp = agent.post(&url)
+            .header("Content-Type", "application/json")
+            .send_json(&body)
+            .map_err(|e| anyhow::anyhow!("sentgen request failed: {e}"))?;
+
+        let json: serde_json::Value = resp.body_mut().read_json()
+            .map_err(|e| anyhow::anyhow!("sentgen response parse failed: {e}"))?;
+
+        let text = json["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .trim_matches('"')
+            .to_string();
+
+        // Validate: must contain the exact term (case-insensitive match, then check exact)
+        if text.to_lowercase().contains(&term.to_lowercase()) {
+            Ok(Some(text))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Generate a sentence, retrying up to `max_attempts` if the model doesn't include the term.
+    pub fn generate_sentence_retry(&self, term: &str, description: Option<&str>, max_attempts: usize) -> Result<Option<String>> {
+        for _ in 0..max_attempts {
+            match self.generate_sentence(term, description)? {
+                Some(s) => return Ok(Some(s)),
+                None => continue,
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn kill(&mut self) {
+        eprintln!("[sentgen] Killing server");
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for SentenceGenerator {
+    fn drop(&mut self) {
+        eprintln!("[sentgen] Shutting down server");
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 pub fn write_jsonl(path: &str, entries: &[serde_json::Value]) -> Result<()> {
     let mut f = std::fs::File::create(path)?;
     for entry in entries {
