@@ -3701,6 +3701,14 @@
                 return () => clearInterval(pollRef.current);
             }, [runningJob?.id]);
 
+            function stripOuterQuotes(text) {
+                const value = (text || '').trim();
+                if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+                    return value.slice(1, -1);
+                }
+                return value;
+            }
+
             const startEval = async () => {
                 setError(null); setJobLog('');
                 try {
@@ -3738,13 +3746,6 @@
 
             const progress = ev ? (ev.total || 0) : 0;
             const totalTriplets = entries.length > 0 ? entries[entries.length - 1].total : 0;
-            const stripOuterQuotes = (text) => {
-                const value = (text || '').trim();
-                if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
-                    return value.slice(1, -1);
-                }
-                return value;
-            };
 
             return (
                 <div className="container">
