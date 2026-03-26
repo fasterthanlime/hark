@@ -1056,8 +1056,6 @@ pub async fn api_start_prepare_job(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PrepareJobBody>,
 ) -> Result<Response, AppError> {
-    check_no_running_jobs(&state)?;
-
     let total_examples = body.total_examples.unwrap_or(12000);
     let error_rate = body.error_rate.unwrap_or(0.5);
     let config_json = serde_json::json!({"total_examples": total_examples, "error_rate": error_rate}).to_string();
@@ -1198,8 +1196,6 @@ pub async fn api_start_train_job(
     State(state): State<Arc<AppState>>,
     Json(body): Json<TrainJobBody>,
 ) -> Result<Response, AppError> {
-    check_no_running_jobs(&state)?;
-
     let config = synth_train::TrainConfig {
         model: body.model.unwrap_or_else(|| "Qwen/Qwen2.5-0.5B".into()),
         iters: body.iters.unwrap_or(2000),
