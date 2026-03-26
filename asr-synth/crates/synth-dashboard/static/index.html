@@ -3781,18 +3781,19 @@
                                     </button>;
                                 })}
                             </div>
-                            <div ref={logRef} style={{maxHeight:500,overflow:'auto',border:'1px solid var(--border)',borderRadius:8,background:'var(--bg)'}}>
+                            <div ref={logRef} style={{maxHeight:600,overflow:'auto',border:'1px solid var(--border)',borderRadius:8,background:'var(--bg)'}}>
                                 {filtered.map((e, i) => (
-                                    <div key={i} style={{padding:'6px 10px',borderBottom:'1px solid rgba(255,255,255,0.04)',fontSize:12,fontFamily:'monospace',lineHeight:1.6}}>
-                                        <span style={{color:catColors[e.cat],fontWeight:700,display:'inline-block',width:70}}>[{e.cat}]</span>
-                                        <span style={{color:'var(--text)',fontWeight:600}}>{e.term}</span>
-                                        {'  '}<span style={{color:'#58a6ff'}}>{e.qwen}</span>
-                                        {'  '}<span style={{color:'var(--text-muted)'}}>{'\u2192'}</span>{' '}
-                                        <span style={{color: e.cat === 'fixed' || e.cat === 'kept' ? 'var(--success)' : e.cat === 'blank' ? 'var(--text-muted)' : 'var(--error)',
-                                            fontWeight: e.cat === 'fixed' ? 700 : 400}}>
-                                            {e.output || '(empty)'}
-                                        </span>
-                                        {e.expected && <span style={{color:'var(--text-muted)'}}> (expected: {e.expected})</span>}
+                                    <div key={i} style={{padding:'8px 12px',borderBottom:'1px solid rgba(255,255,255,0.08)',fontSize:12,fontFamily:'monospace',lineHeight:1.5}}>
+                                        <div style={{display:'flex',gap:8,alignItems:'baseline',marginBottom:4}}>
+                                            <span style={{color:catColors[e.cat],fontWeight:700,fontSize:11,minWidth:65}}>[{e.cat}]</span>
+                                            <span style={{color:'var(--text)',fontWeight:600}}>{e.term}</span>
+                                        </div>
+                                        <div style={{paddingLeft:8,borderLeft:'2px solid rgba(255,255,255,0.08)'}}>
+                                            <div><span style={{color:'var(--text-muted)',fontSize:10,display:'inline-block',width:55}}>ASR:</span> <span style={{color:'#58a6ff'}}>{e.qwen}</span></div>
+                                            <div><span style={{color:'var(--text-muted)',fontSize:10,display:'inline-block',width:55}}>model:</span> <span style={{color: e.cat === 'fixed' || e.cat === 'kept' ? 'var(--success)' : e.cat === 'blank' ? 'var(--text-muted)' : 'var(--error)',
+                                                fontWeight: e.cat === 'fixed' ? 700 : 400}}>{e.output || '(empty)'}</span></div>
+                                            {e.expected && <div><span style={{color:'var(--text-muted)',fontSize:10,display:'inline-block',width:55}}>expected:</span> <span style={{color:'var(--text-muted)'}}>{e.expected}</span></div>}
+                                        </div>
                                     </div>
                                 ))}
                             </div>
