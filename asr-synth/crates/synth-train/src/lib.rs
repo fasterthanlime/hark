@@ -109,8 +109,8 @@ pub fn prepare(config: &PrepareConfig, mut on_status: impl FnMut(&str)) -> Resul
 
     // Error examples: randomly sample from corpus pairs (with replacement)
     for _ in 0..n_error {
-        let (original, parakeet, qwen) = &corpus_pairs[rng.random_range(0..corpus_pairs.len())];
-        let prompt = build_correction_prompt(parakeet, qwen);
+        let (original, _parakeet, qwen) = &corpus_pairs[rng.random_range(0..corpus_pairs.len())];
+        let prompt = format!("<qwen> {}\n<fixd>", qwen);
         examples.push(serde_json::json!({
             "prompt": prompt,
             "completion": format!(" {}<|endoftext|>", original),

@@ -3717,10 +3717,11 @@
 
             // Parse log lines into structured entries for display
             const entries = jobLog ? jobLog.split('\n').filter(l => l.match(/^\[\d+\/\d+\]/)).map(line => {
-                const m = line.match(/^\[(\d+)\/(\d+)\]\s*\[(\w+)\]\s*(.+?):\s*<keet>\s*(.+?)\s*<qwen>\s*(.+?)\s*=>\s*"(.*?)"(.*)$/);
+                // Format: [1/58] [fixed] term: qwen_heard → "corrected" (expected "original")
+                const m = line.match(/^\[(\d+)\/(\d+)\]\s*\[(\w+)\]\s*(.+?):\s*(.+?)\s*\u2192\s*"(.*?)"(.*)$/);
                 if (!m) return null;
-                const expected = m[8]?.match(/\(expected "(.+?)"\)/)?.[1];
-                return { i: +m[1], total: +m[2], cat: m[3], term: m[4], keet: m[5], qwen: m[6], output: m[7], expected };
+                const expected = m[7]?.match(/\(expected "(.+?)"\)/)?.[1];
+                return { i: +m[1], total: +m[2], cat: m[3], term: m[4], qwen: m[5].trim(), output: m[6], expected };
             }).filter(Boolean) : [];
 
             const catColors = {fixed:'#7ee787', kept:'#58a6ff', broken:'#f85149', wrong_fix:'#d29922', blank:'#8b949e', timeout:'#8b949e'};
