@@ -2072,6 +2072,20 @@
             return audioCtx.decodeAudioData(bytes.buffer);
         }
 
+        function addNoiseToAudioBuffer(buffer, noiseLevel) {
+            if (!buffer || noiseLevel <= 0) return buffer;
+            const out = audioCtx.createBuffer(buffer.numberOfChannels, buffer.length, buffer.sampleRate);
+            for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+                const src = buffer.getChannelData(ch);
+                const dst = out.getChannelData(ch);
+                for (let i = 0; i < src.length; i++) {
+                    const noisy = src[i] + ((Math.random() * 2) - 1) * noiseLevel;
+                    dst[i] = Math.max(-1, Math.min(1, noisy));
+                }
+            }
+            return out;
+        }
+
         function audioBufferToWav(buffer) {
             const sampleRate = buffer.sampleRate, samples = buffer.getChannelData(0);
             const dataLen = samples.length * 2, buf = new ArrayBuffer(44 + dataLen), v = new DataView(buf);
@@ -2610,6 +2624,10 @@
             const [recording, setRecording] = useState(false);
             const [recordingBusy, setRecordingBusy] = useState(false);
             const [recordingError, setRecordingError] = useState(null);
+            const [rapidFireOpen, setRapidFireOpen] = useState(false);
+            const [rapidFireSentence, setRapidFireSentence] = useState(null);
+            const [rapidFireError, setRapidFireError] = useState(null);
+            const [rapidFireBusy, setRapidFireBusy] = useState(false);
             const recordingRecorderRef = useRef(null);
 
             const loadNext = () => {
@@ -2622,6 +2640,22 @@
             };
 
             const loadStats = () => api('/api/author/stats').then(setStats).catch(() => {});
+
+            const loadSentences = async () => {
+                const rows = await api('/api/author/sentences');
+                setSentences(rows);
+                return rows;
+            };
+
+            const pickRapidFireSentence = (rows, currentId = null) => {
+                if (!rows || rows.length === 0) return null;
+                const zeroTake = rows.filter(s => (s.recording_count || 0) === 0 && s.id !== currentId);
+                const pool = zeroTake.length > 0
+                    ? zeroTake
+                    : rows.filter(s => s.id !== currentId);
+                const candidates = pool.length > 0 ? pool : rows;
+                return candidates[Math.floor(Math.random() * candidates.length)];
+            };
 
             const loadRecordings = async (row) => {
                 const res = await api(`/api/author/sentences/${row.id}/recordings`);
@@ -2646,6 +2680,14 @@
                 setRecordingError(null);
             };
 
+            const closeRapidFire = () => {
+                stopSentenceRecording();
+                setRapidFireOpen(false);
+                setRapidFireSentence(null);
+                setRapidFireError(null);
+                setRapidFireBusy(false);
+            };
+
             const stopSentenceRecording = () => {
                 if (recordingRecorderRef.current && recordingRecorderRef.current.state !== 'inactive') {
                     recordingRecorderRef.current.stop();
@@ -2653,8 +2695,8 @@
                 setRecording(false);
             };
 
-            const startSentenceRecording = async () => {
-                if (!recordingSentence) return;
+            const saveSentenceTake = async (row, onSaved) => {
+                if (!row) return;
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({audio: true});
                     const mediaRecorder = new MediaRecorder(stream, {mimeType: 'audio/webm'});
@@ -2668,7 +2710,7 @@
                             const arrayBuf = await blob.arrayBuffer();
                             const decoded = await audioCtx.decodeAudioData(arrayBuf);
                             const wavBytes = audioBufferToWav(decoded);
-                            const res = await fetch(`/api/author/sentences/${recordingSentence.id}/recordings`, {
+                            const res = await fetch(`/api/author/sentences/${row.id}/recordings`, {
                                 method: 'POST',
                                 headers: {'Content-Type': 'audio/wav'},
                                 body: wavBytes,
@@ -2678,12 +2720,13 @@
                                 throw new Error(text || 'failed to save recording');
                             }
                             const data = await res.json();
-                            setRecordings(data.recordings || []);
-                            api('/api/author/sentences').then(setSentences).catch(() => {});
+                            await onSaved?.(data);
+                            loadSentences().catch(() => {});
                             loadStats();
                             setRecordingError(null);
                         } catch (e) {
-                            setRecordingError(e.message);
+                            if (row.id === recordingSentence?.id) setRecordingError(e.message);
+                            else setRapidFireError(e.message);
                         } finally {
                             setRecording(false);
                             setRecordingBusy(false);
@@ -2693,9 +2736,64 @@
                     mediaRecorder.start();
                     setRecording(true);
                 } catch (e) {
-                    setRecordingError('Microphone access denied');
+                    if (row.id === recordingSentence?.id) setRecordingError('Microphone access denied');
+                    else setRapidFireError('Microphone access denied');
                 }
             };
+
+            const startSentenceRecording = async () => {
+                if (!recordingSentence) return;
+                await saveSentenceTake(recordingSentence, data => {
+                    setRecordings(data.recordings || []);
+                });
+            };
+
+            const startRapidFireRecording = async () => {
+                if (!rapidFireSentence) return;
+                setRapidFireBusy(true);
+                await saveSentenceTake(rapidFireSentence, async data => {
+                    setRapidFireError(null);
+                    const rows = await loadSentences();
+                    const refreshed = rows.find(s => s.id === rapidFireSentence.id) || rapidFireSentence;
+                    setRapidFireSentence(pickRapidFireSentence(rows, refreshed.id));
+                });
+                setRapidFireBusy(false);
+            };
+
+            const openRapidFire = async () => {
+                closeRecordings();
+                setRapidFireOpen(true);
+                setRapidFireError(null);
+                setRapidFireBusy(false);
+                try {
+                    const rows = sentences || await loadSentences();
+                    setRapidFireSentence(pickRapidFireSentence(rows));
+                } catch (e) {
+                    setRapidFireError(e.message);
+                }
+            };
+
+            useEffect(() => {
+                if (!rapidFireOpen) return;
+                const onKeyDown = (e) => {
+                    if (e.repeat) return;
+                    if (e.key === ' ' || e.code === 'Space') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (recording) {
+                            stopSentenceRecording();
+                        } else if (!recordingBusy && !rapidFireBusy && rapidFireSentence) {
+                            startRapidFireRecording();
+                        }
+                    } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        closeRapidFire();
+                    }
+                };
+                window.addEventListener('keydown', onKeyDown, true);
+                return () => window.removeEventListener('keydown', onKeyDown, true);
+            }, [rapidFireOpen, recording, recordingBusy, rapidFireBusy, rapidFireSentence?.id]);
 
             const deleteRecording = async (recordingRow) => {
                 if (!confirm(`Delete take #${recordingRow.take_no}?`)) return;
@@ -2761,6 +2859,7 @@
                             setSentSuggestLoading(false);
                             setTimeout(() => sentSuggestRef.current?.focus(), 100);
                         }}>{sentSuggestLoading ? 'Thinking...' : 'Suggest Sentences'}</button>
+                        <button className="btn btn-sm btn-primary" onClick={openRapidFire}>Rapid fire</button>
                     </div>
 
                     {spellIssues && (
@@ -3046,8 +3145,9 @@
                                             <span style={{flex:1,color:'var(--text-muted)',fontSize:12}}>{r.created_at}</span>
                                             <button className="btn btn-sm" onClick={async () => {
                                                 if (!r.audio_b64) return;
-                                                const buf = await decodeAudioB64(r.audio_b64);
-                                                playBuffer(buf);
+                                                const mime = r.audio_mime || 'audio/ogg';
+                                                const a = new Audio(`data:${mime};base64,${r.audio_b64}`);
+                                                a.play();
                                             }}>Play</button>
                                             <button className="btn btn-sm" onClick={() => deleteRecording(r)} style={{color:'var(--danger)'}}>Delete</button>
                                         </div>
@@ -3055,6 +3155,52 @@
                                 </div>
                                 <div className="actions" style={{marginTop:12}}>
                                     <button className="btn btn-sm" onClick={closeRecordings}>Close</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {rapidFireOpen && rapidFireSentence && (
+                        <div className="vocab-overlay" onClick={e => { if (e.target === e.currentTarget) closeRapidFire(); }}>
+                            <div className="vocab-editor" style={{maxWidth: 1100, width: '96vw', minHeight: '88vh', display: 'flex', flexDirection: 'column', justifyContent: 'space-between'}}>
+                                <div>
+                                    <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
+                                        <div className="term" style={{flex:1,textAlign:'left'}}>Rapid fire</div>
+                                        <button onClick={closeRapidFire} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:18}}>&times;</button>
+                                    </div>
+                                    <div style={{color:'var(--text-muted)',fontSize:13,marginBottom:18,lineHeight:1.5}}>
+                                        It keeps picking a new sentence at random, but zero-take sentences are always preferred first.
+                                    </div>
+                                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:10}}>
+                                        <div style={{fontSize:11,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:1}}>Current sentence</div>
+                                        <div style={{fontSize:11,color:'var(--text-muted)'}}>{rapidFireSentence.recording_count || 0} takes already</div>
+                                    </div>
+                                    <div style={{fontSize:34,lineHeight:1.35,marginBottom:20,textAlign:'center',padding:'0 12px'}}>
+                                        {rapidFireSentence.sentence}
+                                    </div>
+                                    {rapidFireError && <div className="pipeline-error" style={{marginBottom:12}}>{rapidFireError}</div>}
+                                    <div style={{display:'flex',gap:10,alignItems:'center',justifyContent:'center',marginBottom:18}}>
+                                        <button className={`record-btn ${recording ? 'active' : ''}`} onClick={recording ? stopSentenceRecording : startRapidFireRecording} disabled={recordingBusy || rapidFireBusy}
+                                            title={recording ? 'Stop recording' : 'Record this take'}>
+                                            {recordingBusy || rapidFireBusy ? '…' : recording ? '\u25A0' : '\u25CF'}
+                                        </button>
+                                        <span style={{fontSize:13,color:'var(--text-muted)'}}>
+                                            {recording ? 'Recording...' : recordingBusy || rapidFireBusy ? 'Saving take...' : 'Click or press space to record, then it jumps to the next sentence'}
+                                        </span>
+                                    </div>
+                                    <div style={{display:'flex',gap:8,justifyContent:'center',flexWrap:'wrap'}}>
+                                        <button className="btn btn-primary btn-sm" onClick={startRapidFireRecording} disabled={recording || recordingBusy || rapidFireBusy}>Record</button>
+                                        <button className="btn btn-sm" onClick={() => {
+                                            stopSentenceRecording();
+                                            if (sentences && sentences.length > 0) {
+                                                setRapidFireSentence(pickRapidFireSentence(sentences, rapidFireSentence.id));
+                                            }
+                                        }} disabled={recordingBusy || rapidFireBusy}>Skip</button>
+                                        <button className="btn btn-sm" onClick={closeRapidFire}>Stop</button>
+                                    </div>
+                                </div>
+                                <div style={{marginTop:24,borderTop:'1px solid var(--border)',paddingTop:12,fontSize:11,color:'var(--text-muted)',textAlign:'center'}}>
+                                    Zero-take sentences are prioritized first, then selection becomes random across the whole set.
                                 </div>
                             </div>
                         </div>
@@ -3813,14 +3959,34 @@
 
         // ==================== EVAL PAGE ====================
         function EvalPage() {
+            const evalPresets = [
+                { id: 'clean', label: 'Clean', repeats: 1, noise: 0.00, help: 'Single pass, no perturbation.' },
+                { id: 'light', label: 'Light', repeats: 3, noise: 0.01, help: 'A few reruns with very mild noise.' },
+                { id: 'normal', label: 'Normal', repeats: 5, noise: 0.02, help: 'Reasonable default for surfacing instability.' },
+                { id: 'stress', label: 'Stress', repeats: 8, noise: 0.03, help: 'More aggressive shakeout, less realistic.' },
+            ];
+            const evalSources = [
+                { id: 'human', label: 'Human takes', help: 'Recorded takes run through ASR, with optional repeats and synthetic noise.' },
+                { id: 'synthetic', label: 'Synthetic mistakes', help: 'Fresh Markov sentences built from known corpus mistakes. No audio or noise step.' },
+            ];
             const [status, setStatus] = useState(null);
             const [runningJob, setRunningJob] = useState(null);
             const [jobLog, setJobLog] = useState('');
             const [liveEval, setLiveEval] = useState(null);
             const [error, setError] = useState(null);
             const [filter, setFilter] = useState('all');
+            const [source, setSource] = useState('human');
+            const [repeats, setRepeats] = useState(1);
+            const [noiseLevel, setNoiseLevel] = useState(0);
+            const [previewLoading, setPreviewLoading] = useState(false);
+            const [previewError, setPreviewError] = useState(null);
+            const [previewLabel, setPreviewLabel] = useState('');
+            const [previewBuffer, setPreviewBuffer] = useState(null);
+            const [expandedEntry, setExpandedEntry] = useState(null);
             const pollRef = useRef(null);
             const logRef = useRef(null);
+            const recordingCacheRef = useRef(new Map());
+            const activePreset = evalPresets.find(p => p.repeats === repeats && Math.abs(p.noise - noiseLevel) < 0.0001)?.id || null;
 
             const load = () => api('/api/pipeline/status').then(s => {
                 setStatus(s);
@@ -3848,10 +4014,53 @@
                 return value;
             }
 
+            const ensurePreviewBuffer = async () => {
+                if (previewBuffer) return previewBuffer;
+                setPreviewLoading(true);
+                setPreviewError(null);
+                try {
+                    const rows = await api('/api/author/sentences');
+                    const row = (rows || []).find(r => (r.recording_count || 0) > 0);
+                    if (!row) throw new Error('No recorded takes available.');
+                    const recs = await api(`/api/author/sentences/${row.id}/recordings`);
+                    const rec = (recs.recordings || []).find(r => !!r.audio_b64);
+                    if (!rec) throw new Error('No playable recording found.');
+                    const buf = await decodeAudioB64(rec.audio_b64);
+                    setPreviewLabel(`${rec.term}: ${rec.sentence}`);
+                    setPreviewBuffer(buf);
+                    return buf;
+                } catch (e) {
+                    setPreviewError(e.message);
+                    throw e;
+                } finally {
+                    setPreviewLoading(false);
+                }
+            };
+
+            const playPreview = async (withNoise) => {
+                try {
+                    const buf = await ensurePreviewBuffer();
+                    playBuffer(withNoise ? addNoiseToAudioBuffer(buf, noiseLevel) : buf);
+                } catch {}
+            };
+
+            const fetchRecordingBuffer = async (recordingId) => {
+                if (recordingCacheRef.current.has(recordingId)) return recordingCacheRef.current.get(recordingId);
+                const res = await fetch(`/api/author/recordings/${recordingId}/audio`);
+                if (!res.ok) throw new Error(`Audio ${res.status}`);
+                const buf = await audioCtx.decodeAudioData(await res.arrayBuffer());
+                recordingCacheRef.current.set(recordingId, buf);
+                return buf;
+            };
+
             const startEval = async () => {
                 setError(null); setJobLog('');
                 try {
-                    const res = await api('/api/jobs/eval', {method: 'POST', body: JSON.stringify({})});
+                    const res = await api('/api/jobs/eval', {method: 'POST', body: JSON.stringify({
+                        source,
+                        repeats,
+                        noise_level: source === 'human' ? noiseLevel : 0,
+                    })});
                     if (res.job_id) setRunningJob({id: res.job_id, job_type: 'eval'});
                     else if (res.error) setError(res.error);
                 } catch (e) { setError(e.message); }
@@ -3861,9 +4070,10 @@
             if (!status) return <div className="container"><p>Loading...</p></div>;
             const isRunning = !!runningJob;
             const ev = liveEval || status.last_eval;
+            const effectiveSource = ev?.source || source;
 
             // Parse log lines into structured entries for display
-            const entries = jobLog ? jobLog.split('\n').filter(l => l.match(/^\[\d+\/\d+\]/)).map(line => {
+            const parsedLogEntries = jobLog ? jobLog.split('\n').filter(l => l.match(/^\[\d+\/\d+\]/)).map(line => {
                 // Format: [1/58] [fixed] term: qwen_heard → "corrected" (expected "original")
                 const m = line.match(/^\[(\d+)\/(\d+)\]\s*\[(\w+)\]\s*(.+?):\s*(.+?)\s*\u2192\s*"(.*?)"(.*)$/);
                 if (!m) return null;
@@ -3878,13 +4088,14 @@
                     expected
                 };
             }).filter(Boolean) : [];
+            const entries = ev?.entries || parsedLogEntries;
 
             const catColors = {fixed:'#7ee787', kept:'#58a6ff', broken:'#f85149', wrong:'#d29922', wrong_fix:'#d29922', blank:'#8b949e', timeout:'#8b949e'};
             const catLabels = {fixed:'Fixed', kept:'Kept', broken:'Broken', wrong:'Wrong', wrong_fix:'Wrong fix', blank:'Blank', timeout:'Timeout'};
             const filtered = filter === 'all' ? entries : entries.filter(e => e.cat === filter);
 
             const progress = ev ? (ev.total || 0) : 0;
-            const totalTriplets = entries.length > 0 ? entries[entries.length - 1].total : 0;
+            const totalTriplets = ev?.total || (parsedLogEntries.length > 0 ? parsedLogEntries[parsedLogEntries.length - 1].total : 0);
 
             return (
                 <div className="container">
@@ -3901,6 +4112,69 @@
                         {isRunning && totalTriplets > 0 && <span style={{fontSize:12,color:'var(--text-muted)',marginLeft:8}}>{progress}/{totalTriplets}</span>}
                     </div>
 
+                    <div style={{display:'flex',gap:16,alignItems:'end',flexWrap:'wrap',marginBottom:16}}>
+                        <label style={{display:'flex',flexDirection:'column',gap:4,fontSize:12,color:'var(--text-muted)'}}>
+                            <span>Source</span>
+                            <select value={source} onChange={e => setSource(e.target.value)}
+                                style={{width:180,padding:'6px 8px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text)'}}>
+                                {evalSources.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+                            </select>
+                        </label>
+                        <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                            <span style={{fontSize:12,color:'var(--text-muted)'}}>Presets</span>
+                            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                                {evalPresets.map(p => (
+                                    <button
+                                        key={p.id}
+                                        className="btn"
+                                        onClick={() => { setRepeats(p.repeats); setNoiseLevel(p.noise); }}
+                                        style={{
+                                            padding:'6px 10px',
+                                            minHeight:'auto',
+                                            borderColor: activePreset === p.id ? 'var(--accent)' : 'var(--border)',
+                                            background: activePreset === p.id ? 'rgba(88,166,255,0.12)' : 'transparent',
+                                            color: activePreset === p.id ? 'var(--accent)' : 'var(--text)',
+                                        }}
+                                        title={`${p.help} ${p.repeats} run(s), noise ${p.noise.toFixed(2)}.`}
+                                    >
+                                        {p.label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <label style={{display:'flex',flexDirection:'column',gap:4,fontSize:12,color:'var(--text-muted)'}}>
+                            <span>{source === 'synthetic' ? 'Variants per mistake' : 'ASR runs per take'}</span>
+                            <input type="number" min="1" max="32" step="1" value={repeats}
+                                onChange={e => setRepeats(Math.max(1, Math.min(32, +e.target.value || 1)))}
+                                style={{width:120,padding:'6px 8px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text)'}} />
+                        </label>
+                        <label style={{display:'flex',flexDirection:'column',gap:4,fontSize:12,color:'var(--text-muted)'}}>
+                            <span>Synthetic noise</span>
+                            <input type="number" min="0" max="0.5" step="0.01" value={noiseLevel}
+                                onChange={e => setNoiseLevel(Math.max(0, Math.min(0.5, +e.target.value || 0)))}
+                                disabled={source !== 'human'}
+                                style={{width:120,padding:'6px 8px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text)',opacity:source === 'human' ? 1 : 0.5}} />
+                        </label>
+                        <div style={{fontSize:12,color:'var(--text-muted)',maxWidth:420}}>
+                            {source === 'synthetic'
+                                ? 'Generate fresh Markov variants from known corpus mistakes. This path scores the correction model directly, without audio, ASR reruns, or noise.'
+                                : 'Re-run ASR on the same human take to surface non-deterministic errors. Noise adds simple synthetic perturbation before ASR; `0` disables it.'}
+                        </div>
+                    </div>
+
+                    {source === 'human' && (
+                    <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:16}}>
+                        <button className="btn" onClick={() => playPreview(false)} disabled={previewLoading}>
+                            {previewLoading ? 'Loading preview…' : 'Play Clean Preview'}
+                        </button>
+                        <button className="btn" onClick={() => playPreview(true)} disabled={previewLoading}>
+                            Play Noisy Preview
+                        </button>
+                        {previewLabel && <span style={{fontSize:12,color:'var(--text-muted)'}}>{previewLabel}</span>}
+                        {previewError && <span style={{fontSize:12,color:'var(--error)'}}>{previewError}</span>}
+                    </div>
+                    )}
+
                     {ev && (
                         <div style={{marginBottom:16}}>
                             <div className="stats-grid" style={{marginBottom:8}}>
@@ -3909,6 +4183,11 @@
                                 <div className="stat-card"><div className="value" style={{color:catColors.fixed}}>{ev.correct||0}</div><div className="label">Correct</div></div>
                                 <div className="stat-card"><div className="value" style={{color:catColors.wrong}}>{ev.wrong||0}</div><div className="label">Wrong</div></div>
                                 <div className="stat-card"><div className="value" style={{color:catColors.blank}}>{ev.blank||0}</div><div className="label">Blank</div></div>
+                            </div>
+                            <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:8}}>
+                                {effectiveSource === 'synthetic'
+                                    ? `${ev.source_templates ?? ev.total ?? 0} mistake templates, ${ev.repeats ?? 1} variant(s) each`
+                                    : `${ev.source_recordings ?? ev.total ?? 0} source takes, ${ev.repeats ?? 1} run(s) each, noise ${Number(ev.noise_level || 0).toFixed(2)}`}
                             </div>
                             {ev.total > 0 && (() => {
                                 const total = ev.total;
@@ -3942,11 +4221,79 @@
                                         <div style={{display:'flex',gap:8,alignItems:'baseline',marginBottom:4}}>
                                             <span style={{color:catColors[e.cat],fontWeight:700,fontSize:11,minWidth:65}}>[{e.cat}]</span>
                                             <span style={{color:'var(--text)',fontWeight:600}}>{e.term}</span>
+                                            {e.run_no && e.take_no && <span style={{color:'var(--text-muted)',fontSize:11}}>(take {e.take_no}, run {e.run_no})</span>}
+                                            {e.variant_no && <span style={{color:'var(--text-muted)',fontSize:11}}>(synthetic {e.variant_no})</span>}
+                                            {(e.cat === 'wrong' || e.cat === 'broken') && e.alignments && (
+                                                <button className="btn" style={{padding:'2px 8px',minHeight:'auto',fontSize:11}} onClick={() => setExpandedEntry(expandedEntry === i ? null : i)}>
+                                                    {expandedEntry === i ? 'Hide details' : 'Details'}
+                                                </button>
+                                            )}
                                         </div>
                                         <div style={{paddingLeft:8,borderLeft:'2px solid rgba(255,255,255,0.08)'}}>
                                             <div><span style={{color:'var(--text-muted)',fontSize:10,display:'inline-block',width:55}}>ASR:</span> <span style={{color:'#58a6ff'}}>{e.qwen}</span></div>
                                             <div><span style={{color:'var(--text-muted)',fontSize:10,display:'inline-block',width:55}}>model:</span> <span style={{color: e.cat === 'fixed' || e.cat === 'kept' ? 'var(--success)' : e.cat === 'blank' ? 'var(--text-muted)' : 'var(--error)', fontWeight: 400}}>{e.output || '(empty)'}</span></div>
                                             {e.expected && <div><span style={{color:'var(--text-muted)',fontSize:10,display:'inline-block',width:55}}>expected:</span> <span style={{color:'var(--text-muted)'}}>{e.expected}</span></div>}
+                                            {expandedEntry === i && e.alignments && (() => {
+                                                const tt = e.cons_time;
+                                                const ti = e.trim_info;
+                                                const tl = ti?.trimmed_left || 0;
+                                                const tr = ti?.trimmed_right || 0;
+                                                const classify = (items) => {
+                                                    if (!tt) return {kept: new Set(), trimmed: new Set()};
+                                                    const inRange = [];
+                                                    for (let j=0;j<items.length;j++) if (items[j].e>tt[0]&&items[j].s<tt[1]) inRange.push(j);
+                                                    const kept = new Set(), trimmed = new Set();
+                                                    for (let j=0;j<inRange.length;j++) {
+                                                        if (j < tl || j >= inRange.length - tr) trimmed.add(inRange[j]);
+                                                        else kept.add(inRange[j]);
+                                                    }
+                                                    return {kept, trimmed};
+                                                };
+                                                const renderTL = (label, items, color) => {
+                                                    if (!items || !items.length) return null;
+                                                    const allItems = [...(e.alignments.expected||[]), ...(e.alignments.asr||[]), ...(e.alignments.corrected||[])];
+                                                    const maxTime = allItems.length ? Math.max(...allItems.map(a => a.e)) : 1;
+                                                    const pct = t => (t/maxTime*100).toFixed(2)+'%';
+                                                    const {kept, trimmed} = classify(items);
+                                                    return <div style={{marginTop:6}}>
+                                                        <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:1}}>
+                                                            <span style={{fontSize:9,color:'var(--text-muted)',width:55,textAlign:'right',flexShrink:0,fontWeight:600}}>{label}</span>
+                                                            <span style={{fontSize:10,color:color,opacity:0.7,fontFamily:'monospace',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{items.map(a => a.w).join(' ')}</span>
+                                                        </div>
+                                                        <div style={{display:'flex',alignItems:'center',gap:6}}>
+                                                            <span style={{width:55,flexShrink:0}} />
+                                                            <div style={{position:'relative',flex:1,height:22,background:'rgba(255,255,255,0.03)',borderRadius:3,overflow:'hidden'}}>
+                                                                {items.map((a,j) => {
+                                                                    const isKept = kept.has(j);
+                                                                    const isTrimmed = trimmed.has(j);
+                                                                    return <div key={j} title={`${a.w} (${a.s.toFixed(2)}s-${a.e.toFixed(2)}s)`} style={{
+                                                                        position:'absolute',left:pct(a.s),width:pct(Math.max(a.e-a.s,0.02)),top:2,bottom:2,borderRadius:2,
+                                                                        background: isKept ? color : isTrimmed ? color.replace(/[\d.]+\)$/,'0.2)') : 'rgba(255,255,255,0.08)',
+                                                                        border:`1px solid ${isKept ? color : isTrimmed ? color.replace(/[\d.]+\)$/,'0.3)') : 'rgba(255,255,255,0.12)'}`,
+                                                                        display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden',
+                                                                    }}><span style={{fontSize:8,color:isKept?'#fff':isTrimmed?'rgba(255,255,255,0.4)':'var(--text-muted)',whiteSpace:'nowrap',padding:'0 2px',textDecoration:isTrimmed?'line-through':'none'}}>{a.w}</span></div>;
+                                                                })}
+                                                                {tt && <div style={{position:'absolute',left:pct(tt[0]),width:pct(tt[1]-tt[0]),top:0,bottom:0,border:'1px dashed rgba(255,255,255,0.3)',borderRadius:2,pointerEvents:'none'}} />}
+                                                            </div>
+                                                        </div>
+                                                    </div>;
+                                                };
+                                                return <div style={{marginTop:8,paddingTop:8,borderTop:'1px solid rgba(255,255,255,0.06)'}}>
+                                                    <div style={{display:'flex',gap:8,marginBottom:6}}>
+                                                        <button className="btn" style={{padding:'2px 8px',minHeight:'auto',fontSize:11}} onClick={async () => {
+                                                            const buf = await fetchRecordingBuffer(e.recording_id);
+                                                            playBuffer(buf);
+                                                        }}>Play clean</button>
+                                                        <button className="btn" style={{padding:'2px 8px',minHeight:'auto',fontSize:11}} onClick={async () => {
+                                                            const buf = await fetchRecordingBuffer(e.recording_id);
+                                                            playBuffer(addNoiseToAudioBuffer(buf, Number(ev?.noise_level || 0)));
+                                                        }}>Play noisy</button>
+                                                    </div>
+                                                    {renderTL('Expected', e.alignments.expected, 'rgba(88,166,255,0.6)')}
+                                                    {renderTL('ASR', e.alignments.asr, 'rgba(210,153,34,0.7)')}
+                                                    {renderTL('Model', e.alignments.corrected, 'rgba(126,231,135,0.7)')}
+                                                </div>;
+                                            })()}
                                         </div>
                                     </div>
                                 ))}

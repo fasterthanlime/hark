@@ -25,12 +25,17 @@ fn decode_wav_mono(wav_bytes: &[u8]) -> anyhow::Result<(Vec<f32>, u32)> {
         hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
         hound::SampleFormat::Int => {
             let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
-            reader.samples::<i32>().filter_map(|s| s.ok()).map(|s| s as f32 / max).collect()
+            reader
+                .samples::<i32>()
+                .filter_map(|s| s.ok())
+                .map(|s| s as f32 / max)
+                .collect()
         }
     };
 
     let mut mono: Vec<f32> = if spec.channels > 1 {
-        samples_f32.chunks(spec.channels as usize)
+        samples_f32
+            .chunks(spec.channels as usize)
             .map(|ch| ch.iter().sum::<f32>() / ch.len() as f32)
             .collect()
     } else {
@@ -40,7 +45,9 @@ fn decode_wav_mono(wav_bytes: &[u8]) -> anyhow::Result<(Vec<f32>, u32)> {
     let peak = mono.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
     if peak > 0.001 {
         let gain = 0.95 / peak;
-        for s in &mut mono { *s *= gain; }
+        for s in &mut mono {
+            *s *= gain;
+        }
     }
 
     Ok((mono, spec.sample_rate))
@@ -138,7 +145,12 @@ async fn run_corpus_pass(
     let state_q = state.clone();
     let samples_q = full_16k.to_vec();
     let qwen_task = tokio::task::spawn_blocking(move || -> String {
-        state_q.asr.transcribe_samples(&samples_q, qwen3_asr::TranscribeOptions::default().with_language("english"))
+        state_q
+            .asr
+            .transcribe_samples(
+                &samples_q,
+                qwen3_asr::TranscribeOptions::default().with_language("english"),
+            )
             .map(|r| r.text)
             .unwrap_or_default()
     });
@@ -161,7 +173,10 @@ async fn run_corpus_pass(
     tracing::debug!(qwen = %qwen_full, parakeet = %parakeet_full, "ASR results");
 
     // Alignment — written sentence is ground truth, spoken sentence for visualization
-    let orig_alignment = state.aligner.align(full_16k, &written.0).unwrap_or_default();
+    let orig_alignment = state
+        .aligner
+        .align(full_16k, &written.0)
+        .unwrap_or_default();
     let spoken_alignment = state.aligner.align(full_16k, &spoken.0).unwrap_or_default();
 
     // Find the WRITTEN term in the original alignment, then expand into neighboring gaps.
@@ -174,36 +189,61 @@ async fn run_corpus_pass(
     let (term_start, term_end) = match term_found_range {
         Some((start, end)) => {
             const MIN_GAP: f64 = 0.05; // only expand into gaps > 50ms
-            // Expand left: if there's a real gap before the term, claim it
-            let prev_end = orig_alignment.iter()
+                                       // Expand left: if there's a real gap before the term, claim it
+            let prev_end = orig_alignment
+                .iter()
                 .filter(|a| a.end_time < start - 0.001)
                 .last()
                 .map(|a| a.end_time)
                 .unwrap_or(start);
-            let expanded_start = if start - prev_end > MIN_GAP { prev_end } else { start };
+            let expanded_start = if start - prev_end > MIN_GAP {
+                prev_end
+            } else {
+                start
+            };
             // Expand right: if there's a real gap after the term, claim it
-            let next_start = orig_alignment.iter()
+            let next_start = orig_alignment
+                .iter()
                 .find(|a| a.start_time > end + 0.001)
                 .map(|a| a.start_time)
                 .unwrap_or(end);
-            let expanded_end = if next_start - end > MIN_GAP { next_start } else { end };
+            let expanded_end = if next_start - end > MIN_GAP {
+                next_start
+            } else {
+                end
+            };
             (expanded_start, expanded_end)
         }
         None => (0.0, full_16k.len() as f64 / 16000.0),
     };
 
-    let qwen_alignment = state.aligner.align(full_16k, &qwen_full).unwrap_or_default();
+    let qwen_alignment = state
+        .aligner
+        .align(full_16k, &qwen_full)
+        .unwrap_or_default();
     let parakeet_alignment = if dual_asr {
-        state.aligner.align(full_16k, &parakeet_full).unwrap_or_default()
+        state
+            .aligner
+            .align(full_16k, &parakeet_full)
+            .unwrap_or_default()
     } else {
         Vec::new()
     };
 
-    tracing::debug!(term_found = term_found_range.is_some(), term_start, term_end, "alignment done");
+    tracing::debug!(
+        term_found = term_found_range.is_some(),
+        term_start,
+        term_end,
+        "alignment done"
+    );
 
     let extraction = extract_with_consensus(
-        &orig_alignment, &qwen_alignment, &parakeet_alignment,
-        term_start, term_end, protected_terms,
+        &orig_alignment,
+        &qwen_alignment,
+        &parakeet_alignment,
+        term_start,
+        term_end,
+        protected_terms,
     );
 
     tracing::debug!(clean = extraction.clean, orig = %extraction.original, qwen = %extraction.qwen, para = %extraction.parakeet, "extraction");
@@ -255,32 +295,49 @@ impl MarkovChain {
         let mut bwd_counts: HashMap<String, HashMap<String, u32>> = HashMap::new();
 
         const BANNED: &[&str] = &[
-            "fuck", "fucking", "shit", "jesus", "christ", "damn", "idiot",
-            "idk", "omg", "lol", "lmao", "rofl", "wtf", "stfu", "smh",
+            "fuck", "fucking", "shit", "jesus", "christ", "damn", "idiot", "idk", "omg", "lol",
+            "lmao", "rofl", "wtf", "stfu", "smh",
         ];
 
         for sentence in sentences {
             let words: Vec<&str> = sentence.split_whitespace().collect();
-            if words.len() < 3 { continue; }
+            if words.len() < 3 {
+                continue;
+            }
 
             // Forward: <S> → w0 → w1 → ... → </S>
             let mut prev = SENTENCE_START.to_string();
             for &w in &words {
                 let lower = w.to_lowercase();
                 let clean: String = lower.chars().filter(|c| c.is_alphanumeric()).collect();
-                if BANNED.contains(&clean.as_str()) { continue; }
-                *fwd_counts.entry(prev.clone()).or_default().entry(lower.clone()).or_default() += 1;
-                *bwd_counts.entry(lower.clone()).or_default().entry(prev).or_default() += 1;
+                if BANNED.contains(&clean.as_str()) {
+                    continue;
+                }
+                *fwd_counts
+                    .entry(prev.clone())
+                    .or_default()
+                    .entry(lower.clone())
+                    .or_default() += 1;
+                *bwd_counts
+                    .entry(lower.clone())
+                    .or_default()
+                    .entry(prev)
+                    .or_default() += 1;
                 prev = lower;
             }
-            *fwd_counts.entry(prev).or_default().entry(SENTENCE_END.to_string()).or_default() += 1;
+            *fwd_counts
+                .entry(prev)
+                .or_default()
+                .entry(SENTENCE_END.to_string())
+                .or_default() += 1;
         }
 
-        let to_vec = |m: HashMap<String, HashMap<String, u32>>| -> HashMap<String, Vec<(String, u32)>> {
-            m.into_iter()
-                .map(|(k, counts)| (k, counts.into_iter().collect()))
-                .collect()
-        };
+        let to_vec =
+            |m: HashMap<String, HashMap<String, u32>>| -> HashMap<String, Vec<(String, u32)>> {
+                m.into_iter()
+                    .map(|(k, counts)| (k, counts.into_iter().collect()))
+                    .collect()
+            };
 
         MarkovChain {
             forward: to_vec(fwd_counts),
@@ -290,11 +347,15 @@ impl MarkovChain {
 
     /// Pick a random next word weighted by frequency.
     fn sample(choices: &[(String, u32)], rng: &mut impl Rng) -> Option<String> {
-        if choices.is_empty() { return None; }
+        if choices.is_empty() {
+            return None;
+        }
         let total: u32 = choices.iter().map(|(_, c)| c).sum();
         let mut pick = rng.random_range(0..total);
         for (word, count) in choices {
-            if pick < *count { return Some(word.clone()); }
+            if pick < *count {
+                return Some(word.clone());
+            }
             pick -= count;
         }
         Some(choices.last().unwrap().0.clone())
@@ -310,9 +371,15 @@ impl MarkovChain {
         let mut forward_words = Vec::new();
         let mut cur = target_lower.clone();
         for _ in 0..max_words {
-            let Some(choices) = self.forward.get(&cur) else { break };
-            let Some(next) = Self::sample(choices, rng) else { break };
-            if next == SENTENCE_END { break; }
+            let Some(choices) = self.forward.get(&cur) else {
+                break;
+            };
+            let Some(next) = Self::sample(choices, rng) else {
+                break;
+            };
+            if next == SENTENCE_END {
+                break;
+            }
             forward_words.push(next.clone());
             cur = next;
         }
@@ -321,9 +388,15 @@ impl MarkovChain {
         let mut backward_words = Vec::new();
         cur = target_lower.clone();
         for _ in 0..max_words {
-            let Some(choices) = self.backward.get(&cur) else { break };
-            let Some(prev) = Self::sample(choices, rng) else { break };
-            if prev == SENTENCE_START { break; }
+            let Some(choices) = self.backward.get(&cur) else {
+                break;
+            };
+            let Some(prev) = Self::sample(choices, rng) else {
+                break;
+            };
+            if prev == SENTENCE_START {
+                break;
+            }
             backward_words.push(prev.clone());
             cur = prev;
         }
@@ -331,7 +404,9 @@ impl MarkovChain {
 
         // Ensure the target is never the first word — TTS often clips the start.
         if backward_words.is_empty() {
-            const FILLERS: &[&str] = &["So", "Well", "Now", "OK", "Right", "Also", "And", "But", "Then"];
+            const FILLERS: &[&str] = &[
+                "So", "Well", "Now", "OK", "Right", "Also", "And", "But", "Then",
+            ];
             backward_words.push(FILLERS[rng.random_range(0..FILLERS.len())].to_string());
         }
 
@@ -377,14 +452,138 @@ fn apply_overrides_to_sentence(sentence: &str, overrides: &HashMap<String, Strin
     let mut terms: Vec<_> = overrides.iter().collect();
     terms.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
     for (term, spoken) in terms {
-        if spoken == term { continue; }
+        if spoken == term {
+            continue;
+        }
         let lower_result = result.to_lowercase();
         let lower_term = term.to_lowercase();
         if let Some(pos) = lower_result.find(&lower_term) {
-            result = format!("{}{}{}", &result[..pos], spoken, &result[pos + term.len()..]);
+            result = format!(
+                "{}{}{}",
+                &result[..pos],
+                spoken,
+                &result[pos + term.len()..]
+            );
         }
     }
     result
+}
+
+fn normalize_eval_fragment(text: &str) -> String {
+    text.split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '_' && c != '-')
+        })
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn splice_fragment(sentence: &str, term: &str, fragment: &str) -> String {
+    let lower = sentence.to_lowercase();
+    let lower_term = term.to_lowercase();
+    if let Some(pos) = lower.find(&lower_term) {
+        format!(
+            "{}{}{}",
+            &sentence[..pos],
+            fragment,
+            &sentence[pos + term.len()..]
+        )
+    } else {
+        fragment.to_string()
+    }
+}
+
+fn extract_synthetic_fragment(sentence: &str, term: &str, full_text: &str) -> String {
+    let lower_sentence = sentence.to_lowercase();
+    let lower_term = term.to_lowercase();
+    let Some(pos) = lower_sentence.find(&lower_term) else {
+        return full_text.trim().to_string();
+    };
+    let prefix = sentence[..pos].trim_end();
+    let suffix = sentence[pos + term.len()..].trim_start();
+    let full_trimmed = full_text.trim();
+
+    if prefix.is_empty() || suffix.is_empty() {
+        return full_trimmed.to_string();
+    }
+
+    if let Some(start) = full_trimmed.find(prefix) {
+        let frag_start = start + prefix.len();
+        let rest = &full_trimmed[frag_start..];
+        if let Some(end_rel) = rest.find(suffix) {
+            let fragment = rest[..end_rel].trim();
+            if !fragment.is_empty() {
+                return fragment.to_string();
+            }
+        }
+    }
+
+    full_trimmed.to_string()
+}
+
+struct EvalFocus {
+    expected: String,
+    asr: String,
+    corrected: String,
+    expected_alignment: serde_json::Value,
+    asr_alignment: serde_json::Value,
+    corrected_alignment: serde_json::Value,
+    cons_range: (f64, f64),
+    trim_info: TrimInfo,
+}
+
+fn apply_eval_noise(samples: &[f32], noise_level: f32) -> Vec<f32> {
+    if noise_level <= 0.0 {
+        return samples.to_vec();
+    }
+
+    let mut rng = rand::rngs::StdRng::from_os_rng();
+    samples
+        .iter()
+        .map(|&s| (s + rng.random_range(-noise_level..=noise_level)).clamp(-1.0, 1.0))
+        .collect()
+}
+
+fn extract_eval_focus(
+    state: &Arc<AppState>,
+    audio_16k: &[f32],
+    expected: &str,
+    asr: &str,
+    corrected: Option<&str>,
+    term: &str,
+) -> anyhow::Result<EvalFocus> {
+    let expected_align = state.aligner.align(audio_16k, expected)?;
+    let term_range = find_term_time_range(&expected_align, &term.to_lowercase())
+        .ok_or_else(|| anyhow::anyhow!("term '{}' not found in expected alignment", term))?;
+    let asr_align = state.aligner.align(audio_16k, asr)?;
+    let corrected_align = if let Some(corrected) = corrected.filter(|s| !s.trim().is_empty()) {
+        state.aligner.align(audio_16k, corrected)?
+    } else {
+        Vec::new()
+    };
+
+    let protected_terms = std::iter::once(term.to_lowercase()).collect();
+    let extracted = extract_with_consensus(
+        &expected_align,
+        &asr_align,
+        &corrected_align,
+        term_range.0,
+        term_range.1,
+        &protected_terms,
+    );
+
+    Ok(EvalFocus {
+        expected: extracted.original,
+        asr: extracted.qwen,
+        corrected: extracted.parakeet,
+        expected_alignment: fmt_alignment_json(&expected_align),
+        asr_alignment: fmt_alignment_json(&asr_align),
+        corrected_alignment: fmt_alignment_json(&corrected_align),
+        cons_range: extracted.cons_range,
+        trim_info: extracted.trim_info,
+    })
 }
 
 /// Find the time range of a spoken term in alignment items.
@@ -393,16 +592,20 @@ fn find_term_time_range(
     align_items: &[qwen3_asr::ForcedAlignItem],
     spoken_term_lower: &str,
 ) -> Option<(f64, f64)> {
-    let target_clean: String = spoken_term_lower.chars()
+    let target_clean: String = spoken_term_lower
+        .chars()
         .filter(|c| c.is_alphanumeric() || *c == ' ')
         .collect();
 
     for i in 0..align_items.len() {
         let mut concat = String::new();
         for j in i..align_items.len().min(i + 5) {
-            if !concat.is_empty() { concat.push(' '); }
+            if !concat.is_empty() {
+                concat.push(' ');
+            }
             concat.push_str(&align_items[j].word.to_lowercase());
-            let concat_clean: String = concat.chars()
+            let concat_clean: String = concat
+                .chars()
                 .filter(|c| c.is_alphanumeric() || *c == ' ')
                 .collect();
             if concat_clean.trim() == target_clean.trim() {
@@ -458,7 +661,9 @@ impl TriBoundary {
 
 /// Find the word ending just before `time` in an alignment.
 fn word_before(items: &[qwen3_asr::ForcedAlignItem], time: f64, eps: f64) -> Option<String> {
-    items.iter().rev()
+    items
+        .iter()
+        .rev()
         .find(|a| a.end_time <= time + eps && a.end_time >= time - eps)
         .or_else(|| items.iter().rev().find(|a| a.end_time <= time + eps))
         .map(|a| a.word.clone())
@@ -466,7 +671,8 @@ fn word_before(items: &[qwen3_asr::ForcedAlignItem], time: f64, eps: f64) -> Opt
 
 /// Find the word starting just after `time` in an alignment.
 fn word_after(items: &[qwen3_asr::ForcedAlignItem], time: f64, eps: f64) -> Option<String> {
-    items.iter()
+    items
+        .iter()
         .find(|a| a.start_time >= time - eps && a.start_time <= time + eps)
         .or_else(|| items.iter().find(|a| a.start_time >= time - eps))
         .map(|a| a.word.clone())
@@ -474,7 +680,9 @@ fn word_after(items: &[qwen3_asr::ForcedAlignItem], time: f64, eps: f64) -> Opti
 
 /// Compute annotated tri-boundaries.
 fn compute_tri_boundaries(
-    orig_b: &[f64], qwen_b: &[f64], para_b: &[f64],
+    orig_b: &[f64],
+    qwen_b: &[f64],
+    para_b: &[f64],
     orig_align: &[qwen3_asr::ForcedAlignItem],
     qwen_align: &[qwen3_asr::ForcedAlignItem],
     para_align: &[qwen3_asr::ForcedAlignItem],
@@ -490,8 +698,9 @@ fn compute_tri_boundaries(
     }
     times.dedup_by(|a, b| (*a - *b).abs() < epsilon);
 
-    times.into_iter().map(|t| {
-        TriBoundary {
+    times
+        .into_iter()
+        .map(|t| TriBoundary {
             time: t,
             before: (
                 word_before(orig_align, t, epsilon),
@@ -503,13 +712,14 @@ fn compute_tri_boundaries(
                 word_after(qwen_align, t, epsilon),
                 word_after(para_align, t, epsilon),
             ),
-        }
-    }).collect()
+        })
+        .collect()
 }
 
 /// Extract words from an alignment that START within [start, end).
 fn words_in_range(items: &[qwen3_asr::ForcedAlignItem], start: f64, end: f64) -> String {
-    items.iter()
+    items
+        .iter()
         .filter(|a| a.start_time >= start && a.start_time < end)
         .map(|a| a.word.as_str())
         .collect::<Vec<_>>()
@@ -547,12 +757,25 @@ fn trim_matching_edges(
     orig: &[qwen3_asr::ForcedAlignItem],
     qwen: &[qwen3_asr::ForcedAlignItem],
     para: &[qwen3_asr::ForcedAlignItem],
-    start: f64, end: f64,
+    start: f64,
+    end: f64,
     protected: &std::collections::HashSet<String>,
 ) -> (String, String, String, TrimInfo) {
-    let mut o: Vec<&str> = orig.iter().filter(|a| a.start_time >= start && a.start_time < end).map(|a| a.word.as_str()).collect();
-    let mut q: Vec<&str> = qwen.iter().filter(|a| a.start_time >= start && a.start_time < end).map(|a| a.word.as_str()).collect();
-    let mut p: Vec<&str> = para.iter().filter(|a| a.start_time >= start && a.start_time < end).map(|a| a.word.as_str()).collect();
+    let mut o: Vec<&str> = orig
+        .iter()
+        .filter(|a| a.start_time >= start && a.start_time < end)
+        .map(|a| a.word.as_str())
+        .collect();
+    let mut q: Vec<&str> = qwen
+        .iter()
+        .filter(|a| a.start_time >= start && a.start_time < end)
+        .map(|a| a.word.as_str())
+        .collect();
+    let mut p: Vec<&str> = para
+        .iter()
+        .filter(|a| a.start_time >= start && a.start_time < end)
+        .map(|a| a.word.as_str())
+        .collect();
     let has_para = !p.is_empty();
 
     let pre_orig: Vec<String> = o.iter().map(|s| s.to_string()).collect();
@@ -562,12 +785,18 @@ fn trim_matching_edges(
     let mut trimmed_left = 0;
     while o.len() > 1 && q.len() > 1 && (!has_para || p.len() > 1) {
         let ow = o[0].to_lowercase();
-        if protected.contains(&ow) { break; }
+        if protected.contains(&ow) {
+            break;
+        }
         let qw = q[0].to_lowercase();
-        if ow != qw { break; }
+        if ow != qw {
+            break;
+        }
         if has_para {
             let pw = p[0].to_lowercase();
-            if ow != pw { break; }
+            if ow != pw {
+                break;
+            }
             p.remove(0);
         }
         o.remove(0);
@@ -578,12 +807,18 @@ fn trim_matching_edges(
     let mut trimmed_right = 0;
     while o.len() > 1 && q.len() > 1 && (!has_para || p.len() > 1) {
         let ow = o.last().unwrap().to_lowercase();
-        if protected.contains(&ow) { break; }
+        if protected.contains(&ow) {
+            break;
+        }
         let qw = q.last().unwrap().to_lowercase();
-        if ow != qw { break; }
+        if ow != qw {
+            break;
+        }
         if has_para {
             let pw = p.last().unwrap().to_lowercase();
-            if ow != pw { break; }
+            if ow != pw {
+                break;
+            }
             p.pop();
         }
         o.pop();
@@ -591,9 +826,16 @@ fn trim_matching_edges(
         trimmed_right += 1;
     }
 
-    let trim_info = TrimInfo { pre_orig, pre_qwen, pre_para, trimmed_left, trimmed_right };
+    let trim_info = TrimInfo {
+        pre_orig,
+        pre_qwen,
+        pre_para,
+        trimmed_left,
+        trimmed_right,
+    };
     let clean_join = |words: &[&str]| -> String {
-        words.iter()
+        words
+            .iter()
             .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
             .filter(|w| !w.is_empty())
             .collect::<Vec<_>>()
@@ -628,18 +870,30 @@ fn extract_with_consensus(
         let para_b = lane_boundaries(parakeet_align);
 
         let tris = compute_tri_boundaries(
-            &orig_b, &qwen_b, &para_b,
-            orig_align, qwen_align, parakeet_align, 0.05,
+            &orig_b,
+            &qwen_b,
+            &para_b,
+            orig_align,
+            qwen_align,
+            parakeet_align,
+            0.05,
         );
 
-        let left = tris.iter().rev()
+        let left = tris
+            .iter()
+            .rev()
             .find(|tb| tb.time <= term_start + 0.01 && tb.before_matches())
             .map(|tb| tb.time);
-        let right = tris.iter()
+        let right = tris
+            .iter()
             .find(|tb| tb.time >= term_end - 0.01 && tb.after_matches())
             .map(|tb| tb.time);
 
-        (left.unwrap_or(term_start), right.unwrap_or(term_end), left.is_some() && right.is_some())
+        (
+            left.unwrap_or(term_start),
+            right.unwrap_or(term_end),
+            left.is_some() && right.is_some(),
+        )
     } else {
         // Single-lane: use bi-boundaries (orig + qwen only)
         let orig_b = lane_boundaries(orig_align);
@@ -654,21 +908,33 @@ fn extract_with_consensus(
             }
         }
 
-        let left = bi_boundaries.iter().rev()
+        let left = bi_boundaries
+            .iter()
+            .rev()
             .find(|&&t| t <= term_start + 0.01)
             .copied();
-        let right = bi_boundaries.iter()
+        let right = bi_boundaries
+            .iter()
             .find(|&&t| t >= term_end - 0.01)
             .copied();
 
-        (left.unwrap_or(term_start), right.unwrap_or(term_end), left.is_some() && right.is_some())
+        (
+            left.unwrap_or(term_start),
+            right.unwrap_or(term_end),
+            left.is_some() && right.is_some(),
+        )
     };
 
     // Extract words in range then trim matching edges.
     // Uses alignment items directly (same word boundaries as the aligner).
     // Stops trimming at vocab terms to avoid eating important words.
     let (original, qwen, parakeet, trim_info) = trim_matching_edges(
-        orig_align, qwen_align, parakeet_align, start, end, protected_terms,
+        orig_align,
+        qwen_align,
+        parakeet_align,
+        start,
+        end,
+        protected_terms,
     );
 
     // If either required lane is empty after trimming, mark as not clean
@@ -681,11 +947,15 @@ fn extract_with_consensus(
     // (a) any phantom word < 20ms, or (b) overlapping timestamps on the same lane.
     const MIN_WORD_DURATION: f64 = 0.02;
     let has_aligner_garbage = |lane: &[qwen3_asr::ForcedAlignItem]| -> bool {
-        let in_range: Vec<_> = lane.iter()
+        let in_range: Vec<_> = lane
+            .iter()
             .filter(|a| a.start_time >= start - 0.001 && a.start_time < end + 0.001)
             .collect();
         // Check for phantom words
-        if in_range.iter().any(|a| (a.end_time - a.start_time) < MIN_WORD_DURATION) {
+        if in_range
+            .iter()
+            .any(|a| (a.end_time - a.start_time) < MIN_WORD_DURATION)
+        {
             return true;
         }
         // Check for overlapping timestamps (word N+1 starts before word N ends)
@@ -707,7 +977,15 @@ fn extract_with_consensus(
         "has_parakeet": has_parakeet,
     });
 
-    ConsensusResult { original, qwen, parakeet, cons_range: (start, end), clean, debug, trim_info }
+    ConsensusResult {
+        original,
+        qwen,
+        parakeet,
+        cons_range: (start, end),
+        clean,
+        debug,
+        trim_info,
+    }
 }
 
 /// Strip carrier phrase prefix variants from ASR output.
@@ -719,7 +997,9 @@ fn strip_carrier_prefix(text: &str) -> String {
             // Return with original casing from the position after prefix
             let idx = prefix.len();
             if idx < text.len() {
-                return text[idx..].trim_start_matches(|c: char| c == ':' || c == ',' || c == ' ').to_string();
+                return text[idx..]
+                    .trim_start_matches(|c: char| c == ':' || c == ',' || c == ' ')
+                    .to_string();
             }
             return rest.to_string();
         }
@@ -729,9 +1009,7 @@ fn strip_carrier_prefix(text: &str) -> String {
 
 // ==================== Cancel ====================
 
-pub async fn api_stop_job(
-    State(state): State<Arc<AppState>>,
-) -> Result<Response, AppError> {
+pub async fn api_stop_job(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
     state.job_cancel.store(true, Ordering::Relaxed);
     // The running job will see the flag, finish its current item, and exit gracefully
     Ok(Json(serde_json::json!({"ok": true})).into_response())
@@ -742,7 +1020,7 @@ pub async fn api_stop_job(
 #[derive(Deserialize)]
 pub struct CorpusJobBody {
     pub tts_backend: Option<String>,
-    pub rounds: Option<usize>,  // number of rounds (0 = endless, default: 100)
+    pub rounds: Option<usize>, // number of rounds (0 = endless, default: 100)
     pub dual_asr: Option<bool>, // true = Qwen + Parakeet, false = Qwen only (default: false)
 }
 
@@ -792,7 +1070,9 @@ pub async fn api_start_corpus_job(
     let tts_backend = body.tts_backend.unwrap_or_else(|| "openai".to_string());
     let rounds = body.rounds.unwrap_or(100); // 0 = endless
     let dual_asr = body.dual_asr.unwrap_or(false);
-    let config_json = serde_json::json!({"tts_backend": tts_backend, "rounds": rounds, "dual_asr": dual_asr}).to_string();
+    let config_json =
+        serde_json::json!({"tts_backend": tts_backend, "rounds": rounds, "dual_asr": dual_asr})
+            .to_string();
 
     let job_id = {
         let db = state.db.lock().unwrap();
@@ -835,22 +1115,31 @@ async fn run_corpus_job(
         anyhow::bail!("No reviewed vocab terms — nothing to do");
     }
 
-    let protected_terms: std::collections::HashSet<String> = vocab_terms.iter()
-        .map(|v| v.term.to_lowercase())
-        .collect();
+    let protected_terms: std::collections::HashSet<String> =
+        vocab_terms.iter().map(|v| v.term.to_lowercase()).collect();
 
     {
         let db = state.db.lock().unwrap();
-        db.append_job_log(job_id, &format!("Building Markov chain from {} sentences...", all_texts.len()))?;
+        db.append_job_log(
+            job_id,
+            &format!(
+                "Building Markov chain from {} sentences...",
+                all_texts.len()
+            ),
+        )?;
     }
     let chain = MarkovChain::build(&all_texts);
 
     // Start local LLM sentence generator (falls back to Markov if it fails)
     let mut generator = {
         let db = state.db.lock().unwrap();
-        let _ = db.append_job_log(job_id, "Starting sentence generator (Qwen2.5-1.5B-Instruct)...");
+        let _ = db.append_job_log(
+            job_id,
+            "Starting sentence generator (Qwen2.5-1.5B-Instruct)...",
+        );
         drop(db);
-        match synth_train::SentenceGenerator::start(&synth_train::SentenceGeneratorConfig::default()) {
+        match synth_train::SentenceGenerator::start(&synth_train::SentenceGeneratorConfig::default())
+        {
             Ok(g) => {
                 let db = state.db.lock().unwrap();
                 let _ = db.append_job_log(job_id, "Sentence generator ready.");
@@ -858,7 +1147,10 @@ async fn run_corpus_job(
             }
             Err(e) => {
                 let db = state.db.lock().unwrap();
-                let _ = db.append_job_log(job_id, &format!("Sentence generator failed: {e} — falling back to Markov chains"));
+                let _ = db.append_job_log(
+                    job_id,
+                    &format!("Sentence generator failed: {e} — falling back to Markov chains"),
+                );
                 None
             }
         }
@@ -867,12 +1159,19 @@ async fn run_corpus_job(
     let endless = max_rounds == 0;
     {
         let db = state.db.lock().unwrap();
-        db.append_job_log(job_id, &format!(
-            "Corpus: {} terms, {} rounds, backend: {tts_backend}, sentences: {}",
-            vocab_terms.len(),
-            if endless { "\u{221e}".to_string() } else { max_rounds.to_string() },
-            if generator.is_some() { "LLM" } else { "Markov" },
-        ))?;
+        db.append_job_log(
+            job_id,
+            &format!(
+                "Corpus: {} terms, {} rounds, backend: {tts_backend}, sentences: {}",
+                vocab_terms.len(),
+                if endless {
+                    "\u{221e}".to_string()
+                } else {
+                    max_rounds.to_string()
+                },
+                if generator.is_some() { "LLM" } else { "Markov" },
+            ),
+        )?;
     }
 
     let mut rng = rand::rngs::StdRng::from_os_rng();
@@ -895,23 +1194,33 @@ async fn run_corpus_job(
         sentence: String,
         spoken: String,
     }
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<(RoundItem, Result<tts::TtsAudio, anyhow::Error>, u64)>(tts_concurrency * 2);
+    let (tx, mut rx) =
+        tokio::sync::mpsc::channel::<(RoundItem, Result<tts::TtsAudio, anyhow::Error>, u64)>(
+            tts_concurrency * 2,
+        );
 
     // TTS producer: dynamically picks random terms, generates sentences, does TTS
     let cancel = state.job_cancel.clone();
     let tts_backend_owned = tts_backend.to_string();
     let state_tts = state.clone();
-    let vocab_for_producer: Vec<(String, String)> = vocab_terms.iter()
+    let vocab_for_producer: Vec<(String, String)> = vocab_terms
+        .iter()
         .map(|v| (v.term.clone(), v.spoken().to_string()))
         .collect();
     // Build overrides map for all vocab terms — used to pronounce every term in the sentence
-    let overrides: HashMap<String, String> = vocab_terms.iter()
-        .filter_map(|v| v.spoken_override.as_ref().map(|s| (v.term.clone(), s.clone())))
+    let overrides: HashMap<String, String> = vocab_terms
+        .iter()
+        .filter_map(|v| {
+            v.spoken_override
+                .as_ref()
+                .map(|s| (v.term.clone(), s.clone()))
+        })
         .collect();
     let chain_clone = chain.clone();
     let overrides_clone = overrides.clone();
     // Build description map for LLM context
-    let descriptions: HashMap<String, String> = vocab_terms.iter()
+    let descriptions: HashMap<String, String> = vocab_terms
+        .iter()
         .filter_map(|v| v.description.as_ref().map(|d| (v.term.clone(), d.clone())))
         .collect();
     let producer = tokio::spawn(async move {
@@ -921,8 +1230,12 @@ async fn run_corpus_job(
         let mut produced = 0usize;
 
         loop {
-            if cancel.load(Ordering::Relaxed) { break; }
-            if !endless && produced >= max_rounds { break; }
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            if !endless && produced >= max_rounds {
+                break;
+            }
 
             let permit = match semaphore.clone().acquire_owned().await {
                 Ok(p) => p,
@@ -934,16 +1247,31 @@ async fn run_corpus_job(
             let written = WrittenTerm(term.clone());
             let spoken_t = SpokenTerm(spoken_term);
             let desc = descriptions.get(&term).map(|s| s.as_str());
-            let (ws, ss) = make_sentence_pair(generator.as_mut(), &chain_clone, &written, &spoken_t, desc, &overrides_clone, &mut rng);
+            let (ws, ss) = make_sentence_pair(
+                generator.as_mut(),
+                &chain_clone,
+                &written,
+                &spoken_t,
+                desc,
+                &overrides_clone,
+                &mut rng,
+            );
 
-            let item = RoundItem { term, sentence: ws.0, spoken: ss.0 };
+            let item = RoundItem {
+                term,
+                sentence: ws.0,
+                spoken: ss.0,
+            };
             let tx = tx.clone();
             let state_tts = state_tts.clone();
             let backend = tts_backend_owned.clone();
             let cancel = cancel.clone();
 
             tokio::spawn(async move {
-                if cancel.load(Ordering::Relaxed) { drop(permit); return; }
+                if cancel.load(Ordering::Relaxed) {
+                    drop(permit);
+                    return;
+                }
                 let t0 = std::time::Instant::now();
                 let result = state_tts.tts.generate(&backend, &item.spoken).await;
                 let ms = t0.elapsed().as_millis() as u64;
@@ -967,7 +1295,10 @@ async fn run_corpus_job(
         tts_ms += tts_call_ms;
 
         let mut audio = match tts_result {
-            Ok(mut a) => { a.normalize(); a }
+            Ok(mut a) => {
+                a.normalize();
+                a
+            }
             Err(e) => {
                 let db = state.db.lock().unwrap();
                 let _ = db.append_job_log(job_id, &format!("TTS FAILED: {e}"));
@@ -978,14 +1309,27 @@ async fn run_corpus_job(
 
         let full_16k = match tts::resample_to_16k(&audio.samples, audio.sample_rate) {
             Ok(s) => s,
-            Err(_) => { errors += 1; continue; }
+            Err(_) => {
+                errors += 1;
+                continue;
+            }
         };
 
         let t0 = std::time::Instant::now();
         let written_term = WrittenTerm(item.term.clone());
         let written_sentence = WrittenSentence(item.sentence.clone());
         let spoken_sentence = SpokenSentence(item.spoken.clone());
-        let result = match run_corpus_pass(state, &full_16k, &written_sentence, &spoken_sentence, &written_term, &protected_terms, dual_asr).await {
+        let result = match run_corpus_pass(
+            state,
+            &full_16k,
+            &written_sentence,
+            &spoken_sentence,
+            &written_term,
+            &protected_terms,
+            dual_asr,
+        )
+        .await
+        {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("corpus pass failed: {e}");
@@ -999,28 +1343,44 @@ async fn run_corpus_job(
             let cons = &result.extraction;
             let is_mistake = {
                 let db = state.db.lock().unwrap();
-                !db.is_acceptable_spelling(&item.term, &cons.original, &cons.qwen).unwrap_or(false)
+                !db.is_acceptable_spelling(&item.term, &cons.original, &cons.qwen)
+                    .unwrap_or(false)
             };
-            let cons_time_json = serde_json::to_string(&[cons.cons_range.0, cons.cons_range.1]).ok();
+            let cons_time_json =
+                serde_json::to_string(&[cons.cons_range.0, cons.cons_range.1]).ok();
             let trim_info_json = serde_json::to_string(&cons.trim_info).ok();
 
             // Encode audio as Ogg Opus for playback in the review UI
-            let ogg_bytes = tts::encode_ogg_opus(&audio.samples, audio.sample_rate).await.ok();
+            let ogg_bytes = tts::encode_ogg_opus(&audio.samples, audio.sample_rate)
+                .await
+                .ok();
 
             let db = state.db.lock().unwrap();
             match db.upsert_corpus_pair(
-                &item.term, &cons.original, &cons.qwen, &cons.parakeet,
-                &item.sentence, &item.spoken,
+                &item.term,
+                &cons.original,
+                &cons.qwen,
+                &cons.parakeet,
+                &item.sentence,
+                &item.spoken,
                 Some(&fmt_alignment(&result.orig_alignment)),
                 Some(&fmt_alignment(&result.qwen_alignment)),
                 Some(&fmt_alignment(&result.parakeet_alignment)),
-                cons_time_json.as_deref(), trim_info_json.as_deref(), is_mistake,
+                cons_time_json.as_deref(),
+                trim_info_json.as_deref(),
+                is_mistake,
                 ogg_bytes.as_deref(),
             ) {
                 Ok((pair_id, is_new)) => {
                     if is_mistake {
                         if is_new {
-                            let _ = db.append_job_log(job_id, &format!("NEW|{}|{}|{}|{}", pair_id, item.term, cons.original, cons.qwen));
+                            let _ = db.append_job_log(
+                                job_id,
+                                &format!(
+                                    "NEW|{}|{}|{}|{}",
+                                    pair_id, item.term, cons.original, cons.qwen
+                                ),
+                            );
                             new_mistakes += 1;
                         } else {
                             dup_mistakes += 1;
@@ -1041,13 +1401,30 @@ async fn run_corpus_job(
         // Progress log every 10 rounds
         if round % 10 == 0 {
             let elapsed_ms = job_start.elapsed().as_millis() as u64;
-            let rps = if elapsed_ms > 0 { round as f64 / (elapsed_ms as f64 / 1000.0) } else { 0.0 };
+            let rps = if elapsed_ms > 0 {
+                round as f64 / (elapsed_ms as f64 / 1000.0)
+            } else {
+                0.0
+            };
             let db = state.db.lock().unwrap();
-            let _ = db.append_job_log(job_id, &format!(
-                "[{}{}] {} new, {} dup, {} ok, {} noisy, {} err | {:.1}/s",
-                round, if endless { String::new() } else { format!("/{max_rounds}") },
-                new_mistakes, dup_mistakes, correct, noisy, errors, rps,
-            ));
+            let _ = db.append_job_log(
+                job_id,
+                &format!(
+                    "[{}{}] {} new, {} dup, {} ok, {} noisy, {} err | {:.1}/s",
+                    round,
+                    if endless {
+                        String::new()
+                    } else {
+                        format!("/{max_rounds}")
+                    },
+                    new_mistakes,
+                    dup_mistakes,
+                    correct,
+                    noisy,
+                    errors,
+                    rps,
+                ),
+            );
             let _ = db.update_job_result(job_id, &serde_json::json!({
                 "rounds": round,
                 "new_mistakes": new_mistakes,
@@ -1068,14 +1445,18 @@ async fn run_corpus_job(
     db.append_job_log(job_id, &format!(
         "Done: {round} rounds — {new_mistakes} new mistakes, {dup_mistakes} duplicates, {correct} correct, {noisy} noisy, {errors} errors",
     ))?;
-    let _ = db.update_job_result(job_id, &serde_json::json!({
-        "rounds": round,
-        "new_mistakes": new_mistakes,
-        "dup_mistakes": dup_mistakes,
-        "correct": correct,
-        "noisy": noisy,
-        "errors": errors,
-    }).to_string());
+    let _ = db.update_job_result(
+        job_id,
+        &serde_json::json!({
+            "rounds": round,
+            "new_mistakes": new_mistakes,
+            "dup_mistakes": dup_mistakes,
+            "correct": correct,
+            "noisy": noisy,
+            "errors": errors,
+        })
+        .to_string(),
+    );
 
     Ok(())
 }
@@ -1088,7 +1469,8 @@ pub async fn api_start_prepare_job(
 ) -> Result<Response, AppError> {
     let total_examples = body.total_examples.unwrap_or(12000);
     let error_rate = body.error_rate.unwrap_or(0.5);
-    let config_json = serde_json::json!({"total_examples": total_examples, "error_rate": error_rate}).to_string();
+    let config_json =
+        serde_json::json!({"total_examples": total_examples, "error_rate": error_rate}).to_string();
 
     let job_id = {
         let db = state.db.lock().unwrap();
@@ -1100,7 +1482,8 @@ pub async fn api_start_prepare_job(
         use rand::seq::SliceRandom;
 
         // Load corpus pairs: term + fragment errors
-        let corpus_pairs: Vec<(String, String, String, String)> = { // (term, original, qwen, parakeet)
+        let corpus_pairs: Vec<(String, String, String, String)> = {
+            // (term, original, qwen, parakeet)
             let db = state2.db.lock().unwrap();
             db.corpus_unique_triplets().unwrap_or_default()
         };
@@ -1120,10 +1503,14 @@ pub async fn api_start_prepare_job(
 
         {
             let db = state2.db.lock().unwrap();
-            let _ = db.append_job_log(job_id, &format!(
-                "Building Markov chain from {} sentences, {} corpus pairs...",
-                all_texts.len(), corpus_pairs.len()
-            ));
+            let _ = db.append_job_log(
+                job_id,
+                &format!(
+                    "Building Markov chain from {} sentences, {} corpus pairs...",
+                    all_texts.len(),
+                    corpus_pairs.len()
+                ),
+            );
         }
 
         let chain = MarkovChain::build(&all_texts);
@@ -1134,10 +1521,13 @@ pub async fn api_start_prepare_job(
 
         {
             let db = state2.db.lock().unwrap();
-            let _ = db.append_job_log(job_id, &format!(
-                "Generating {} error + {} identity = {} total examples",
-                n_error, n_identity, total_examples
-            ));
+            let _ = db.append_job_log(
+                job_id,
+                &format!(
+                    "Generating {} error + {} identity = {} total examples",
+                    n_error, n_identity, total_examples
+                ),
+            );
         }
 
         let mut examples = Vec::with_capacity(total_examples);
@@ -1149,7 +1539,12 @@ pub async fn api_start_prepare_job(
             let lower = sentence.to_lowercase();
             let lower_term = term.to_lowercase();
             if let Some(pos) = lower.find(&lower_term) {
-                format!("{}{}{}", &sentence[..pos], fragment, &sentence[pos + term.len()..])
+                format!(
+                    "{}{}{}",
+                    &sentence[..pos],
+                    fragment,
+                    &sentence[pos + term.len()..]
+                )
             } else {
                 // Term not found in sentence — just use the fragment
                 fragment.to_string()
@@ -1158,7 +1553,8 @@ pub async fn api_start_prepare_job(
 
         // Error examples: pick a corpus pair, generate a sentence, splice errors in
         for _ in 0..n_error {
-            let (term, original_frag, qwen_frag, keet_frag) = &corpus_pairs[rng.random_range(0..corpus_pairs.len())];
+            let (term, original_frag, qwen_frag, keet_frag) =
+                &corpus_pairs[rng.random_range(0..corpus_pairs.len())];
             let sentence = chain.generate_with(term, 15, &mut rng);
 
             let full_original = splice_fragment(&sentence, term, original_frag);
@@ -1211,7 +1607,11 @@ pub async fn api_start_prepare_job(
             job_id,
             &format!(
                 "Done: {} error + {} identity = {} total ({} train / {} valid)",
-                correction_count, identity_count, n, train.len(), valid.len(),
+                correction_count,
+                identity_count,
+                n,
+                train.len(),
+                valid.len(),
             ),
         );
         let _ = db.finish_job(job_id, "completed", Some(&stats.to_string()));
@@ -1275,7 +1675,8 @@ pub async fn api_start_train_job(
         let adapter_size = std::fs::read_dir("training/adapters")
             .ok()
             .map(|entries| {
-                entries.filter_map(|e| e.ok())
+                entries
+                    .filter_map(|e| e.ok())
                     .filter_map(|e| e.metadata().ok().map(|m| m.len()))
                     .sum::<u64>()
             })
@@ -1283,37 +1684,57 @@ pub async fn api_start_train_job(
         let adapter_mb = adapter_size as f64 / (1024.0 * 1024.0);
 
         // Parse final validation loss from the job log
-        let log = db.get_job(job_id).ok().flatten()
-            .map(|j| j.log).unwrap_or_default();
-        let val_loss = log.lines().rev()
-            .find_map(|line| {
-                // MLX-LM outputs lines like "Val loss 2.345, Val took 1.2s"
-                let lower = line.to_lowercase();
-                if lower.contains("val") && lower.contains("loss") {
-                    lower.split_whitespace()
-                        .filter_map(|w| w.trim_matches(',').parse::<f64>().ok())
-                        .next()
-                } else {
-                    None
-                }
-            });
+        let log = db
+            .get_job(job_id)
+            .ok()
+            .flatten()
+            .map(|j| j.log)
+            .unwrap_or_default();
+        let val_loss = log.lines().rev().find_map(|line| {
+            // MLX-LM outputs lines like "Val loss 2.345, Val took 1.2s"
+            let lower = line.to_lowercase();
+            if lower.contains("val") && lower.contains("loss") {
+                lower
+                    .split_whitespace()
+                    .filter_map(|w| w.trim_matches(',').parse::<f64>().ok())
+                    .next()
+            } else {
+                None
+            }
+        });
 
         match result {
             Ok(status) if status.success() => {
-                let _ = db.append_job_log(job_id, &format!(
-                    "Training completed. Adapters: {adapter_mb:.1}MB{}",
-                    val_loss.map(|v| format!(", final val loss: {v:.4}")).unwrap_or_default()
-                ));
-                let _ = db.finish_job(job_id, "completed", Some(&serde_json::json!({
-                    "exit_code": 0,
-                    "adapter_mb": (adapter_mb * 10.0).round() / 10.0,
-                    "val_loss": val_loss,
-                }).to_string()));
+                let _ = db.append_job_log(
+                    job_id,
+                    &format!(
+                        "Training completed. Adapters: {adapter_mb:.1}MB{}",
+                        val_loss
+                            .map(|v| format!(", final val loss: {v:.4}"))
+                            .unwrap_or_default()
+                    ),
+                );
+                let _ = db.finish_job(
+                    job_id,
+                    "completed",
+                    Some(
+                        &serde_json::json!({
+                            "exit_code": 0,
+                            "adapter_mb": (adapter_mb * 10.0).round() / 10.0,
+                            "val_loss": val_loss,
+                        })
+                        .to_string(),
+                    ),
+                );
             }
             Ok(status) => {
                 let code = status.code().unwrap_or(-1);
                 let _ = db.append_job_log(job_id, &format!("Training exited with code {code}"));
-                let _ = db.finish_job(job_id, "failed", Some(&serde_json::json!({"exit_code": code}).to_string()));
+                let _ = db.finish_job(
+                    job_id,
+                    "failed",
+                    Some(&serde_json::json!({"exit_code": code}).to_string()),
+                );
             }
             Err(e) => {
                 let _ = db.append_job_log(job_id, &format!("ERROR: {e}"));
@@ -1344,7 +1765,11 @@ pub async fn api_start_curate_job(
 
     let job_id = {
         let db = state.db.lock().unwrap();
-        db.create_job("curate", Some(&serde_json::json!({"batch_size": batch_size}).to_string())).map_err(err)?
+        db.create_job(
+            "curate",
+            Some(&serde_json::json!({"batch_size": batch_size}).to_string()),
+        )
+        .map_err(err)?
     };
 
     let state2 = state.clone();
@@ -1353,8 +1778,15 @@ pub async fn api_start_curate_job(
         let db = state2.db.lock().unwrap();
         match result {
             Ok((kept, removed)) => {
-                let _ = db.append_job_log(job_id, &format!("\n=== DONE ===\n{kept} terms kept, {removed} removed"));
-                let _ = db.finish_job(job_id, "completed", Some(&serde_json::json!({"kept": kept, "removed": removed}).to_string()));
+                let _ = db.append_job_log(
+                    job_id,
+                    &format!("\n=== DONE ===\n{kept} terms kept, {removed} removed"),
+                );
+                let _ = db.finish_job(
+                    job_id,
+                    "completed",
+                    Some(&serde_json::json!({"kept": kept, "removed": removed}).to_string()),
+                );
             }
             Err(e) => {
                 let _ = db.append_job_log(job_id, &format!("ERROR: {e}"));
@@ -1382,7 +1814,10 @@ async fn run_curate_job(
 
     {
         let db = state.db.lock().unwrap();
-        db.append_job_log(job_id, &format!("Curating {total} vocab terms in batches of {batch_size} using GPT..."))?;
+        db.append_job_log(
+            job_id,
+            &format!("Curating {total} vocab terms in batches of {batch_size} using GPT..."),
+        )?;
     }
 
     let client = reqwest::Client::new();
@@ -1392,7 +1827,10 @@ async fn run_curate_job(
     let concurrency = 5;
 
     // Process batches in groups of `concurrency`
-    let batches: Vec<Vec<&str>> = term_strings.chunks(batch_size).map(|b| b.to_vec()).collect();
+    let batches: Vec<Vec<&str>> = term_strings
+        .chunks(batch_size)
+        .map(|b| b.to_vec())
+        .collect();
 
     for chunk_start in (0..batches.len()).step_by(concurrency) {
         if state.job_cancel.load(Ordering::Relaxed) {
@@ -1406,10 +1844,16 @@ async fn run_curate_job(
 
         {
             let db = state.db.lock().unwrap();
-            let _ = db.append_job_log(job_id, &format!(
-                "[batches {}-{}/{}] Sending {} batches in parallel...",
-                chunk_start + 1, chunk_end, num_batches, chunk.len()
-            ));
+            let _ = db.append_job_log(
+                job_id,
+                &format!(
+                    "[batches {}-{}/{}] Sending {} batches in parallel...",
+                    chunk_start + 1,
+                    chunk_end,
+                    num_batches,
+                    chunk.len()
+                ),
+            );
         }
 
         // Fire all batches in this chunk concurrently
@@ -1446,7 +1890,8 @@ async fn run_curate_job(
                     Terms to evaluate:\n{terms_list}"
                 );
 
-                let resp = client.post("https://api.openai.com/v1/chat/completions")
+                let resp = client
+                    .post("https://api.openai.com/v1/chat/completions")
                     .header("Authorization", format!("Bearer {api_key}"))
                     .json(&serde_json::json!({
                         "model": "gpt-4o-mini",
@@ -1458,24 +1903,41 @@ async fn run_curate_job(
 
                 let resp = match resp {
                     Ok(r) => r,
-                    Err(e) => return Err(anyhow::anyhow!("batch {}: request failed: {e}", batch_idx + 1)),
+                    Err(e) => {
+                        return Err(anyhow::anyhow!(
+                            "batch {}: request failed: {e}",
+                            batch_idx + 1
+                        ))
+                    }
                 };
 
                 if !resp.status().is_success() {
                     let status = resp.status();
                     let body = resp.text().await.unwrap_or_default();
-                    return Err(anyhow::anyhow!("batch {}: API error {status}: {body}", batch_idx + 1));
+                    return Err(anyhow::anyhow!(
+                        "batch {}: API error {status}: {body}",
+                        batch_idx + 1
+                    ));
                 }
 
-                let json: serde_json::Value = resp.json().await
+                let json: serde_json::Value = resp
+                    .json()
+                    .await
                     .map_err(|e| anyhow::anyhow!("batch {}: parse failed: {e}", batch_idx + 1))?;
 
-                let content = json["choices"][0]["message"]["content"].as_str().unwrap_or("[]");
+                let content = json["choices"][0]["message"]["content"]
+                    .as_str()
+                    .unwrap_or("[]");
                 let results: Vec<serde_json::Value> = serde_json::from_str(content)
                     .or_else(|_| {
-                        let cleaned = content.trim()
-                            .strip_prefix("```json").or_else(|| content.trim().strip_prefix("```")).unwrap_or(content)
-                            .strip_suffix("```").unwrap_or(content).trim();
+                        let cleaned = content
+                            .trim()
+                            .strip_prefix("```json")
+                            .or_else(|| content.trim().strip_prefix("```"))
+                            .unwrap_or(content)
+                            .strip_suffix("```")
+                            .unwrap_or(content)
+                            .trim();
                         serde_json::from_str(cleaned)
                     })
                     .unwrap_or_default();
@@ -1495,7 +1957,8 @@ async fn run_curate_job(
                     for item in &results {
                         let term = item["term"].as_str().unwrap_or("");
                         let keep = item["keep"].as_bool().unwrap_or(true);
-                        let pronunciation = item["pronunciation"].as_str().filter(|s| !s.is_empty());
+                        let pronunciation =
+                            item["pronunciation"].as_str().filter(|s| !s.is_empty());
 
                         if keep {
                             kept += 1;
@@ -1504,7 +1967,10 @@ async fn run_curate_job(
                                 if let Ok(Some(vocab)) = db.find_vocab_by_term(term) {
                                     if vocab.spoken_override.is_none() {
                                         let _ = db.update_vocab_override(vocab.id, Some(pron));
-                                        let _ = db.append_job_log(job_id, &format!("  + {term} → \"{pron}\""));
+                                        let _ = db.append_job_log(
+                                            job_id,
+                                            &format!("  + {term} → \"{pron}\""),
+                                        );
                                     }
                                 }
                             }
@@ -1562,8 +2028,15 @@ pub async fn api_start_vocab_scan(
         let db = state2.db.lock().unwrap();
         match result {
             Ok((scanned, errors)) => {
-                let _ = db.append_job_log(job_id, &format!("\n=== DONE ===\n{scanned} terms scanned, {errors} with ASR errors"));
-                let _ = db.finish_job(job_id, "completed", Some(&serde_json::json!({"scanned": scanned, "errors": errors}).to_string()));
+                let _ = db.append_job_log(
+                    job_id,
+                    &format!("\n=== DONE ===\n{scanned} terms scanned, {errors} with ASR errors"),
+                );
+                let _ = db.finish_job(
+                    job_id,
+                    "completed",
+                    Some(&serde_json::json!({"scanned": scanned, "errors": errors}).to_string()),
+                );
             }
             Err(e) => {
                 let _ = db.append_job_log(job_id, &format!("ERROR: {e}"));
@@ -1594,7 +2067,12 @@ async fn run_vocab_scan(
     {
         let db = state.db.lock().unwrap();
         db.clear_confusions()?;
-        db.append_job_log(job_id, &format!("Scanning {total} vocab terms in batches of {batch_size}, backend: {tts_backend}"))?;
+        db.append_job_log(
+            job_id,
+            &format!(
+                "Scanning {total} vocab terms in batches of {batch_size}, backend: {tts_backend}"
+            ),
+        )?;
     }
 
     let mut scanned = 0usize;
@@ -1609,25 +2087,34 @@ async fn run_vocab_scan(
         }
         let batch_terms: Vec<&str> = batch.iter().map(|(t, _)| t.as_str()).collect();
         // Use spoken override if available, otherwise the term itself
-        let batch_spoken: Vec<String> = batch.iter().map(|(t, ovr)| {
-            ovr.as_deref().unwrap_or(t).to_string()
-        }).collect();
+        let batch_spoken: Vec<String> = batch
+            .iter()
+            .map(|(t, ovr)| ovr.as_deref().unwrap_or(t).to_string())
+            .collect();
 
         // Build a comma-separated list for TTS
         let tts_text = batch_spoken.join(", ");
 
         {
             let db = state.db.lock().unwrap();
-            let _ = db.append_job_log(job_id, &format!("[batch {}/{}] {} terms: {}...",
-                batch_idx + 1, (total + batch_size - 1) / batch_size,
-                batch_terms.len(),
-                &tts_text[..80.min(tts_text.len())]
-            ));
+            let _ = db.append_job_log(
+                job_id,
+                &format!(
+                    "[batch {}/{}] {} terms: {}...",
+                    batch_idx + 1,
+                    (total + batch_size - 1) / batch_size,
+                    batch_terms.len(),
+                    &tts_text[..80.min(tts_text.len())]
+                ),
+            );
         }
 
         // TTS the batch
         let audio = match state.tts.generate(tts_backend, &tts_text).await {
-            Ok(mut a) => { a.normalize(); a }
+            Ok(mut a) => {
+                a.normalize();
+                a
+            }
             Err(e) => {
                 let db = state.db.lock().unwrap();
                 let _ = db.append_job_log(job_id, &format!("  TTS FAILED: {e}"));
@@ -1649,9 +2136,7 @@ async fn run_vocab_scan(
             let state3 = state.clone();
             let samples = samples_16k.clone();
             let text = tts_text.clone();
-            tokio::task::spawn_blocking(move || {
-                state3.aligner.align(&samples, &text)
-            }).await??
+            tokio::task::spawn_blocking(move || state3.aligner.align(&samples, &text)).await??
         };
 
         // For each term in the batch, find its aligned segment and run ASR
@@ -1667,7 +2152,8 @@ async fn run_vocab_scan(
             if align_idx + num_words > align_items.len() {
                 // Not enough alignment items — skip
                 let db = state.db.lock().unwrap();
-                let _ = db.append_job_log(job_id, &format!("  SKIP '{}' (alignment ran out)", term));
+                let _ =
+                    db.append_job_log(job_id, &format!("  SKIP '{}' (alignment ran out)", term));
                 continue;
             }
 
@@ -1698,7 +2184,12 @@ async fn run_vocab_scan(
             let seg_p = segment;
 
             let qwen_task = tokio::task::spawn_blocking(move || -> String {
-                state_q.asr.transcribe_samples(&seg_q, qwen3_asr::TranscribeOptions::default().with_language("english"))
+                state_q
+                    .asr
+                    .transcribe_samples(
+                        &seg_q,
+                        qwen3_asr::TranscribeOptions::default().with_language("english"),
+                    )
                     .map(|r| r.text)
                     .unwrap_or_default()
             });
@@ -1720,18 +2211,31 @@ async fn run_vocab_scan(
 
             {
                 let db = state.db.lock().unwrap();
-                let _ = db.insert_confusion(term, qwen.trim(), parakeet.trim(), qwen_match, parakeet_match, tts_backend);
+                let _ = db.insert_confusion(
+                    term,
+                    qwen.trim(),
+                    parakeet.trim(),
+                    qwen_match,
+                    parakeet_match,
+                    tts_backend,
+                );
             }
 
             scanned += 1;
             if !qwen_match || !parakeet_match {
                 errors += 1;
                 let db = state.db.lock().unwrap();
-                let _ = db.append_job_log(job_id, &format!("  {} → qwen: '{}'{} parakeet: '{}'{}",
-                    term,
-                    qwen.trim(), if qwen_match { "" } else { " \u{2717}" },
-                    parakeet.trim(), if parakeet_match { "" } else { " \u{2717}" },
-                ));
+                let _ = db.append_job_log(
+                    job_id,
+                    &format!(
+                        "  {} → qwen: '{}'{} parakeet: '{}'{}",
+                        term,
+                        qwen.trim(),
+                        if qwen_match { "" } else { " \u{2717}" },
+                        parakeet.trim(),
+                        if parakeet_match { "" } else { " \u{2717}" },
+                    ),
+                );
             }
         }
     }
@@ -1745,6 +2249,9 @@ async fn run_vocab_scan(
 pub struct EvalJobBody {
     pub model: Option<String>,
     pub adapters: Option<String>,
+    pub repeats: Option<usize>,
+    pub noise_level: Option<f32>,
+    pub source: Option<String>,
 }
 
 pub async fn api_start_eval_job(
@@ -1756,42 +2263,98 @@ pub async fn api_start_eval_job(
         adapters: body.adapters.unwrap_or_else(|| "training/adapters".into()),
         ..Default::default()
     };
+    let source = body.source.unwrap_or_else(|| "human".to_string());
+    let repeats = body.repeats.unwrap_or(1).clamp(1, 32);
+    let noise_level = body.noise_level.unwrap_or(0.0).clamp(0.0, 0.5);
 
     let job_id = {
         let db = state.db.lock().unwrap();
-        db.create_job("eval", Some(&serde_json::json!({"model": config.model, "adapters": config.adapters}).to_string())).map_err(err)?
+        db.create_job(
+            "eval",
+            Some(
+                &serde_json::json!({
+                    "model": config.model,
+                    "adapters": config.adapters,
+                    "source": source,
+                    "repeats": repeats,
+                    "noise_level": noise_level
+                })
+                .to_string(),
+            ),
+        )
+        .map_err(err)?
     };
 
-    // Gather eval data: human-recorded takes + overrides
-    let (recordings, overrides) = {
+    // Gather eval data up front so we can validate the chosen source before spawning.
+    let (recordings, synthetic_items, all_texts, overrides) = {
         let db = state.db.lock().unwrap();
         let recordings = db.authored_sentence_recordings_for_eval().map_err(err)?;
+        let synthetic_items = db.corpus_eval_set().map_err(err)?;
+        let all_texts = db.all_sentence_texts().map_err(err)?;
         let overrides = db.get_spoken_overrides().map_err(err)?;
-        (recordings, overrides)
+        (recordings, synthetic_items, all_texts, overrides)
     };
 
-    if recordings.is_empty() {
+    if source != "human" && source != "synthetic" {
+        let db = state.db.lock().unwrap();
+        let _ = db.finish_job(job_id, "failed", None);
+        return Ok(Json(serde_json::json!({"job_id": job_id, "error": "Unknown eval source. Use `human` or `synthetic`."})).into_response());
+    }
+
+    if source == "human" && recordings.is_empty() {
         let db = state.db.lock().unwrap();
         let _ = db.append_job_log(job_id, "No human recordings to evaluate.");
         let _ = db.finish_job(job_id, "failed", None);
         return Ok(Json(serde_json::json!({"job_id": job_id, "error": "No human recordings. Record some takes in the Author tab first."})).into_response());
     }
 
+    let synthetic_mistakes: Vec<_> = synthetic_items
+        .into_iter()
+        .filter(|item| {
+            item.is_mistake
+                && normalize_eval_fragment(&item.original) != normalize_eval_fragment(&item.qwen)
+        })
+        .collect();
+
+    if source == "synthetic" && synthetic_mistakes.is_empty() {
+        let db = state.db.lock().unwrap();
+        let _ = db.append_job_log(job_id, "No synthetic mistake templates to evaluate.");
+        let _ = db.finish_job(job_id, "failed", None);
+        return Ok(Json(serde_json::json!({"job_id": job_id, "error": "No known mistakes in corpus_pairs. Generate or review corpus first."})).into_response());
+    }
+
     let state2 = state.clone();
-    eprintln!("[eval] Job {job_id} created with {} recordings, {} overrides", recordings.len(), overrides.len());
+    eprintln!(
+        "[eval] Job {job_id} created with source={}, {} recordings, {} synthetic templates, {} overrides",
+        source,
+        recordings.len(),
+        synthetic_mistakes.len(),
+        overrides.len()
+    );
     tokio::spawn(async move {
         // Ensure shared inference server is running before the loop
         {
             let mut guard = state2.inference_server.lock().unwrap();
             if guard.is_none() {
                 let db = state2.db.lock().unwrap();
-                let _ = db.append_job_log(job_id, &format!("Starting inference server ({} + {})...", config.model, config.adapters));
+                let _ = db.append_job_log(
+                    job_id,
+                    &format!(
+                        "Starting inference server ({} + {})...",
+                        config.model, config.adapters
+                    ),
+                );
                 drop(db);
                 match synth_train::InferenceServer::start(&config) {
-                    Ok(s) => { *guard = Some(s); }
+                    Ok(s) => {
+                        *guard = Some(s);
+                    }
                     Err(e) => {
                         let db = state2.db.lock().unwrap();
-                        let _ = db.append_job_log(job_id, &format!("Failed to start inference server: {e}"));
+                        let _ = db.append_job_log(
+                            job_id,
+                            &format!("Failed to start inference server: {e}"),
+                        );
                         let _ = db.finish_job(job_id, "failed", None);
                         return;
                     }
@@ -1802,7 +2365,11 @@ pub async fn api_start_eval_job(
             }
         }
 
-        let total = recordings.len();
+        let total = if source == "synthetic" {
+            synthetic_mistakes.len()
+        } else {
+            recordings.len()
+        };
         let mut correct = 0usize;
         let mut wrong = 0usize;
         let mut blank = 0usize;
@@ -1810,13 +2377,209 @@ pub async fn api_start_eval_job(
         let mut evaluated = 0usize;
         let mut asr_correct = 0usize;
         let mut skipped = 0usize;
+        let mut entries: Vec<serde_json::Value> = Vec::new();
 
         {
+            let start_msg = if source == "synthetic" {
+                format!(
+                    "Evaluating {total} synthetic mistake templates x {repeats} variants (fresh Markov sentences, correction-only)..."
+                )
+            } else {
+                format!(
+                    "Evaluating {total} human recordings x {repeats} repeats (noise {noise_level:.3}, ASR \u{2192} correct, pipelined)..."
+                )
+            };
             let db = state2.db.lock().unwrap();
-            let _ = db.append_job_log(job_id, &format!("Evaluating {total} human recordings (ASR \u{2192} correct, pipelined)..."));
+            let _ = db.append_job_log(job_id, &start_msg);
         }
 
-        for (i, rec) in recordings.iter().enumerate() {
+        let total_attempts = total * repeats;
+        let mut attempt_idx = 0usize;
+
+        if source == "synthetic" {
+            let chain = MarkovChain::build(&all_texts);
+            let mut rng = rand::rngs::StdRng::from_os_rng();
+
+            for item in &synthetic_mistakes {
+                if state2.job_cancel.load(Ordering::Relaxed) {
+                    let db = state2.db.lock().unwrap();
+                    let _ = db.append_job_log(job_id, "Stopped by user.");
+                    break;
+                }
+
+                for repeat_idx in 0..repeats {
+                    attempt_idx += 1;
+                    if state2.job_cancel.load(Ordering::Relaxed) {
+                        let db = state2.db.lock().unwrap();
+                        let _ = db.append_job_log(job_id, "Stopped by user.");
+                        break;
+                    }
+
+                    let template_sentence = chain.generate_with(&item.term, 15, &mut rng);
+                    let full_expected =
+                        splice_fragment(&template_sentence, &item.term, &item.original);
+                    let full_asr = splice_fragment(&template_sentence, &item.term, &item.qwen);
+                    let prompt = synth_train::build_correction_prompt("", &full_asr);
+                    let result = {
+                        let guard = state2.inference_server.lock().unwrap();
+                        guard.as_ref().unwrap().infer(&prompt)
+                    };
+                    evaluated += 1;
+
+                    let expected_norm = normalize_eval_fragment(&item.original);
+                    let asr_norm = normalize_eval_fragment(&item.qwen);
+                    let asr_was_correct = asr_norm == expected_norm;
+                    if asr_was_correct {
+                        asr_correct += 1;
+                    }
+
+                    let expected_fragment =
+                        extract_synthetic_fragment(&template_sentence, &item.term, &full_expected);
+                    let asr_fragment =
+                        extract_synthetic_fragment(&template_sentence, &item.term, &full_asr);
+
+                    let (category, _corrected_text, corrected_fragment) = match result {
+                        Ok(ref corrected) if corrected.trim().is_empty() => {
+                            blank += 1;
+                            ("blank", String::new(), String::new())
+                        }
+                        Ok(corrected) => {
+                            let corrected_fragment =
+                                extract_synthetic_fragment(&template_sentence, &item.term, &corrected);
+                            let corrected_norm = normalize_eval_fragment(&corrected_fragment);
+                            if corrected_norm == expected_norm {
+                                correct += 1;
+                                if asr_was_correct {
+                                    ("kept", corrected, corrected_fragment)
+                                } else {
+                                    ("fixed", corrected, corrected_fragment)
+                                }
+                            } else {
+                                wrong += 1;
+                                if asr_was_correct {
+                                    ("broken", corrected, corrected_fragment)
+                                } else {
+                                    ("wrong", corrected, corrected_fragment)
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            timeouts += 1;
+                            let msg = e.to_string();
+                            if msg.contains("timeout") {
+                                ("timeout", "(timeout)".into(), "(timeout)".into())
+                            } else {
+                                ("error", format!("(error: {msg})"), format!("(error: {msg})"))
+                            }
+                        }
+                    };
+
+                    let asr_accuracy = if evaluated > 0 {
+                        asr_correct as f64 / evaluated as f64 * 100.0
+                    } else {
+                        0.0
+                    };
+                    let post_accuracy = if evaluated > 0 {
+                        correct as f64 / evaluated as f64 * 100.0
+                    } else {
+                        0.0
+                    };
+
+                    entries.push(serde_json::json!({
+                        "source": "synthetic",
+                        "term": item.term,
+                        "sentence": full_expected,
+                        "template_sentence": template_sentence,
+                        "variant_no": repeat_idx + 1,
+                        "cat": category,
+                        "qwen": asr_fragment,
+                        "output": corrected_fragment.trim(),
+                        "expected": expected_fragment,
+                    }));
+
+                    let db = state2.db.lock().unwrap();
+                    let _ = db.update_job_result(
+                        job_id,
+                        &serde_json::json!({
+                            "source": "synthetic",
+                            "total": evaluated,
+                            "source_recordings": 0,
+                            "source_templates": total,
+                            "repeats": repeats,
+                            "noise_level": 0.0,
+                            "correct": correct, "wrong": wrong, "blank": blank, "timeouts": timeouts,
+                            "asr_correct": asr_correct,
+                            "asr_accuracy": (asr_accuracy * 10.0).round() / 10.0,
+                            "post_accuracy": (post_accuracy * 10.0).round() / 10.0,
+                            "entries": entries,
+                        })
+                        .to_string(),
+                    );
+
+                    let _ = db.append_job_log(
+                        job_id,
+                        &format!(
+                            "[{}/{}] [{}] {} (synthetic {}, hit {}): \"{}\" \u{2192} \"{}\"{}",
+                            attempt_idx,
+                            total_attempts,
+                            category,
+                            item.term,
+                            repeat_idx + 1,
+                            item.hit_count,
+                            asr_fragment,
+                            corrected_fragment.trim(),
+                            format!(" (expected \"{}\")", expected_fragment)
+                        ),
+                    );
+                }
+            }
+
+            let asr_accuracy = if evaluated > 0 {
+                asr_correct as f64 / evaluated as f64 * 100.0
+            } else {
+                0.0
+            };
+            let post_accuracy = if evaluated > 0 {
+                correct as f64 / evaluated as f64 * 100.0
+            } else {
+                0.0
+            };
+
+            let db = state2.db.lock().unwrap();
+            let _ = db.append_job_log(
+                job_id,
+                &format!(
+                    "\n=== RESULTS ({evaluated} synthetic variants from {total} mistake templates) ===\n\
+                 ASR baseline (template):      {asr_accuracy:.1}% ({asr_correct}/{evaluated})\n\
+                 Post-correction accuracy:     {post_accuracy:.1}% ({correct}/{evaluated})\n\
+                 \n\
+                 Correct: {correct} | Wrong: {wrong} | Blank: {blank} | Timeouts: {timeouts}"
+                ),
+            );
+            let _ = db.finish_job(
+                job_id,
+                "completed",
+                Some(
+                    &serde_json::json!({
+                        "source": "synthetic",
+                        "total": evaluated,
+                        "source_recordings": 0,
+                        "source_templates": total,
+                        "repeats": repeats,
+                        "noise_level": 0.0,
+                        "correct": correct, "wrong": wrong, "blank": blank, "timeouts": timeouts,
+                        "asr_correct": asr_correct,
+                        "asr_accuracy": asr_accuracy,
+                        "post_accuracy": post_accuracy,
+                        "entries": entries,
+                    })
+                    .to_string(),
+                ),
+            );
+            return;
+        }
+
+        for rec in &recordings {
             if state2.job_cancel.load(Ordering::Relaxed) {
                 let db = state2.db.lock().unwrap();
                 let _ = db.append_job_log(job_id, "Stopped by user.");
@@ -1827,104 +2590,340 @@ pub async fn api_start_eval_job(
                 Ok(bytes) => bytes,
                 Err(e) => {
                     let db = state2.db.lock().unwrap();
-                    let _ = db.append_job_log(job_id, &format!("[{}/{}] Missing recording file: {}", i+1, total, e));
-                    skipped += 1;
+                    let _ = db.append_job_log(
+                        job_id,
+                        &format!(
+                            "Missing recording file for {} take {}: {}",
+                            rec.term, rec.take_no, e
+                        ),
+                    );
+                    skipped += repeats;
                     continue;
                 }
             };
 
-            let (mono, sample_rate) = match decode_wav_mono(&wav_bytes) {
-                Ok(v) => v,
-                Err(_) => { skipped += 1; continue; }
-            };
-            let full_16k = match tts::resample_to_16k(&mono, sample_rate) {
-                Ok(s) => s,
-                Err(_) => { skipped += 1; continue; }
-            };
-            let state_q = state2.clone();
-            let samples = full_16k;
-            let asr_qwen = tokio::task::spawn_blocking(move || -> String {
-                state_q.asr.transcribe_samples(&samples, qwen3_asr::TranscribeOptions::default().with_language("english"))
-                    .map(|r| r.text)
-                    .unwrap_or_default()
-            }).await.unwrap_or_default();
-
-            // Correct
-            let orig_lower = rec.sentence.trim().to_lowercase();
-            let asr_lower = asr_qwen.trim().to_lowercase();
-            let asr_was_correct = asr_lower == orig_lower;
-            if asr_was_correct { asr_correct += 1; }
-
-            let prompt = synth_train::build_correction_prompt("", &asr_qwen);
-            let result = {
-                let guard = state2.inference_server.lock().unwrap();
-                guard.as_ref().unwrap().infer(&prompt)
-            };
-            evaluated += 1;
-
-            let (category, corrected_text) = match result {
-                Ok(ref c) if c.trim().is_empty() => {
-                    blank += 1;
-                    ("blank", String::new())
-                }
-                Ok(corrected) => {
-                    let corr_lower = corrected.trim().to_lowercase();
-                    if corr_lower == orig_lower {
-                        correct += 1;
-                        if asr_was_correct { ("kept", corrected) }
-                        else { ("fixed", corrected) }
-                    } else {
-                        wrong += 1;
-                        if asr_was_correct { ("broken", corrected) }
-                        else { ("wrong", corrected) }
+            let (mono, sample_rate) = if rec.wav_path.ends_with(".ogg") {
+                match tts::decode_ogg_opus_mono(&wav_bytes) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let db = state2.db.lock().unwrap();
+                        let _ = db.append_job_log(
+                            job_id,
+                            &format!("Decode failed for {} take {}: {}", rec.term, rec.take_no, e),
+                        );
+                        skipped += repeats;
+                        continue;
                     }
                 }
-                Err(e) => {
-                    let msg = e.to_string();
-                    timeouts += 1;
-                    if msg.contains("timeout") { ("timeout", "(timeout)".into()) }
-                    else { ("error", format!("(error: {msg})")) }
+            } else {
+                match decode_wav_mono(&wav_bytes) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let db = state2.db.lock().unwrap();
+                        let _ = db.append_job_log(
+                            job_id,
+                            &format!("Decode failed for {} take {}: {}", rec.term, rec.take_no, e),
+                        );
+                        skipped += repeats;
+                        continue;
+                    }
                 }
             };
 
-            let asr_accuracy = if evaluated > 0 { asr_correct as f64 / evaluated as f64 * 100.0 } else { 0.0 };
-            let post_accuracy = if evaluated > 0 { correct as f64 / evaluated as f64 * 100.0 } else { 0.0 };
+            let clean_16k = match tts::resample_to_16k(&mono, sample_rate) {
+                Ok(s) => s,
+                Err(e) => {
+                    let db = state2.db.lock().unwrap();
+                    let _ = db.append_job_log(
+                        job_id,
+                        &format!(
+                            "Resample failed for {} take {}: {}",
+                            rec.term, rec.take_no, e
+                        ),
+                    );
+                    skipped += repeats;
+                    continue;
+                }
+            };
 
-            let db = state2.db.lock().unwrap();
-            let _ = db.update_job_result(job_id, &serde_json::json!({
-                "total": evaluated,
-                "correct": correct, "wrong": wrong, "blank": blank, "timeouts": timeouts,
-                "asr_correct": asr_correct,
-                "asr_accuracy": (asr_accuracy * 10.0).round() / 10.0,
-                "post_accuracy": (post_accuracy * 10.0).round() / 10.0,
-            }).to_string());
+            for repeat_idx in 0..repeats {
+                attempt_idx += 1;
+                if state2.job_cancel.load(Ordering::Relaxed) {
+                    let db = state2.db.lock().unwrap();
+                    let _ = db.append_job_log(job_id, "Stopped by user.");
+                    break;
+                }
 
-            let _ = db.append_job_log(job_id, &format!(
-                "[{}/{}] [{}] {} (take {}): \"{}\" \u{2192} \"{}\"{}",
-                i+1, total, category, rec.term, rec.take_no, asr_qwen, corrected_text.trim(),
-                if category == "fixed" || category == "kept" { String::new() }
-                else { format!(" (expected \"{}\")", rec.sentence) }
-            ));
+                let state_q = state2.clone();
+                let samples = apply_eval_noise(&clean_16k, noise_level);
+                let asr_samples = samples.clone();
+                let asr_qwen = tokio::task::spawn_blocking(move || -> String {
+                    state_q
+                        .asr
+                        .transcribe_samples(
+                            &asr_samples,
+                            qwen3_asr::TranscribeOptions::default().with_language("english"),
+                        )
+                        .map(|r| r.text)
+                        .unwrap_or_default()
+                })
+                .await
+                .unwrap_or_default();
+
+                let prompt = synth_train::build_correction_prompt("", &asr_qwen);
+                let result = {
+                    let guard = state2.inference_server.lock().unwrap();
+                    guard.as_ref().unwrap().infer(&prompt)
+                };
+                evaluated += 1;
+
+                let (category, corrected_text, expected_text, asr_focus_text, focus) = match result {
+                    Ok(ref c) if c.trim().is_empty() => {
+                        let focus = match extract_eval_focus(
+                            &state2,
+                            &samples,
+                            &rec.sentence,
+                            &asr_qwen,
+                            None,
+                            &rec.term,
+                        ) {
+                            Ok(focus) => focus,
+                            Err(e) => {
+                                let db = state2.db.lock().unwrap();
+                                let _ = db.append_job_log(
+                                    job_id,
+                                    &format!(
+                                        "[{}/{}] Focus extraction failed for {} (take {}, run {}): {}",
+                                        attempt_idx,
+                                        total_attempts,
+                                        rec.term,
+                                        rec.take_no,
+                                        repeat_idx + 1,
+                                        e
+                                    ),
+                                );
+                                skipped += 1;
+                                evaluated -= 1;
+                                continue;
+                            }
+                        };
+                        if normalize_eval_fragment(&focus.asr)
+                            == normalize_eval_fragment(&focus.expected)
+                        {
+                            asr_correct += 1;
+                        }
+                        blank += 1;
+                        ("blank", String::new(), focus.expected.clone(), focus.asr.clone(), focus)
+                    }
+                    Ok(corrected) => {
+                        let focus = match extract_eval_focus(
+                            &state2,
+                            &samples,
+                            &rec.sentence,
+                            &asr_qwen,
+                            Some(&corrected),
+                            &rec.term,
+                        ) {
+                            Ok(focus) => focus,
+                            Err(e) => {
+                                let db = state2.db.lock().unwrap();
+                                let _ = db.append_job_log(
+                                    job_id,
+                                    &format!(
+                                        "[{}/{}] Focus extraction failed for {} (take {}, run {}): {}",
+                                        attempt_idx,
+                                        total_attempts,
+                                        rec.term,
+                                        rec.take_no,
+                                        repeat_idx + 1,
+                                        e
+                                    ),
+                                );
+                                skipped += 1;
+                                evaluated -= 1;
+                                continue;
+                            }
+                        };
+                        let expected_norm = normalize_eval_fragment(&focus.expected);
+                        let asr_norm = normalize_eval_fragment(&focus.asr);
+                        let corrected_norm = normalize_eval_fragment(&focus.corrected);
+                        let asr_was_correct = asr_norm == expected_norm;
+                        if asr_was_correct {
+                            asr_correct += 1;
+                        }
+                        if corrected_norm == expected_norm {
+                            correct += 1;
+                            if asr_was_correct {
+                                ("kept", focus.corrected.clone(), focus.expected.clone(), focus.asr.clone(), focus)
+                            } else {
+                                ("fixed", focus.corrected.clone(), focus.expected.clone(), focus.asr.clone(), focus)
+                            }
+                        } else {
+                            wrong += 1;
+                            if asr_was_correct {
+                                ("broken", focus.corrected.clone(), focus.expected.clone(), focus.asr.clone(), focus)
+                            } else {
+                                ("wrong", focus.corrected.clone(), focus.expected.clone(), focus.asr.clone(), focus)
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let focus = match extract_eval_focus(
+                            &state2,
+                            &samples,
+                            &rec.sentence,
+                            &asr_qwen,
+                            None,
+                            &rec.term,
+                        ) {
+                            Ok(focus) => focus,
+                            Err(extract_err) => {
+                                let db = state2.db.lock().unwrap();
+                                let _ = db.append_job_log(
+                                    job_id,
+                                    &format!(
+                                        "[{}/{}] Focus extraction failed for {} (take {}, run {}): {}",
+                                        attempt_idx,
+                                        total_attempts,
+                                        rec.term,
+                                        rec.take_no,
+                                        repeat_idx + 1,
+                                        extract_err
+                                    ),
+                                );
+                                skipped += 1;
+                                evaluated -= 1;
+                                continue;
+                            }
+                        };
+                        if normalize_eval_fragment(&focus.asr)
+                            == normalize_eval_fragment(&focus.expected)
+                        {
+                            asr_correct += 1;
+                        }
+                        let msg = e.to_string();
+                        timeouts += 1;
+                        if msg.contains("timeout") {
+                            ("timeout", "(timeout)".into(), focus.expected.clone(), focus.asr.clone(), focus)
+                        } else {
+                            (
+                                "error",
+                                format!("(error: {msg})"),
+                                focus.expected.clone(),
+                                focus.asr.clone(),
+                                focus,
+                            )
+                        }
+                    }
+                };
+
+                let asr_accuracy = if evaluated > 0 {
+                    asr_correct as f64 / evaluated as f64 * 100.0
+                } else {
+                    0.0
+                };
+                let post_accuracy = if evaluated > 0 {
+                    correct as f64 / evaluated as f64 * 100.0
+                } else {
+                    0.0
+                };
+
+                entries.push(serde_json::json!({
+                    "recording_id": rec.id,
+                    "term": rec.term,
+                    "sentence": rec.sentence,
+                    "take_no": rec.take_no,
+                    "run_no": repeat_idx + 1,
+                    "cat": category,
+                    "qwen": asr_focus_text,
+                    "output": corrected_text.trim(),
+                    "expected": expected_text,
+                    "cons_time": [focus.cons_range.0, focus.cons_range.1],
+                    "trim_info": focus.trim_info,
+                    "alignments": {
+                        "expected": focus.expected_alignment,
+                        "asr": focus.asr_alignment,
+                        "corrected": focus.corrected_alignment,
+                    }
+                }));
+
+                let db = state2.db.lock().unwrap();
+                let _ = db.update_job_result(
+                    job_id,
+                    &serde_json::json!({
+                        "source": "human",
+                        "total": evaluated,
+                        "source_recordings": total,
+                        "repeats": repeats,
+                        "noise_level": noise_level,
+                        "correct": correct, "wrong": wrong, "blank": blank, "timeouts": timeouts,
+                        "asr_correct": asr_correct,
+                        "asr_accuracy": (asr_accuracy * 10.0).round() / 10.0,
+                        "post_accuracy": (post_accuracy * 10.0).round() / 10.0,
+                        "entries": entries,
+                    })
+                    .to_string(),
+                );
+
+                let _ = db.append_job_log(
+                    job_id,
+                    &format!(
+                        "[{}/{}] [{}] {} (take {}, run {}): \"{}\" \u{2192} \"{}\"{}",
+                        attempt_idx,
+                        total_attempts,
+                        category,
+                        rec.term,
+                        rec.take_no,
+                        repeat_idx + 1,
+                        asr_focus_text,
+                        corrected_text.trim(),
+                        format!(" (expected \"{}\")", expected_text)
+                    ),
+                );
+            }
         }
 
-        let asr_accuracy = if evaluated > 0 { asr_correct as f64 / evaluated as f64 * 100.0 } else { 0.0 };
-        let post_accuracy = if evaluated > 0 { correct as f64 / evaluated as f64 * 100.0 } else { 0.0 };
+        let asr_accuracy = if evaluated > 0 {
+            asr_correct as f64 / evaluated as f64 * 100.0
+        } else {
+            0.0
+        };
+        let post_accuracy = if evaluated > 0 {
+            correct as f64 / evaluated as f64 * 100.0
+        } else {
+            0.0
+        };
 
         let db = state2.db.lock().unwrap();
-        let _ = db.append_job_log(job_id, &format!(
-            "\n=== RESULTS ({evaluated} recordings, {skipped} skipped) ===\n\
+        let _ = db.append_job_log(
+            job_id,
+            &format!(
+                "\n=== RESULTS ({evaluated} attempts from {total} recordings, {skipped} skipped) ===\n\
              ASR accuracy (baseline):     {asr_accuracy:.1}% ({asr_correct}/{evaluated})\n\
              Post-correction accuracy:    {post_accuracy:.1}% ({correct}/{evaluated})\n\
              \n\
              Correct: {correct} | Wrong: {wrong} | Blank: {blank} | Timeouts: {timeouts}"
-        ));
-        let _ = db.finish_job(job_id, "completed", Some(&serde_json::json!({
-            "total": evaluated,
-            "correct": correct, "wrong": wrong, "blank": blank, "timeouts": timeouts,
-            "asr_correct": asr_correct,
-            "asr_accuracy": asr_accuracy,
-            "post_accuracy": post_accuracy,
-        }).to_string()));
+            ),
+        );
+        let _ = db.finish_job(
+            job_id,
+            "completed",
+            Some(
+                &serde_json::json!({
+                    "source": "human",
+                    "total": evaluated,
+                    "source_recordings": total,
+                    "repeats": repeats,
+                    "noise_level": noise_level,
+                    "correct": correct, "wrong": wrong, "blank": blank, "timeouts": timeouts,
+                    "asr_correct": asr_correct,
+                    "asr_accuracy": asr_accuracy,
+                    "post_accuracy": post_accuracy,
+                    "entries": entries,
+                })
+                .to_string(),
+            ),
+        );
     });
 
     Ok(Json(serde_json::json!({"job_id": job_id})).into_response())
@@ -1967,24 +2966,25 @@ pub async fn api_correct(
 
 // ==================== Scan Results ====================
 
-pub async fn api_scan_results(
-    State(state): State<Arc<AppState>>,
-) -> Result<Response, AppError> {
+pub async fn api_scan_results(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
     let db = state.db.lock().unwrap();
     let results = db.vocab_scan_results().map_err(err)?;
-    let json: Vec<serde_json::Value> = results.iter().map(|(term, total, qwen_err, parakeet_err)| {
-        let confusions = db.confusions_for_term(term).unwrap_or_default();
-        let qwen_heard: Vec<&str> = confusions.iter().map(|(q, _)| q.as_str()).collect();
-        let parakeet_heard: Vec<&str> = confusions.iter().map(|(_, p)| p.as_str()).collect();
-        serde_json::json!({
-            "term": term,
-            "total": total,
-            "qwen_errors": qwen_err,
-            "parakeet_errors": parakeet_err,
-            "qwen_heard": qwen_heard,
-            "parakeet_heard": parakeet_heard,
+    let json: Vec<serde_json::Value> = results
+        .iter()
+        .map(|(term, total, qwen_err, parakeet_err)| {
+            let confusions = db.confusions_for_term(term).unwrap_or_default();
+            let qwen_heard: Vec<&str> = confusions.iter().map(|(q, _)| q.as_str()).collect();
+            let parakeet_heard: Vec<&str> = confusions.iter().map(|(_, p)| p.as_str()).collect();
+            serde_json::json!({
+                "term": term,
+                "total": total,
+                "qwen_errors": qwen_err,
+                "parakeet_errors": parakeet_err,
+                "qwen_heard": qwen_heard,
+                "parakeet_heard": parakeet_heard,
+            })
         })
-    }).collect();
+        .collect();
     Ok(Json(json).into_response())
 }
 
@@ -2008,7 +3008,8 @@ pub async fn api_test_term(
 
     let vocab = {
         let db = state.db.lock().unwrap();
-        db.find_vocab_by_term(&written.0).map_err(err)?
+        db.find_vocab_by_term(&written.0)
+            .map_err(err)?
             .ok_or_else(|| err(format!("Term '{}' not found", written.0)))?
     };
     let spoken = SpokenTerm(vocab.spoken().to_string());
@@ -2017,8 +3018,13 @@ pub async fn api_test_term(
         let db = state.db.lock().unwrap();
         let texts = db.all_sentence_texts().map_err(err)?;
         let vocab_list = db.list_reviewed_vocab().map_err(err)?;
-        let ov: HashMap<String, String> = vocab_list.iter()
-            .filter_map(|v| v.spoken_override.as_ref().map(|s| (v.term.clone(), s.clone())))
+        let ov: HashMap<String, String> = vocab_list
+            .iter()
+            .filter_map(|v| {
+                v.spoken_override
+                    .as_ref()
+                    .map(|s| (v.term.clone(), s.clone()))
+            })
             .collect();
         (texts, ov)
     };
@@ -2037,15 +3043,33 @@ pub async fn api_test_term(
         written_sentence = pair.0;
         spoken_sentence = pair.1;
 
-        audio = state.tts.generate(&tts_backend, &spoken_sentence.0).await.map_err(|e| err(e))?;
+        audio = state
+            .tts
+            .generate(&tts_backend, &spoken_sentence.0)
+            .await
+            .map_err(|e| err(e))?;
         audio.normalize();
         let full_16k = tts::resample_to_16k(&audio.samples, audio.sample_rate).map_err(err)?;
 
         let protected_terms: std::collections::HashSet<String> = {
             let db = state.db.lock().unwrap();
-            db.list_reviewed_vocab().unwrap_or_default().iter().map(|v| v.term.to_lowercase()).collect()
+            db.list_reviewed_vocab()
+                .unwrap_or_default()
+                .iter()
+                .map(|v| v.term.to_lowercase())
+                .collect()
         };
-        result = run_corpus_pass(&state, &full_16k, &written_sentence, &spoken_sentence, &written, &protected_terms, dual_asr).await.map_err(err)?;
+        result = run_corpus_pass(
+            &state,
+            &full_16k,
+            &written_sentence,
+            &spoken_sentence,
+            &written,
+            &protected_terms,
+            dual_asr,
+        )
+        .await
+        .map_err(err)?;
 
         if result.extraction.clean || attempts >= 5 {
             break;
@@ -2086,7 +3110,8 @@ pub async fn api_test_term(
         },
         "term_range": [result.term_range.0, result.term_range.1],
         "wav_b64": wav_b64,
-    })).into_response())
+    }))
+    .into_response())
 }
 
 // ==================== Pipeline Status ====================
@@ -2095,14 +3120,25 @@ pub async fn api_view_corpus(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    let filter_term = params.get("term").map(|s| s.as_str()).filter(|s| !s.is_empty());
+    let filter_term = params
+        .get("term")
+        .map(|s| s.as_str())
+        .filter(|s| !s.is_empty());
     let mistakes_only = params.get("mistakes").map(|s| s == "1").unwrap_or(false);
     let review_filter = params.get("review").map(|s| s.as_str());
-    let limit: usize = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(50);
-    let offset: usize = params.get("offset").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let limit: usize = params
+        .get("limit")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50);
+    let offset: usize = params
+        .get("offset")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
 
     let db = state.db.lock().unwrap();
-    let pairs = db.corpus_pairs_query(filter_term, mistakes_only, review_filter, limit, offset).map_err(err)?;
+    let pairs = db
+        .corpus_pairs_query(filter_term, mistakes_only, review_filter, limit, offset)
+        .map_err(err)?;
     let stats = db.corpus_stats().map_err(err)?;
     Ok(Json(serde_json::json!({"pairs": pairs, "stats": stats})).into_response())
 }
@@ -2114,17 +3150,14 @@ pub async fn api_corpus_audio(
     let db = state.db.lock().unwrap();
     let audio: Option<Vec<u8>> = db.get_corpus_audio(id).map_err(err)?;
     match audio {
-        Some(bytes) => Ok((
-            [(axum::http::header::CONTENT_TYPE, "audio/ogg")],
-            bytes,
-        ).into_response()),
+        Some(bytes) => {
+            Ok(([(axum::http::header::CONTENT_TYPE, "audio/ogg")], bytes).into_response())
+        }
         None => Ok(axum::http::StatusCode::NOT_FOUND.into_response()),
     }
 }
 
-pub async fn api_reset_corpus(
-    State(state): State<Arc<AppState>>,
-) -> Result<Response, AppError> {
+pub async fn api_reset_corpus(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
     let db = state.db.lock().unwrap();
     db.reset_corpus().map_err(err)?;
     let _ = std::fs::remove_file("data/corpus_dashboard.jsonl");
@@ -2184,28 +3217,32 @@ pub async fn api_add_alt_spelling(
     Json(body): Json<AddAltSpellingBody>,
 ) -> Result<Response, AppError> {
     let db = state.db.lock().unwrap();
-    let updated = db.add_alt_spelling(&body.term, &body.alt_spelling).map_err(err)?;
+    let updated = db
+        .add_alt_spelling(&body.term, &body.alt_spelling)
+        .map_err(err)?;
     Ok(Json(serde_json::json!({"ok": true, "retroactive_updates": updated})).into_response())
 }
 
 // ==================== Confusions Review ====================
 
-pub async fn api_confusions_next(
-    State(state): State<Arc<AppState>>,
-) -> Result<Response, AppError> {
+pub async fn api_confusions_next(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
     let db = state.db.lock().unwrap();
     let item = db.next_unreviewed_confusion().map_err(err)?;
     let progress = db.confusions_review_progress().map_err(err)?;
-    let can_mark_alt = item.as_ref().map(|i| {
-        let term = i["term"].as_str().unwrap_or("");
-        let original = i["original"].as_str().unwrap_or("");
-        term.to_lowercase() == original.to_lowercase()
-    }).unwrap_or(false);
+    let can_mark_alt = item
+        .as_ref()
+        .map(|i| {
+            let term = i["term"].as_str().unwrap_or("");
+            let original = i["original"].as_str().unwrap_or("");
+            term.to_lowercase() == original.to_lowercase()
+        })
+        .unwrap_or(false);
     Ok(Json(serde_json::json!({
         "item": item,
         "progress": progress,
         "can_mark_alt": can_mark_alt,
-    })).into_response())
+    }))
+    .into_response())
 }
 
 /// Preview training data: returns sample prompts from the training set so the user
@@ -2215,7 +3252,10 @@ pub async fn api_preview_training(
 ) -> Result<Response, AppError> {
     let train_path = "training/data/train.jsonl";
     if !std::path::Path::new(train_path).exists() {
-        return Ok(Json(serde_json::json!({"error": "No training data. Run Prepare first."})).into_response());
+        return Ok(
+            Json(serde_json::json!({"error": "No training data. Run Prepare first."}))
+                .into_response(),
+        );
     }
 
     let content = std::fs::read_to_string(train_path).map_err(err)?;
@@ -2233,10 +3273,16 @@ pub async fn api_preview_training(
             let is_identity = if let Some(rest) = prompt.strip_prefix("<keet> ") {
                 if let Some(idx) = rest.find("\n<qwen> ") {
                     let keet_text = &rest[..idx];
-                    let qwen_text = rest[idx + 7..].strip_suffix("\n<fixd>").unwrap_or(&rest[idx + 7..]);
+                    let qwen_text = rest[idx + 7..]
+                        .strip_suffix("\n<fixd>")
+                        .unwrap_or(&rest[idx + 7..]);
                     keet_text == qwen_text
-                } else { false }
-            } else { false };
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
             let entry = serde_json::json!({"prompt": prompt, "completion": completion});
             if is_identity {
                 identities.push(entry);
@@ -2263,23 +3309,28 @@ pub async fn api_preview_training(
         "identity_count": identities.len(),
         "correction_samples": corr_sample,
         "identity_samples": id_sample,
-    })).into_response())
+    }))
+    .into_response())
 }
 
 /// Delete training data (train/valid/test splits) so prepare can be re-run.
-pub async fn api_reset_training(
-    State(_state): State<Arc<AppState>>,
-) -> Result<Response, AppError> {
+pub async fn api_reset_training(State(_state): State<Arc<AppState>>) -> Result<Response, AppError> {
     let _ = std::fs::remove_file("training/data/train.jsonl");
     let _ = std::fs::remove_file("training/data/valid.jsonl");
     let _ = std::fs::remove_file("training/data/test.jsonl");
     Ok(Json(serde_json::json!({"ok": true})).into_response())
 }
 
-pub async fn api_pipeline_status(
-    State(state): State<Arc<AppState>>,
-) -> Result<Response, AppError> {
-    let (approved_count, vocab_reviewed, human_recordings, running_job, last_eval, last_train, vocab_scanned) = {
+pub async fn api_pipeline_status(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
+    let (
+        approved_count,
+        vocab_reviewed,
+        human_recordings,
+        running_job,
+        last_eval,
+        last_train,
+        vocab_scanned,
+    ) = {
         let db = state.db.lock().unwrap();
         let (approved, _, _) = db.sentence_count_by_status().map_err(err)?;
         let (reviewed, _, _) = db.vocab_review_counts().unwrap_or((0, 0, 0));
@@ -2287,12 +3338,14 @@ pub async fn api_pipeline_status(
         let scanned = db.confusion_count().map_err(err)?;
         let jobs = db.list_jobs().map_err(err)?;
         let running = jobs.iter().find(|j| j.status == "running").cloned();
-        let eval = jobs.iter()
+        let eval = jobs
+            .iter()
             .filter(|j| j.job_type == "eval" && j.status == "completed")
             .next()
             .and_then(|j| j.result.as_ref())
             .and_then(|r| serde_json::from_str::<serde_json::Value>(r).ok());
-        let train = jobs.iter()
+        let train = jobs
+            .iter()
             .filter(|j| j.job_type == "train" && j.status == "completed")
             .next()
             .and_then(|j| j.result.as_ref())
@@ -2310,9 +3363,11 @@ pub async fn api_pipeline_status(
     let training_data_exists = std::path::Path::new("training/data/train.jsonl").exists();
     let (train_count, valid_count) = if training_data_exists {
         let tc = std::fs::read_to_string("training/data/train.jsonl")
-            .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
+            .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
+            .unwrap_or(0);
         let vc = std::fs::read_to_string("training/data/valid.jsonl")
-            .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
+            .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
+            .unwrap_or(0);
         (tc, vc)
     } else {
         (0, 0)
@@ -2355,11 +3410,20 @@ pub async fn api_pipeline_status(
 // ==================== Algorithm Test Suite ====================
 
 fn ai(word: &str, start: f64, end: f64) -> qwen3_asr::ForcedAlignItem {
-    qwen3_asr::ForcedAlignItem { word: word.to_string(), start_time: start, end_time: end }
+    qwen3_asr::ForcedAlignItem {
+        word: word.to_string(),
+        start_time: start,
+        end_time: end,
+    }
 }
 
 fn fmt_align_json(items: &[qwen3_asr::ForcedAlignItem]) -> serde_json::Value {
-    serde_json::Value::Array(items.iter().map(|a| serde_json::json!({"w": a.word, "s": a.start_time, "e": a.end_time})).collect())
+    serde_json::Value::Array(
+        items
+            .iter()
+            .map(|a| serde_json::json!({"w": a.word, "s": a.start_time, "e": a.end_time}))
+            .collect(),
+    )
 }
 
 pub async fn api_algorithm_tests() -> Result<Response, AppError> {
@@ -2615,7 +3679,8 @@ pub async fn api_algorithm_tests() -> Result<Response, AppError> {
     ];
 
     for tc in &cases {
-        let protected: std::collections::HashSet<String> = tc.protected.iter().map(|s| s.to_lowercase()).collect();
+        let protected: std::collections::HashSet<String> =
+            tc.protected.iter().map(|s| s.to_lowercase()).collect();
 
         // Simulate gap expansion (same logic as run_corpus_pass)
         let term_lower = tc.term.to_lowercase();
@@ -2623,16 +3688,37 @@ pub async fn api_algorithm_tests() -> Result<Response, AppError> {
         let (term_start, term_end) = match term_range {
             Some((start, end)) => {
                 const MIN_GAP: f64 = 0.05;
-                let prev_end = tc.orig.iter().filter(|a| a.end_time < start - 0.001).last().map(|a| a.end_time).unwrap_or(start);
-                let expanded_start = if start - prev_end > MIN_GAP { prev_end } else { start };
-                let next_start = tc.orig.iter().find(|a| a.start_time > end + 0.001).map(|a| a.start_time).unwrap_or(end);
-                let expanded_end = if next_start - end > MIN_GAP { next_start } else { end };
+                let prev_end = tc
+                    .orig
+                    .iter()
+                    .filter(|a| a.end_time < start - 0.001)
+                    .last()
+                    .map(|a| a.end_time)
+                    .unwrap_or(start);
+                let expanded_start = if start - prev_end > MIN_GAP {
+                    prev_end
+                } else {
+                    start
+                };
+                let next_start = tc
+                    .orig
+                    .iter()
+                    .find(|a| a.start_time > end + 0.001)
+                    .map(|a| a.start_time)
+                    .unwrap_or(end);
+                let expanded_end = if next_start - end > MIN_GAP {
+                    next_start
+                } else {
+                    end
+                };
                 (expanded_start, expanded_end)
             }
             None => (0.0, 10.0),
         };
 
-        let extraction = extract_with_consensus(&tc.orig, &tc.qwen, &tc.para, term_start, term_end, &protected);
+        let extraction = extract_with_consensus(
+            &tc.orig, &tc.qwen, &tc.para, term_start, term_end, &protected,
+        );
         let is_mistake = extraction.original.to_lowercase() != extraction.qwen.to_lowercase();
 
         let pass = if !tc.expect_clean {
@@ -2678,7 +3764,8 @@ pub async fn api_algorithm_tests() -> Result<Response, AppError> {
         "total": results.len(),
         "passed": results.iter().filter(|r| r["pass"].as_bool().unwrap_or(false)).count(),
         "tests": results,
-    })).into_response())
+    }))
+    .into_response())
 }
 
 #[cfg(test)]
@@ -2687,7 +3774,11 @@ mod tests {
     use qwen3_asr::ForcedAlignItem;
 
     fn item(word: &str, start: f64, end: f64) -> ForcedAlignItem {
-        ForcedAlignItem { word: word.to_string(), start_time: start, end_time: end }
+        ForcedAlignItem {
+            word: word.to_string(),
+            start_time: start,
+            end_time: end,
+        }
     }
 
     fn protected(terms: &[&str]) -> std::collections::HashSet<String> {
@@ -2710,8 +3801,16 @@ mod tests {
     #[test]
     fn trim_two_lane_strips_both_edges() {
         // "the reqwest for" vs "the requests for" — trim "the" from left and "for" from right
-        let orig = vec![item("the", 0.5, 0.7), item("reqwest", 1.0, 1.3), item("for", 1.3, 1.5)];
-        let qwen = vec![item("the", 0.5, 0.7), item("requests", 1.0, 1.3), item("for", 1.3, 1.5)];
+        let orig = vec![
+            item("the", 0.5, 0.7),
+            item("reqwest", 1.0, 1.3),
+            item("for", 1.3, 1.5),
+        ];
+        let qwen = vec![
+            item("the", 0.5, 0.7),
+            item("requests", 1.0, 1.3),
+            item("for", 1.3, 1.5),
+        ];
         let para = vec![];
 
         let (o, q, _, _ti) = trim_matching_edges(&orig, &qwen, &para, 0.0, 2.0, &protected(&[]));
@@ -2723,11 +3822,21 @@ mod tests {
     fn trim_protects_vocab_terms() {
         // "async for" vs "a sync for" — "async" is protected, don't trim even though left doesn't match
         // Actually test: "for async" vs "for a sync" — "for" matches but "async" is protected on left
-        let orig = vec![item("for", 0.5, 0.7), item("async", 1.0, 1.3), item("stuff", 1.3, 1.5)];
-        let qwen = vec![item("for", 0.5, 0.7), item("a", 1.0, 1.1), item("sync", 1.1, 1.3), item("stuff", 1.3, 1.5)];
+        let orig = vec![
+            item("for", 0.5, 0.7),
+            item("async", 1.0, 1.3),
+            item("stuff", 1.3, 1.5),
+        ];
+        let qwen = vec![
+            item("for", 0.5, 0.7),
+            item("a", 1.0, 1.1),
+            item("sync", 1.1, 1.3),
+            item("stuff", 1.3, 1.5),
+        ];
         let para = vec![];
 
-        let (o, q, _, _ti) = trim_matching_edges(&orig, &qwen, &para, 0.0, 2.0, &protected(&["async"]));
+        let (o, q, _, _ti) =
+            trim_matching_edges(&orig, &qwen, &para, 0.0, 2.0, &protected(&["async"]));
         // "for" on left would match, but next word is "async" which is protected → stop
         // Wait, "for" itself is not protected, so it should be trimmed. The protection check
         // is on the word being considered for trimming.
@@ -2739,9 +3848,21 @@ mod tests {
 
     #[test]
     fn trim_three_lane_requires_all_match() {
-        let orig = vec![item("the", 0.5, 0.7), item("JIT", 1.0, 1.3), item("for", 1.3, 1.5)];
-        let qwen = vec![item("the", 0.5, 0.7), item("jiff", 1.0, 1.3), item("for", 1.3, 1.5)];
-        let para = vec![item("the", 0.5, 0.7), item("jit", 1.0, 1.3), item("four", 1.3, 1.5)];
+        let orig = vec![
+            item("the", 0.5, 0.7),
+            item("JIT", 1.0, 1.3),
+            item("for", 1.3, 1.5),
+        ];
+        let qwen = vec![
+            item("the", 0.5, 0.7),
+            item("jiff", 1.0, 1.3),
+            item("for", 1.3, 1.5),
+        ];
+        let para = vec![
+            item("the", 0.5, 0.7),
+            item("jit", 1.0, 1.3),
+            item("four", 1.3, 1.5),
+        ];
 
         let (o, q, pk, _ti) = trim_matching_edges(&orig, &qwen, &para, 0.0, 2.0, &protected(&[]));
         // Left: "the" matches all 3 → trimmed
@@ -2767,8 +3888,16 @@ mod tests {
     #[test]
     fn trim_respects_time_range() {
         // Items outside range should be excluded
-        let orig = vec![item("before", 0.1, 0.3), item("JIT", 1.0, 1.3), item("after", 2.5, 2.8)];
-        let qwen = vec![item("before", 0.1, 0.3), item("jiff", 1.0, 1.3), item("after", 2.5, 2.8)];
+        let orig = vec![
+            item("before", 0.1, 0.3),
+            item("JIT", 1.0, 1.3),
+            item("after", 2.5, 2.8),
+        ];
+        let qwen = vec![
+            item("before", 0.1, 0.3),
+            item("jiff", 1.0, 1.3),
+            item("after", 2.5, 2.8),
+        ];
         let para = vec![];
 
         let (o, q, _, _ti) = trim_matching_edges(&orig, &qwen, &para, 0.5, 2.0, &protected(&[]));
@@ -2778,14 +3907,24 @@ mod tests {
 
     #[test]
     fn trim_info_records_what_was_removed() {
-        let orig = vec![item("the", 0.5, 0.7), item("reqwest", 1.0, 1.3), item("for", 1.3, 1.5), item("you", 1.5, 1.7)];
-        let qwen = vec![item("the", 0.5, 0.7), item("requests", 1.0, 1.3), item("for", 1.3, 1.5), item("you", 1.5, 1.7)];
+        let orig = vec![
+            item("the", 0.5, 0.7),
+            item("reqwest", 1.0, 1.3),
+            item("for", 1.3, 1.5),
+            item("you", 1.5, 1.7),
+        ];
+        let qwen = vec![
+            item("the", 0.5, 0.7),
+            item("requests", 1.0, 1.3),
+            item("for", 1.3, 1.5),
+            item("you", 1.5, 1.7),
+        ];
         let para = vec![];
 
         let (o, q, _, ti) = trim_matching_edges(&orig, &qwen, &para, 0.0, 2.0, &protected(&[]));
         assert_eq!(o, "reqwest");
         assert_eq!(q, "requests");
-        assert_eq!(ti.trimmed_left, 1);  // "the"
+        assert_eq!(ti.trimmed_left, 1); // "the"
         assert_eq!(ti.trimmed_right, 2); // "for", "you"
         assert_eq!(ti.pre_orig, vec!["the", "reqwest", "for", "you"]);
         assert_eq!(ti.pre_qwen, vec!["the", "requests", "for", "you"]);
