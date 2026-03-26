@@ -176,6 +176,7 @@ fn fmt_alignment_json(items: &[qwen3_asr::ForcedAlignItem]) -> serde_json::Value
 // ==================== Markov Chain ====================
 
 /// Word-level bigram Markov chain for generating sentences containing a target word.
+#[derive(Clone)]
 struct MarkovChain {
     /// word → [(next_word, count)]
     forward: HashMap<String, Vec<(String, u32)>>,
@@ -454,6 +455,21 @@ struct ConsensusResult {
     cons_range: (f64, f64),
     clean: bool,
     debug: serde_json::Value,
+    /// Info about what trim_matching_edges did
+    trim_info: TrimInfo,
+}
+
+/// Records what the edge-trimming step did so we can visualize it.
+#[derive(Clone, Debug, serde::Serialize)]
+struct TrimInfo {
+    /// Words before trimming, per lane
+    pre_orig: Vec<String>,
+    pre_qwen: Vec<String>,
+    pre_para: Vec<String>,
+    /// How many words trimmed from left
+    trimmed_left: usize,
+    /// How many words trimmed from right
+    trimmed_right: usize,
 }
 
 /// Trim matching words from alignment item slices.
@@ -465,42 +481,53 @@ fn trim_matching_edges(
     para: &[qwen3_asr::ForcedAlignItem],
     start: f64, end: f64,
     protected: &std::collections::HashSet<String>,
-) -> (String, String, String) {
+) -> (String, String, String, TrimInfo) {
     let mut o: Vec<&str> = orig.iter().filter(|a| a.start_time >= start && a.start_time < end).map(|a| a.word.as_str()).collect();
     let mut q: Vec<&str> = qwen.iter().filter(|a| a.start_time >= start && a.start_time < end).map(|a| a.word.as_str()).collect();
     let mut p: Vec<&str> = para.iter().filter(|a| a.start_time >= start && a.start_time < end).map(|a| a.word.as_str()).collect();
+    let has_para = !p.is_empty();
 
-    // Trim from left — stop at vocab terms or empty
-    while o.len() > 1 && q.len() > 1 && p.len() > 1 {
+    let pre_orig: Vec<String> = o.iter().map(|s| s.to_string()).collect();
+    let pre_qwen: Vec<String> = q.iter().map(|s| s.to_string()).collect();
+    let pre_para: Vec<String> = p.iter().map(|s| s.to_string()).collect();
+
+    let mut trimmed_left = 0;
+    while o.len() > 1 && q.len() > 1 && (!has_para || p.len() > 1) {
         let ow = o[0].to_lowercase();
         if protected.contains(&ow) { break; }
         let qw = q[0].to_lowercase();
-        let pw = p[0].to_lowercase();
-        if ow == qw && ow == pw {
-            o.remove(0);
-            q.remove(0);
+        if ow != qw { break; }
+        if has_para {
+            let pw = p[0].to_lowercase();
+            if ow != pw { break; }
             p.remove(0);
-        } else {
-            break;
         }
+        o.remove(0);
+        q.remove(0);
+        trimmed_left += 1;
     }
 
-    // Trim from right — stop at vocab terms or empty
-    while o.len() > 1 && q.len() > 1 && p.len() > 1 {
+    let mut trimmed_right = 0;
+    while o.len() > 1 && q.len() > 1 && (!has_para || p.len() > 1) {
         let ow = o.last().unwrap().to_lowercase();
         if protected.contains(&ow) { break; }
         let qw = q.last().unwrap().to_lowercase();
-        let pw = p.last().unwrap().to_lowercase();
-        if ow == qw && ow == pw {
-            o.pop();
-            q.pop();
+        if ow != qw { break; }
+        if has_para {
+            let pw = p.last().unwrap().to_lowercase();
+            if ow != pw { break; }
             p.pop();
-        } else {
-            break;
         }
+        o.pop();
+        q.pop();
+        trimmed_right += 1;
     }
 
-    (o.join(" "), q.join(" "), p.join(" "))
+    let trim_info = TrimInfo { pre_orig, pre_qwen, pre_para, trimmed_left, trimmed_right };
+    let strip_edge_punct = |s: String| -> String {
+        s.trim_matches(|c: char| !c.is_alphanumeric()).to_string()
+    };
+    (strip_edge_punct(o.join(" ")), strip_edge_punct(q.join(" ")), strip_edge_punct(p.join(" ")), trim_info)
 }
 
 /// Extract triplets using annotated tri-boundaries.
@@ -568,9 +595,21 @@ fn extract_with_consensus(
     // Extract words in range then trim matching edges.
     // Uses alignment items directly (same word boundaries as the aligner).
     // Stops trimming at vocab terms to avoid eating important words.
-    let (original, qwen, parakeet) = trim_matching_edges(
+    let (original, qwen, parakeet, trim_info) = trim_matching_edges(
         orig_align, qwen_align, parakeet_align, start, end, protected_terms,
     );
+
+    // If either required lane is empty after trimming, mark as not clean
+    let clean = clean && !original.is_empty() && !qwen.is_empty();
+
+    // If any word in the consensus range has suspiciously short duration (<80ms),
+    // it's likely boundary noise — discard the whole extraction.
+    const MIN_WORD_DURATION: f64 = 0.08;
+    let has_short_word = orig_align.iter()
+        .chain(qwen_align.iter())
+        .filter(|a| a.start_time >= start && a.start_time < end)
+        .any(|a| (a.end_time - a.start_time) < MIN_WORD_DURATION);
+    let clean = clean && !has_short_word;
 
     let debug = serde_json::json!({
         "term_start": r2(term_start),
@@ -581,7 +620,7 @@ fn extract_with_consensus(
         "has_parakeet": has_parakeet,
     });
 
-    ConsensusResult { original, qwen, parakeet, cons_range: (start, end), clean, debug }
+    ConsensusResult { original, qwen, parakeet, cons_range: (start, end), clean, debug, trim_info }
 }
 
 /// Strip carrier phrase prefix variants from ASR output.
@@ -616,8 +655,7 @@ pub async fn api_stop_job(
 #[derive(Deserialize)]
 pub struct CorpusJobBody {
     pub tts_backend: Option<String>,
-    pub limit: Option<usize>,  // max items to process this run (default: all)
-    pub passes: Option<usize>, // TTS+ASR passes per term (default: 25)
+    pub rounds: Option<usize>,  // number of rounds (0 = endless, default: 100)
     pub dual_asr: Option<bool>, // true = Qwen + Parakeet, false = Qwen only (default: false)
 }
 
@@ -665,13 +703,9 @@ pub async fn api_start_corpus_job(
     check_no_running_jobs(&state)?;
 
     let tts_backend = body.tts_backend.unwrap_or_else(|| "openai".to_string());
-    let limit = match body.limit {
-        Some(0) | None => usize::MAX, // 0 or absent = unlimited
-        Some(n) => n,
-    };
-    let passes = body.passes.unwrap_or(25);
+    let rounds = body.rounds.unwrap_or(100); // 0 = endless
     let dual_asr = body.dual_asr.unwrap_or(false);
-    let config_json = serde_json::json!({"tts_backend": tts_backend, "limit": limit, "passes": passes, "dual_asr": dual_asr}).to_string();
+    let config_json = serde_json::json!({"tts_backend": tts_backend, "rounds": rounds, "dual_asr": dual_asr}).to_string();
 
     let job_id = {
         let db = state.db.lock().unwrap();
@@ -681,15 +715,11 @@ pub async fn api_start_corpus_job(
     let state2 = state.clone();
     let backend = tts_backend.clone();
     tokio::spawn(async move {
-        let result = run_corpus_job(&state2, job_id, &backend, limit, passes, dual_asr).await;
+        let result = run_corpus_job(&state2, job_id, &backend, rounds, dual_asr).await;
         let db = state2.db.lock().unwrap();
         match result {
-            Ok(count) => {
-                let _ = db.finish_job(
-                    job_id,
-                    "completed",
-                    Some(&serde_json::json!({"sentences": count}).to_string()),
-                );
+            Ok(_) => {
+                let _ = db.finish_job(job_id, "completed", None);
             }
             Err(e) => {
                 let _ = db.append_job_log(job_id, &format!("ERROR: {e}"));
@@ -705,225 +735,144 @@ async fn run_corpus_job(
     state: &Arc<AppState>,
     job_id: i64,
     tts_backend: &str,
-    limit: usize,
-    target_passes: usize,
+    max_rounds: usize, // 0 = endless
     dual_asr: bool,
-) -> anyhow::Result<usize> {
-    // Collect reviewed vocab terms + approved sentences
+) -> anyhow::Result<()> {
+    // Collect reviewed vocab terms + sentence corpus for Markov chains
     let (vocab_terms, all_texts) = {
         let db = state.db.lock().unwrap();
         (db.list_reviewed_vocab()?, db.all_sentence_texts()?)
     };
 
+    if vocab_terms.is_empty() {
+        anyhow::bail!("No reviewed vocab terms — nothing to do");
+    }
+
     let protected_terms: std::collections::HashSet<String> = vocab_terms.iter()
         .map(|v| v.term.to_lowercase())
         .collect();
 
-    // Build Markov chain from all sentence texts
     {
         let db = state.db.lock().unwrap();
         db.append_job_log(job_id, &format!("Building Markov chain from {} sentences...", all_texts.len()))?;
     }
     let chain = MarkovChain::build(&all_texts);
 
-    // Build work items from vocab terms
-    struct WorkItem {
-        term: String,
-        spoken: String,
-        passes_needed: usize,
-    }
-
-    // Count existing passes per term from DB
-    let (existing_passes, existing_total) = {
-        let db = state.db.lock().unwrap();
-        let passes = db.corpus_passes_per_term().unwrap_or_default();
-        let total: usize = passes.values().sum();
-        (passes, total)
-    };
-
-    let mut work: Vec<WorkItem> = Vec::new();
-    let mut total_passes_needed = 0usize;
-    for v in &vocab_terms {
-        let done = existing_passes.get(&v.term).copied().unwrap_or(0);
-        let needed = target_passes.saturating_sub(done);
-        if needed > 0 {
-            total_passes_needed += needed;
-            work.push(WorkItem {
-                term: v.term.clone(),
-                spoken: v.spoken().to_string(),
-                passes_needed: needed,
-            });
-        }
-    }
-    // Shuffle so each run covers different terms first (not always starting at A)
-    {
-        use rand::seq::SliceRandom;
-        let mut rng = rand::rngs::StdRng::from_os_rng();
-        work.shuffle(&mut rng);
-    }
-
-    let passes_to_run = total_passes_needed.min(limit);
-
+    let endless = max_rounds == 0;
     {
         let db = state.db.lock().unwrap();
         db.append_job_log(job_id, &format!(
-            "Corpus: {} vocab terms × {} passes, {} pairs exist, {} needed, running {} (limit {})\nBackend: {tts_backend}",
-            vocab_terms.len(), target_passes, existing_total, total_passes_needed, passes_to_run,
-            if limit == usize::MAX { "∞".to_string() } else { limit.to_string() },
+            "Corpus: {} terms, {} rounds, backend: {tts_backend}",
+            vocab_terms.len(),
+            if endless { "\u{221e}".to_string() } else { max_rounds.to_string() },
         ))?;
     }
 
-    // No more JSONL file — corpus pairs go straight to SQLite
-
-    let mut count = 0usize;
+    let mut rng = rand::rngs::StdRng::from_os_rng();
+    let mut round = 0usize;
+    let mut new_mistakes = 0usize;
+    let mut dup_mistakes = 0usize;
+    let mut correct = 0usize;
+    let mut noisy = 0usize;
     let mut errors = 0usize;
-    let mut items_done = 0usize;
-    let job_start = std::time::Instant::now();
     let mut tts_ms = 0u64;
     let mut asr_ms = 0u64;
-    let mut align_ms = 0u64;
+    let job_start = std::time::Instant::now();
 
-    let update_stats = |state: &Arc<AppState>, job_id: i64, count: usize, items_done: usize, errors: usize,
-                        tts_ms: u64, asr_ms: u64, align_ms: u64, elapsed_ms: u64| {
-        let pairs_per_sec = if elapsed_ms > 0 { count as f64 / (elapsed_ms as f64 / 1000.0) } else { 0.0 };
-        let db = state.db.lock().unwrap();
-        let _ = db.update_job_result(job_id, &serde_json::json!({
-            "pairs_written": count,
-            "pairs_total": existing_total + count,
-            "items_done": items_done,
-            "items_total": work.len(),
-            "errors": errors,
-            "pairs_per_sec": (pairs_per_sec * 10.0).round() / 10.0,
-            "avg_tts_ms": if count > 0 { (tts_ms as f64 / count as f64).round() as u64 } else { 0 },
-            "avg_asr_ms": if count > 0 { (asr_ms as f64 / count as f64).round() as u64 } else { 0 },
-            "avg_align_ms": if count > 0 { (align_ms as f64 / count as f64).round() as u64 } else { 0 },
-        }).to_string());
-    };
-
-    let mut rng = rand::rngs::StdRng::from_os_rng();
-
-    // Get spoken overrides
-    let overrides = {
-        let db = state.db.lock().unwrap();
-        db.get_spoken_overrides().unwrap_or_default()
-    };
-    let _ = &overrides; // suppress unused warning for now
-
-    // Pre-generate all (term, sentence, spoken) tuples
-    struct PassItem {
-        term: String,
-        /// The written sentence (ground truth for alignment)
-        sentence: String,
-        /// The spoken sentence (for TTS)
-        spoken: String,
-        item_idx: usize,
-        pass_idx: usize,
-    }
-    let mut pass_items: Vec<PassItem> = Vec::new();
-    let mut item_idx = 0;
-    for item in &work {
-        if pass_items.len() >= passes_to_run { break; }
-        let passes_this = item.passes_needed.min(passes_to_run - pass_items.len());
-        let written = WrittenTerm(item.term.clone());
-        let spoken_term = SpokenTerm(item.spoken.clone());
-        for pass_idx in 0..passes_this {
-            let (ws, ss) = make_sentence_pair(&chain, &written, &spoken_term, &mut rng);
-            pass_items.push(PassItem { term: item.term.clone(), sentence: ws.0, spoken: ss.0, item_idx, pass_idx });
-        }
-        item_idx += 1;
-    }
-    let total_items = item_idx;
-
-    {
-        let db = state.db.lock().unwrap();
-        let _ = db.append_job_log(job_id, &format!("Generated {} Markov sentences, starting pipeline...", pass_items.len()));
-    }
-
-    // Pipeline: TTS producer fires concurrent requests, consumer does ASR+alignment.
-    // Local TTS is serialized by its own Mutex. Network TTS benefits from parallelism.
+    // Pipeline: TTS producer generates items dynamically, consumer does ASR.
     let is_network_tts = tts_backend == "openai" || tts_backend == "elevenlabs";
     let tts_concurrency: usize = if is_network_tts { 8 } else { 4 };
-    let pass_items = std::sync::Arc::new(pass_items);
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, Result<tts::TtsAudio, anyhow::Error>, u64)>(tts_concurrency * 2);
 
-    // TTS producer: spawn up to TTS_CONCURRENCY tasks at a time
+    struct RoundItem {
+        term: String,
+        sentence: String,
+        spoken: String,
+    }
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(RoundItem, Result<tts::TtsAudio, anyhow::Error>, u64)>(tts_concurrency * 2);
+
+    // TTS producer: dynamically picks random terms, generates sentences, does TTS
     let cancel = state.job_cancel.clone();
     let tts_backend_owned = tts_backend.to_string();
     let state_tts = state.clone();
-    let items_ref = pass_items.clone();
+    let vocab_for_producer: Vec<(String, String)> = vocab_terms.iter()
+        .map(|v| (v.term.clone(), v.spoken().to_string()))
+        .collect();
+    let chain_clone = chain.clone();
     let producer = tokio::spawn(async move {
+        use rand::seq::SliceRandom;
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(tts_concurrency));
-        let mut handles = Vec::new();
+        let mut rng = rand::rngs::StdRng::from_os_rng();
+        let mut produced = 0usize;
 
-        for (idx, pi) in items_ref.iter().enumerate() {
+        loop {
             if cancel.load(Ordering::Relaxed) { break; }
+            if !endless && produced >= max_rounds { break; }
+
             let permit = match semaphore.clone().acquire_owned().await {
                 Ok(p) => p,
                 Err(_) => break,
             };
+
+            // Pick random term
+            let (term, spoken_term) = vocab_for_producer.choose(&mut rng).unwrap().clone();
+            let written = WrittenTerm(term.clone());
+            let spoken_t = SpokenTerm(spoken_term);
+            let (ws, ss) = make_sentence_pair(&chain_clone, &written, &spoken_t, &mut rng);
+
+            let item = RoundItem { term, sentence: ws.0, spoken: ss.0 };
             let tx = tx.clone();
             let state_tts = state_tts.clone();
             let backend = tts_backend_owned.clone();
-            let spoken = pi.spoken.clone();
             let cancel = cancel.clone();
 
-            handles.push(tokio::spawn(async move {
-                if cancel.load(std::sync::atomic::Ordering::Relaxed) { return; }
+            tokio::spawn(async move {
+                if cancel.load(Ordering::Relaxed) { drop(permit); return; }
                 let t0 = std::time::Instant::now();
-                let result = state_tts.tts.generate(&backend, &spoken).await;
+                let result = state_tts.tts.generate(&backend, &item.spoken).await;
                 let ms = t0.elapsed().as_millis() as u64;
-                let _ = tx.send((idx, result, ms)).await;
+                let _ = tx.send((item, result, ms)).await;
                 drop(permit);
-            }));
-        }
+            });
 
-        // Wait for all in-flight TTS tasks to complete
-        for h in handles {
-            let _ = h.await;
+            produced += 1;
         }
     });
 
-    // Consumer: process audio as it arrives from TTS
-    while let Some((idx, tts_result, tts_call_ms)) = rx.recv().await {
-        let pi = &pass_items[idx];
-        let term = &pi.term;
-        let sentence = &pi.sentence;
+    // Consumer: ASR + alignment + upsert
+    while let Some((item, tts_result, tts_call_ms)) = rx.recv().await {
         if state.job_cancel.load(Ordering::Relaxed) {
             let db = state.db.lock().unwrap();
             let _ = db.append_job_log(job_id, "Stopped by user.");
             break;
         }
 
+        round += 1;
         tts_ms += tts_call_ms;
 
         let mut audio = match tts_result {
             Ok(mut a) => { a.normalize(); a }
             Err(e) => {
                 let db = state.db.lock().unwrap();
-                let _ = db.append_job_log(job_id, &format!("TTS FAILED: {e} — {}", &sentence.chars().take(40).collect::<String>()));
+                let _ = db.append_job_log(job_id, &format!("TTS FAILED: {e}"));
                 errors += 1;
-                count += 1;
                 continue;
             }
         };
 
         let full_16k = match tts::resample_to_16k(&audio.samples, audio.sample_rate) {
             Ok(s) => s,
-            Err(_) => { errors += 1; count += 1; continue; }
+            Err(_) => { errors += 1; continue; }
         };
 
-        // ASR + alignment + extraction via shared pipeline
         let t0 = std::time::Instant::now();
-        let written_term = WrittenTerm(pi.term.clone());
-        let written_sentence = WrittenSentence(pi.sentence.clone());
-        let spoken_sentence = SpokenSentence(pi.spoken.clone());
+        let written_term = WrittenTerm(item.term.clone());
+        let written_sentence = WrittenSentence(item.sentence.clone());
+        let spoken_sentence = SpokenSentence(item.spoken.clone());
         let result = match run_corpus_pass(state, &full_16k, &written_sentence, &spoken_sentence, &written_term, &protected_terms, dual_asr).await {
             Ok(r) => r,
             Err(e) => {
-                let db = state.db.lock().unwrap();
-                let _ = db.append_job_log(job_id, &format!("PIPELINE FAILED: {e}"));
+                tracing::error!("corpus pass failed: {e}");
                 errors += 1;
-                count += 1;
                 continue;
             }
         };
@@ -931,51 +880,80 @@ async fn run_corpus_job(
 
         if result.extraction.clean {
             let cons = &result.extraction;
+            let is_mistake = cons.original.to_lowercase() != cons.qwen.to_lowercase();
             let cons_time_json = serde_json::to_string(&[cons.cons_range.0, cons.cons_range.1]).ok();
+            let trim_info_json = serde_json::to_string(&cons.trim_info).ok();
+
             let db = state.db.lock().unwrap();
-            if let Err(e) = db.insert_corpus_pair(
-                &pi.term, &cons.original, &cons.qwen, &cons.parakeet, &pi.sentence, &pi.spoken,
-                Some(&fmt_alignment(&result.orig_alignment)), Some(&fmt_alignment(&result.qwen_alignment)), Some(&fmt_alignment(&result.parakeet_alignment)),
-                cons_time_json.as_deref(),
+            match db.upsert_corpus_pair(
+                &item.term, &cons.original, &cons.qwen, &cons.parakeet,
+                &item.sentence, &item.spoken,
+                Some(&fmt_alignment(&result.orig_alignment)),
+                Some(&fmt_alignment(&result.qwen_alignment)),
+                Some(&fmt_alignment(&result.parakeet_alignment)),
+                cons_time_json.as_deref(), trim_info_json.as_deref(), is_mistake,
             ) {
-                tracing::error!("insert_corpus_pair failed for term '{}': {e}", pi.term);
-                let _ = db.append_job_log(job_id, &format!("DB ERROR: {e}"));
-                errors += 1;
+                Ok((_id, is_new)) => {
+                    if is_mistake {
+                        if is_new {
+                            let _ = db.append_job_log(job_id, &format!("NEW|{}|{}|{}", item.term, cons.original, cons.qwen));
+                            new_mistakes += 1;
+                        } else {
+                            dup_mistakes += 1;
+                        }
+                    } else {
+                        correct += 1;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("upsert_corpus_pair failed for '{}': {e}", item.term);
+                    errors += 1;
+                }
             }
         } else {
-            tracing::debug!("noisy extraction for '{}': orig='{}' qwen='{}' keet='{}'",
-                pi.term, result.extraction.original, result.extraction.qwen, result.extraction.parakeet);
+            noisy += 1;
         }
-        count += 1;
-        items_done = pi.item_idx + 1;
-        if pi.pass_idx == 0 || (count % 10) == 0 {
+
+        // Progress log every 10 rounds
+        if round % 10 == 0 {
+            let elapsed_ms = job_start.elapsed().as_millis() as u64;
+            let rps = if elapsed_ms > 0 { round as f64 / (elapsed_ms as f64 / 1000.0) } else { 0.0 };
             let db = state.db.lock().unwrap();
             let _ = db.append_job_log(job_id, &format!(
-                "[{}/{}] \"{}\" pass {}: \"{}\"",
-                pi.item_idx + 1, total_items, pi.term,
-                pi.pass_idx + 1,
-                &pi.sentence.chars().take(50).collect::<String>(),
+                "[{}{}] {} new, {} dup, {} ok, {} noisy, {} err | {:.1}/s",
+                round, if endless { String::new() } else { format!("/{max_rounds}") },
+                new_mistakes, dup_mistakes, correct, noisy, errors, rps,
             ));
-        }
-
-        if count % 2 == 0 {
-            update_stats(state, job_id, count, items_done, errors, tts_ms, asr_ms, align_ms, job_start.elapsed().as_millis() as u64);
+            let _ = db.update_job_result(job_id, &serde_json::json!({
+                "rounds": round,
+                "new_mistakes": new_mistakes,
+                "dup_mistakes": dup_mistakes,
+                "correct": correct,
+                "noisy": noisy,
+                "errors": errors,
+                "rounds_per_sec": (rps * 10.0).round() / 10.0,
+                "avg_tts_ms": if round > 0 { (tts_ms as f64 / round as f64).round() as u64 } else { 0 },
+                "avg_asr_ms": if round > 0 { (asr_ms as f64 / round as f64).round() as u64 } else { 0 },
+            }).to_string());
         }
     }
 
-    // Wait for producer to finish
     let _ = producer.await;
-    update_stats(state, job_id, count, items_done, errors, tts_ms, asr_ms, align_ms, job_start.elapsed().as_millis() as u64);
 
-    {
-        let db = state.db.lock().unwrap();
-        db.append_job_log(job_id, &format!(
-            "Done: {count} pairs written ({items_done} items, {errors} errors). Total corpus: {} pairs.",
-            existing_total + count
-        ))?;
-    }
+    let db = state.db.lock().unwrap();
+    db.append_job_log(job_id, &format!(
+        "Done: {round} rounds — {new_mistakes} new mistakes, {dup_mistakes} duplicates, {correct} correct, {noisy} noisy, {errors} errors",
+    ))?;
+    let _ = db.update_job_result(job_id, &serde_json::json!({
+        "rounds": round,
+        "new_mistakes": new_mistakes,
+        "dup_mistakes": dup_mistakes,
+        "correct": correct,
+        "noisy": noisy,
+        "errors": errors,
+    }).to_string());
 
-    Ok(count)
+    Ok(())
 }
 
 // ==================== Prepare ====================
@@ -1967,12 +1945,17 @@ pub async fn api_test_term(
 
 pub async fn api_view_corpus(
     State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    let pairs = {
-        let db = state.db.lock().unwrap();
-        db.corpus_pairs_all().map_err(err)?
-    };
-    Ok(Json(serde_json::json!({"pairs": pairs})).into_response())
+    let filter_term = params.get("term").map(|s| s.as_str()).filter(|s| !s.is_empty());
+    let mistakes_only = params.get("mistakes").map(|s| s == "1").unwrap_or(false);
+    let limit: usize = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(50);
+    let offset: usize = params.get("offset").and_then(|s| s.parse().ok()).unwrap_or(0);
+
+    let db = state.db.lock().unwrap();
+    let pairs = db.corpus_pairs_query(filter_term, mistakes_only, limit, offset).map_err(err)?;
+    let stats = db.corpus_stats().map_err(err)?;
+    Ok(Json(serde_json::json!({"pairs": pairs, "stats": stats})).into_response())
 }
 
 pub async fn api_reset_corpus(
@@ -2127,4 +2110,115 @@ pub async fn api_pipeline_status(
         "last_train": last_train,
     }))
     .into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qwen3_asr::ForcedAlignItem;
+
+    fn item(word: &str, start: f64, end: f64) -> ForcedAlignItem {
+        ForcedAlignItem { word: word.to_string(), start_time: start, end_time: end }
+    }
+
+    fn protected(terms: &[&str]) -> std::collections::HashSet<String> {
+        terms.iter().map(|s| s.to_lowercase()).collect()
+    }
+
+    #[test]
+    fn trim_two_lane_strips_matching_edges() {
+        // "reqwest for" vs "requests for" — "for" should be trimmed from right
+        let orig = vec![item("reqwest", 1.0, 1.3), item("for", 1.3, 1.5)];
+        let qwen = vec![item("requests", 1.0, 1.3), item("for", 1.3, 1.5)];
+        let para = vec![]; // single-lane
+
+        let (o, q, p, _ti) = trim_matching_edges(&orig, &qwen, &para, 0.0, 2.0, &protected(&[]));
+        assert_eq!(o, "reqwest");
+        assert_eq!(q, "requests");
+        assert_eq!(p, "");
+    }
+
+    #[test]
+    fn trim_two_lane_strips_both_edges() {
+        // "the reqwest for" vs "the requests for" — trim "the" from left and "for" from right
+        let orig = vec![item("the", 0.5, 0.7), item("reqwest", 1.0, 1.3), item("for", 1.3, 1.5)];
+        let qwen = vec![item("the", 0.5, 0.7), item("requests", 1.0, 1.3), item("for", 1.3, 1.5)];
+        let para = vec![];
+
+        let (o, q, _, _ti) = trim_matching_edges(&orig, &qwen, &para, 0.0, 2.0, &protected(&[]));
+        assert_eq!(o, "reqwest");
+        assert_eq!(q, "requests");
+    }
+
+    #[test]
+    fn trim_protects_vocab_terms() {
+        // "async for" vs "a sync for" — "async" is protected, don't trim even though left doesn't match
+        // Actually test: "for async" vs "for a sync" — "for" matches but "async" is protected on left
+        let orig = vec![item("for", 0.5, 0.7), item("async", 1.0, 1.3), item("stuff", 1.3, 1.5)];
+        let qwen = vec![item("for", 0.5, 0.7), item("a", 1.0, 1.1), item("sync", 1.1, 1.3), item("stuff", 1.3, 1.5)];
+        let para = vec![];
+
+        let (o, q, _, _ti) = trim_matching_edges(&orig, &qwen, &para, 0.0, 2.0, &protected(&["async"]));
+        // "for" on left would match, but next word is "async" which is protected → stop
+        // Wait, "for" itself is not protected, so it should be trimmed. The protection check
+        // is on the word being considered for trimming.
+        // "for" is not protected → trim it. Then "async" is protected → stop.
+        // "stuff" matches on right → trim it.
+        assert_eq!(o, "async");
+        assert_eq!(q, "a sync");
+    }
+
+    #[test]
+    fn trim_three_lane_requires_all_match() {
+        let orig = vec![item("the", 0.5, 0.7), item("JIT", 1.0, 1.3), item("for", 1.3, 1.5)];
+        let qwen = vec![item("the", 0.5, 0.7), item("jiff", 1.0, 1.3), item("for", 1.3, 1.5)];
+        let para = vec![item("the", 0.5, 0.7), item("jit", 1.0, 1.3), item("four", 1.3, 1.5)];
+
+        let (o, q, pk, _ti) = trim_matching_edges(&orig, &qwen, &para, 0.0, 2.0, &protected(&[]));
+        // Left: "the" matches all 3 → trimmed
+        // Right: "for" vs "for" vs "four" → mismatch → not trimmed
+        assert_eq!(o, "JIT for");
+        assert_eq!(q, "jiff for");
+        assert_eq!(pk, "jit four");
+    }
+
+    #[test]
+    fn trim_keeps_at_least_one_word() {
+        // All words match — should keep at least 1 word per lane
+        let orig = vec![item("the", 0.5, 0.7), item("end", 0.7, 1.0)];
+        let qwen = vec![item("the", 0.5, 0.7), item("end", 0.7, 1.0)];
+        let para = vec![];
+
+        let (o, q, _, _ti) = trim_matching_edges(&orig, &qwen, &para, 0.0, 2.0, &protected(&[]));
+        // After left trim of "the", both have ["end"] — len is 1, stop
+        assert_eq!(o, "end");
+        assert_eq!(q, "end");
+    }
+
+    #[test]
+    fn trim_respects_time_range() {
+        // Items outside range should be excluded
+        let orig = vec![item("before", 0.1, 0.3), item("JIT", 1.0, 1.3), item("after", 2.5, 2.8)];
+        let qwen = vec![item("before", 0.1, 0.3), item("jiff", 1.0, 1.3), item("after", 2.5, 2.8)];
+        let para = vec![];
+
+        let (o, q, _, _ti) = trim_matching_edges(&orig, &qwen, &para, 0.5, 2.0, &protected(&[]));
+        assert_eq!(o, "JIT");
+        assert_eq!(q, "jiff");
+    }
+
+    #[test]
+    fn trim_info_records_what_was_removed() {
+        let orig = vec![item("the", 0.5, 0.7), item("reqwest", 1.0, 1.3), item("for", 1.3, 1.5), item("you", 1.5, 1.7)];
+        let qwen = vec![item("the", 0.5, 0.7), item("requests", 1.0, 1.3), item("for", 1.3, 1.5), item("you", 1.5, 1.7)];
+        let para = vec![];
+
+        let (o, q, _, ti) = trim_matching_edges(&orig, &qwen, &para, 0.0, 2.0, &protected(&[]));
+        assert_eq!(o, "reqwest");
+        assert_eq!(q, "requests");
+        assert_eq!(ti.trimmed_left, 1);  // "the"
+        assert_eq!(ti.trimmed_right, 2); // "for", "you"
+        assert_eq!(ti.pre_orig, vec!["the", "reqwest", "for", "you"]);
+        assert_eq!(ti.pre_qwen, vec!["the", "requests", "for", "you"]);
+    }
 }

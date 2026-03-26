@@ -180,6 +180,11 @@ impl Db {
         let _ = conn.execute_batch("ALTER TABLE corpus_pairs ADD COLUMN qwen_alignment TEXT;");
         let _ = conn.execute_batch("ALTER TABLE corpus_pairs ADD COLUMN parakeet_alignment TEXT;");
         let _ = conn.execute_batch("ALTER TABLE corpus_pairs ADD COLUMN cons_time TEXT;");
+        let _ = conn.execute_batch("ALTER TABLE corpus_pairs ADD COLUMN trim_info TEXT;");
+        let _ = conn.execute_batch("ALTER TABLE corpus_pairs ADD COLUMN qwen_full TEXT;");
+        let _ = conn.execute_batch("ALTER TABLE corpus_pairs ADD COLUMN hit_count INTEGER NOT NULL DEFAULT 1;");
+        let _ = conn.execute_batch("ALTER TABLE corpus_pairs ADD COLUMN is_mistake INTEGER NOT NULL DEFAULT 1;");
+        let _ = conn.execute_batch("ALTER TABLE corpus_pairs ADD COLUMN updated_at TEXT;");
 
         // Migration: case-insensitive dedup of vocab terms.
         // For each group of case-insensitive duplicates, keep the row that has
@@ -728,17 +733,46 @@ impl Db {
     /// All sentence texts (for Markov chain building).
     // ==================== CORPUS PAIRS ====================
 
-    pub fn insert_corpus_pair(
+    /// Upsert a corpus pair. Dedup key is (term, original_lower, qwen_lower).
+    /// On conflict: increment hit_count, update alignment data to latest.
+    /// Returns (id, is_new) — is_new=true if this was a first sighting.
+    pub fn upsert_corpus_pair(
         &self, term: &str, original: &str, qwen: &str, parakeet: &str,
         sentence: &str, spoken: &str,
         orig_align: Option<&str>, qwen_align: Option<&str>, parakeet_align: Option<&str>,
-        cons_time: Option<&str>,
-    ) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO corpus_pairs (term, original, qwen, parakeet, sentence, spoken, orig_alignment, qwen_alignment, parakeet_alignment, cons_time, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![term, original, qwen, parakeet, sentence, spoken, orig_align, qwen_align, parakeet_align, cons_time, now_str()],
-        )?;
-        Ok(())
+        cons_time: Option<&str>, trim_info: Option<&str>, is_mistake: bool,
+    ) -> Result<(i64, bool)> {
+        let orig_lower = original.to_lowercase();
+        let qwen_lower = qwen.to_lowercase();
+        let now = now_str();
+
+        // Check if this exact (term, orig_lower, qwen_lower) exists
+        let existing: Option<i64> = self.conn.query_row(
+            "SELECT id FROM corpus_pairs WHERE term = ?1 AND LOWER(original) = ?2 AND LOWER(qwen) = ?3",
+            params![term, orig_lower, qwen_lower],
+            |row| row.get(0),
+        ).ok();
+
+        if let Some(id) = existing {
+            // Increment hit count, update alignment to latest
+            self.conn.execute(
+                "UPDATE corpus_pairs SET hit_count = hit_count + 1, sentence = ?2, spoken = ?3, \
+                 orig_alignment = ?4, qwen_alignment = ?5, parakeet_alignment = ?6, \
+                 cons_time = ?7, trim_info = ?8, updated_at = ?9 WHERE id = ?1",
+                params![id, sentence, spoken, orig_align, qwen_align, parakeet_align, cons_time, trim_info, now],
+            )?;
+            Ok((id, false))
+        } else {
+            self.conn.execute(
+                "INSERT INTO corpus_pairs (term, original, qwen, parakeet, sentence, spoken, \
+                 orig_alignment, qwen_alignment, parakeet_alignment, cons_time, trim_info, \
+                 hit_count, is_mistake, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, ?12, ?13, ?13)",
+                params![term, original, qwen, parakeet, sentence, spoken, orig_align, qwen_align,
+                        parakeet_align, cons_time, trim_info, is_mistake as i32, now],
+            )?;
+            Ok((self.conn.last_insert_rowid(), true))
+        }
     }
 
     /// Count existing passes per term in corpus_pairs.
@@ -759,30 +793,87 @@ impl Db {
         Ok(self.conn.query_row("SELECT COUNT(*) FROM corpus_pairs", [], |r| r.get(0))?)
     }
 
-    pub fn corpus_pairs_all(&self) -> Result<Vec<serde_json::Value>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT term, original, qwen, parakeet, sentence, spoken, orig_alignment, qwen_alignment, parakeet_alignment, cons_time FROM corpus_pairs ORDER BY term COLLATE NOCASE, id"
-        )?;
-        let rows = stmt.query_map([], |row| {
-            let orig_align: Option<String> = row.get(6)?;
-            let qwen_align: Option<String> = row.get(7)?;
-            let para_align: Option<String> = row.get(8)?;
-            let cons_time: Option<String> = row.get(9)?;
+    /// Query corpus pairs with optional filtering. Returns newest-updated first.
+    pub fn corpus_pairs_query(&self, filter_term: Option<&str>, mistakes_only: bool, limit: usize, offset: usize) -> Result<Vec<serde_json::Value>> {
+        let mut sql = String::from(
+            "SELECT id, term, original, qwen, parakeet, sentence, spoken, orig_alignment, qwen_alignment, parakeet_alignment, cons_time, trim_info, hit_count, is_mistake FROM corpus_pairs WHERE 1=1"
+        );
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut param_idx = 1;
+
+        if let Some(t) = filter_term {
+            if !t.is_empty() {
+                sql.push_str(&format!(" AND term = ?{param_idx}"));
+                params_vec.push(Box::new(t.to_string()));
+                param_idx += 1;
+            }
+        }
+        if mistakes_only {
+            sql.push_str(" AND is_mistake = 1");
+        }
+        sql.push_str(" ORDER BY COALESCE(updated_at, created_at) DESC");
+        sql.push_str(&format!(" LIMIT ?{param_idx} OFFSET ?{}", param_idx + 1));
+        params_vec.push(Box::new(limit as i64));
+        params_vec.push(Box::new(offset as i64));
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
+            let orig_align: Option<String> = row.get(7)?;
+            let qwen_align: Option<String> = row.get(8)?;
+            let para_align: Option<String> = row.get(9)?;
+            let cons_time: Option<String> = row.get(10)?;
+            let trim_info: Option<String> = row.get(11)?;
             Ok(serde_json::json!({
-                "term": row.get::<_, String>(0)?,
-                "original": row.get::<_, String>(1)?,
-                "qwen": row.get::<_, String>(2)?,
-                "parakeet": row.get::<_, String>(3)?,
-                "sentence": row.get::<_, String>(4)?,
-                "spoken": row.get::<_, String>(5)?,
+                "id": row.get::<_, i64>(0)?,
+                "term": row.get::<_, String>(1)?,
+                "original": row.get::<_, String>(2)?,
+                "qwen": row.get::<_, String>(3)?,
+                "parakeet": row.get::<_, String>(4)?,
+                "sentence": row.get::<_, String>(5)?,
+                "spoken": row.get::<_, String>(6)?,
                 "clean": true,
                 "orig_alignment": orig_align.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
                 "qwen_alignment": qwen_align.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
                 "parakeet_alignment": para_align.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
                 "cons_time": cons_time.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
+                "trim_info": trim_info.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
+                "hit_count": row.get::<_, i64>(12)?,
+                "is_mistake": row.get::<_, i64>(13)? != 0,
             }))
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Summary stats for corpus: total pairs, mistakes, correct, per-term error rates.
+    pub fn corpus_stats(&self) -> Result<serde_json::Value> {
+        let total: i64 = self.conn.query_row("SELECT COUNT(*) FROM corpus_pairs", [], |r| r.get(0))?;
+        let mistakes: i64 = self.conn.query_row("SELECT COUNT(*) FROM corpus_pairs WHERE is_mistake = 1", [], |r| r.get(0))?;
+        let correct: i64 = self.conn.query_row("SELECT COUNT(*) FROM corpus_pairs WHERE is_mistake = 0", [], |r| r.get(0))?;
+        let total_hits: i64 = self.conn.query_row("SELECT COALESCE(SUM(hit_count), 0) FROM corpus_pairs", [], |r| r.get(0))?;
+
+        // Per-term stats: mistake_count, correct_count, total_hits
+        let mut stmt = self.conn.prepare(
+            "SELECT term, SUM(CASE WHEN is_mistake = 1 THEN 1 ELSE 0 END), \
+             SUM(CASE WHEN is_mistake = 0 THEN 1 ELSE 0 END), \
+             SUM(hit_count) FROM corpus_pairs GROUP BY term ORDER BY term COLLATE NOCASE"
+        )?;
+        let term_stats: Vec<serde_json::Value> = stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "term": row.get::<_, String>(0)?,
+                "mistakes": row.get::<_, i64>(1)?,
+                "correct": row.get::<_, i64>(2)?,
+                "hits": row.get::<_, i64>(3)?,
+            }))
+        })?.filter_map(|r| r.ok()).collect();
+
+        Ok(serde_json::json!({
+            "unique_pairs": total,
+            "unique_mistakes": mistakes,
+            "unique_correct": correct,
+            "total_hits": total_hits,
+            "terms": term_stats,
+        }))
     }
 
     pub fn reset_corpus(&self) -> Result<()> {

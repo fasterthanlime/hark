@@ -2940,35 +2940,55 @@
             const audioRef = useRef(null);
             const animRef = useRef(null);
 
-            const extractedIndices = (items, extracted) => {
-                if (!extracted) return new Set();
-                const words = extracted.split(/\s+/);
+            const rangeIndices = (items, range) => {
+                if (!range || range.length < 2) return new Set();
+                const [lo, hi] = range;
                 const indices = new Set();
-                let wi = 0;
-                for (let i = 0; i < items.length && wi < words.length; i++) {
-                    if (items[i].w.toLowerCase() === words[wi].toLowerCase()) { indices.add(i); wi++; }
+                for (let i = 0; i < items.length; i++) {
+                    if (items[i].e > lo && items[i].s < hi) indices.add(i);
                 }
                 return indices;
             };
-            const origIdx = extractedIndices(origItems, ex.original);
-            const qwenIdx = extractedIndices(qwenItems, ex.qwen);
-            const paraIdx = extractedIndices(paraItems, ex.parakeet);
+            const consRange = ex.cons_range;
+            const origIdx = rangeIndices(origItems, consRange);
+            const qwenIdx = rangeIndices(qwenItems, consRange);
+            const paraIdx = rangeIndices(paraItems, consRange);
 
-            const renderTimeline = (label, items, color, highlighted) => items.length > 0 && (
+            // Build trimmed-word index sets from trim_info
+            const ti = data.trim_info;
+            const trimmedIndices = (preWords, items) => {
+                if (!ti || !preWords || !preWords.length) return new Set();
+                const s = new Set();
+                // Match pre-trim words to timeline items by position within the consensus range
+                const inRange = [];
+                for (let i = 0; i < items.length; i++) {
+                    if (consRange && items[i].e > consRange[0] && items[i].s < consRange[1]) inRange.push(i);
+                }
+                // trimmed_left from start, trimmed_right from end
+                for (let i = 0; i < (ti.trimmed_left || 0) && i < inRange.length; i++) s.add(inRange[i]);
+                for (let i = 0; i < (ti.trimmed_right || 0) && i < inRange.length; i++) s.add(inRange[inRange.length - 1 - i]);
+                return s;
+            };
+            const origTrimmed = trimmedIndices(ti?.pre_orig, origItems);
+            const qwenTrimmed = trimmedIndices(ti?.pre_qwen, qwenItems);
+            const paraTrimmed = trimmedIndices(ti?.pre_para, paraItems);
+
+            const renderTimeline = (label, items, color, highlighted, trimmed) => items.length > 0 && (
                 <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:3}}>
                     <span style={{fontSize:9,color:'var(--text-muted)',width:55,textAlign:'right',flexShrink:0,fontWeight:600}}>{label}</span>
                     <div style={{position:'relative',flex:1,height:22,background:'rgba(255,255,255,0.03)',borderRadius:3,overflow:'hidden'}}>
                         {items.map((a, j) => {
                             const hl = highlighted.has(j);
+                            const tr = trimmed.has(j);
                             const playing = playbackTime >= 0 && playbackTime >= a.s && playbackTime < a.e;
-                            return (<div key={j} title={`${a.w} (${a.s}s–${a.e}s)`} style={{
+                            return (<div key={j} title={`${a.w} (${a.s}s\u2013${a.e}s)${tr ? ' [trimmed]' : ''}`} style={{
                                 position:'absolute', left:pct(a.s), width:pct(Math.max(a.e - a.s, 0.02)), top:2, bottom:2, borderRadius:2,
-                                background: playing ? '#fff3' : hl ? color : 'rgba(255,255,255,0.08)',
-                                border:`1px solid ${playing ? '#fff8' : hl ? color : 'rgba(255,255,255,0.12)'}`,
+                                background: playing ? '#fff3' : tr ? 'rgba(255,100,100,0.15)' : hl ? color : 'rgba(255,255,255,0.08)',
+                                border:`1px solid ${playing ? '#fff8' : tr ? 'rgba(255,100,100,0.4)' : hl ? color : 'rgba(255,255,255,0.12)'}`,
                                 display:'flex', alignItems:'center', justifyContent:'center', overflow:'hidden',
                                 transition: 'background 0.05s',
-                            }}><span style={{fontSize:8, color: playing ? '#fff' : hl ? '#fff' : 'var(--text-muted)', whiteSpace:'nowrap', padding:'0 2px',
-                                fontWeight: playing ? 700 : 400}}>{a.w}</span></div>);
+                            }}><span style={{fontSize:8, color: playing ? '#fff' : tr ? 'rgba(255,100,100,0.6)' : hl ? '#fff' : 'var(--text-muted)', whiteSpace:'nowrap', padding:'0 2px',
+                                fontWeight: playing ? 700 : 400, textDecoration: tr ? 'line-through' : 'none'}}>{a.w}</span></div>);
                         })}
                         {playbackTime >= 0 && <div style={{position:'absolute',left:pct(playbackTime),top:0,bottom:0,width:1,background:'#fff',zIndex:10,pointerEvents:'none'}} />}
                     </div>
@@ -3014,10 +3034,10 @@
                         {data.wav_b64 && <button onClick={playWav} style={{background:'none',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',cursor:'pointer',padding:'2px 10px',fontSize:11}}>&#9654;</button>}
                     </div>
                     <div style={{marginBottom:4}}>
-                        {renderTimeline('Spoken', spokenItems, 'rgba(126,231,135,0.5)', new Set())}
-                        {renderTimeline('Original', origItems, 'rgba(88,166,255,0.6)', origIdx)}
-                        {renderTimeline('Qwen', qwenItems, 'rgba(210,153,34,0.7)', qwenIdx)}
-                        {renderTimeline('Parakeet', paraItems, 'rgba(163,113,247,0.7)', paraIdx)}
+                        {renderTimeline('Spoken', spokenItems, 'rgba(126,231,135,0.5)', new Set(), new Set())}
+                        {renderTimeline('Original', origItems, 'rgba(88,166,255,0.6)', origIdx, origTrimmed)}
+                        {renderTimeline('Qwen', qwenItems, 'rgba(210,153,34,0.7)', qwenIdx, qwenTrimmed)}
+                        {renderTimeline('Parakeet', paraItems, 'rgba(163,113,247,0.7)', paraIdx, paraTrimmed)}
                         <div style={{display:'flex',justifyContent:'space-between',fontSize:9,color:'var(--text-muted)',marginTop:1,paddingLeft:61}}>
                             <span>0s</span><span>{maxTime.toFixed(1)}s</span>
                         </div>
@@ -3049,13 +3069,9 @@
             const [showNoisy, setShowNoisy] = useState(false);
             const dialogRef = useRef(null);
             const [backend, setBackend] = useState('pocket-hq');
-            const [corpusLimit, setCorpusLimit] = useState(200);
-            const [corpusPasses, setCorpusPasses] = useState(25);
+            const [corpusRounds, setCorpusRounds] = useState(100);
+            const [corpusEndless, setCorpusEndless] = useState(false);
             const [dualAsr, setDualAsr] = useState(false);
-            const [totalExamples, setTotalExamples] = useState(12000);
-            const [errorRate, setErrorRate] = useState(50);
-            const [previewData, setPreviewData] = useState(null);
-            const [previewLoading, setPreviewLoading] = useState(false);
             const [liveStats, setLiveStats] = useState(null);
             const [testTerm, setTestTerm] = useState('');
             const [testSuggestions, setTestSuggestions] = useState([]);
@@ -3105,7 +3121,6 @@
             const rt = runningJob?.job_type;
 
             const corpusRunning = rt === 'corpus';
-            const prepareRunning = rt === 'prepare';
             const canGenerate = !isRunning && (status.approved_count > 0 || (status.vocab_reviewed || 0) > 0);
             const inputStyle = {padding:'4px 8px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:4,color:'var(--text)',fontFamily:'Jost,sans-serif',fontSize:13};
 
@@ -3113,6 +3128,81 @@
                 <div className="container">
                     <h2>Corpus</h2>
                     {error && <div className="pipeline-error" style={{marginBottom:12}}>{error}</div>}
+
+                    <div className="card" style={{marginBottom: 16}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                            <h3 style={{margin:0,flex:1}}>Generate Corpus {corpusRunning && <span style={{display:'inline-block',width:10,height:10,borderRadius:'50%',background:'var(--success)',marginLeft:8,animation:'pulse 1s ease-in-out infinite'}} />}</h3>
+                            {(status.corpus_exists || liveStats?.new_mistakes > 0) && <>
+                                <a href="#" style={{color:'var(--success)',fontSize:13,fontWeight:600}} onClick={async e => {
+                                    e.preventDefault();
+                                    const d = await api('/api/pipeline/corpus?mistakes=1&limit=100');
+                                    setCorpusData(d.pairs); setCorpusFilter(''); setExpandedTerm(null);
+                                    dialogRef.current?.showModal();
+                                }}>{liveStats?.new_mistakes ?? status.corpus_lines} mistakes</a>
+                                <a href="#" style={{color:'var(--text-muted)',fontSize:11}} onClick={async e => {
+                                    e.preventDefault();
+                                    if (confirm('Delete all corpus pairs?')) { await api('/api/pipeline/reset-corpus', {method:'POST'}); load(); }
+                                }}>reset</a>
+                            </>}
+                        </div>
+
+                        <div className="stats-grid" style={{marginBottom:12}}>
+                            <div className="stat-card"><div className="value">{status.corpus_lines ?? 0}</div><div className="label">Unique Pairs</div></div>
+                            <div className="stat-card"><div className="value">{status.vocab_reviewed || 0}</div><div className="label">Terms</div></div>
+                            {liveStats && <div className="stat-card"><div className="value">{liveStats.rounds || 0}</div><div className="label">Rounds</div></div>}
+                            {liveStats && <div className="stat-card"><div className="value" style={{color:'var(--error)'}}>{liveStats.new_mistakes || 0}</div><div className="label">New</div></div>}
+                            {liveStats && <div className="stat-card"><div className="value">{liveStats.dup_mistakes || 0}</div><div className="label">Dup</div></div>}
+                            {liveStats && <div className="stat-card"><div className="value" style={{color:'var(--success)'}}>{liveStats.correct || 0}</div><div className="label">Correct</div></div>}
+                            {liveStats?.rounds_per_sec > 0 && <div className="stat-card"><div className="value">{liveStats.rounds_per_sec}</div><div className="label">rounds/s</div></div>}
+                            {liveStats?.avg_tts_ms > 0 && <div className="stat-card"><div className="value" style={{fontSize:16}}>TTS {liveStats.avg_tts_ms}ms / ASR {liveStats.avg_asr_ms}ms</div><div className="label">Avg per round</div></div>}
+                        </div>
+
+                        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                            <label style={{fontSize:12,color:'var(--text-muted)'}}>TTS</label>
+                            <select value={backend} onChange={e => setBackend(e.target.value)} disabled={corpusRunning} style={inputStyle}>
+                                {(status.backends||[]).map(b => <option key={b} value={b}>{b}</option>)}
+                            </select>
+                            <label style={{fontSize:12,color:'var(--text-muted)',marginLeft:8}}>Rounds</label>
+                            <input type="number" value={corpusRounds} onChange={e => setCorpusRounds(+e.target.value || 100)} disabled={corpusRunning || corpusEndless}
+                                style={{...inputStyle,width:60}} />
+                            <label style={{fontSize:11,color:'var(--text-muted)',marginLeft:4,display:'flex',alignItems:'center',gap:3,cursor:'pointer'}}>
+                                <input type="checkbox" checked={corpusEndless} onChange={e => setCorpusEndless(e.target.checked)} disabled={corpusRunning} /> endless
+                            </label>
+                            <label style={{fontSize:11,color:'var(--text-muted)',marginLeft:8,display:'flex',alignItems:'center',gap:3,cursor:'pointer'}}>
+                                <input type="checkbox" checked={dualAsr} onChange={e => setDualAsr(e.target.checked)} disabled={corpusRunning} /> dual ASR
+                            </label>
+                            <div style={{flex:1}} />
+                            {corpusRunning
+                                ? <button className="btn btn-sm" style={{borderColor:'var(--warning)',color:'var(--warning)',background:'rgba(210,153,34,0.1)'}}
+                                    onClick={stopJob} disabled={stopping}>{stopping ? 'Stopping...' : 'Stop'}</button>
+                                : <button className="btn btn-primary btn-sm" disabled={!canGenerate}
+                                    onClick={() => startJob('corpus', {tts_backend: backend, rounds: corpusEndless ? 0 : corpusRounds, dual_asr: dualAsr})}>Generate</button>
+                            }
+                        </div>
+
+                        {jobLog && corpusRunning && (() => {
+                            const lines = jobLog.split('\n');
+                            const mistakes = lines.filter(l => l.startsWith('NEW|')).slice(-10).map(l => {
+                                const [_, term, orig, qwen] = l.split('|');
+                                return {term, orig, qwen};
+                            });
+                            const progress = lines.filter(l => l.match(/^\[/)).slice(-1)[0] || '';
+                            return (<div style={{marginTop:10}}>
+                                {progress && <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:4,fontFamily:'monospace'}}>{progress}</div>}
+                                {mistakes.length > 0 && <div style={{background:'rgba(0,0,0,0.3)',borderRadius:4,padding:6,maxHeight:140,overflowY:'auto'}} ref={logRef}>
+                                    <div style={{fontSize:10,color:'var(--text-muted)',marginBottom:4}}>New unique mistakes:</div>
+                                    {mistakes.map((m, i) => (
+                                        <div key={i} style={{fontSize:12,fontFamily:'monospace',lineHeight:1.5,display:'flex',gap:8}}>
+                                            <span style={{color:'var(--text-muted)',minWidth:60}}>{m.term}</span>
+                                            <span style={{color:'rgba(88,166,255,0.8)'}}>{m.orig}</span>
+                                            <span style={{color:'var(--text-muted)'}}>{'\u2192'}</span>
+                                            <span style={{color:'rgba(210,153,34,0.9)'}}>{m.qwen}</span>
+                                        </div>
+                                    ))}
+                                </div>}
+                            </div>);
+                        })()}
+                    </div>
 
                     <div className="card" style={{marginBottom: 16}}>
                         <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
@@ -3172,7 +3262,7 @@
                                     .catch(e => { setError(e.message); setTestLoading(false); });
                             }}>{testLoading ? 'Running...' : 'Test'}</button>
                         </div>
-                        <div style={{fontSize:10,color:'var(--text-muted)',marginTop:4}}>Run one corpus pass for a term: TTS → ASR → alignment → extraction. Shows exactly what would be stored.</div>
+                        <div style={{fontSize:10,color:'var(--text-muted)',marginTop:4}}>Run one corpus pass for a term: TTS {'\u2192'} ASR {'\u2192'} alignment {'\u2192'} extraction.</div>
                         {testResult && (
                             <div style={{marginTop:12,borderTop:'1px solid var(--border)',paddingTop:12}}>
                                 {testResult.error
@@ -3183,313 +3273,108 @@
                         )}
                     </div>
 
-                    <div className="card" style={{marginBottom: 16}}>
-                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
-                            <h3 style={{margin:0,flex:1}}>1. Generate Corpus {corpusRunning && <span style={{display:'inline-block',width:10,height:10,borderRadius:'50%',background:'var(--success)',marginLeft:8,animation:'pulse 1s ease-in-out infinite'}} />}</h3>
-                            {(status.corpus_exists || liveStats?.pairs_total > 0) && <>
-                                <a href="#" style={{color:'var(--success)',fontSize:13,fontWeight:600}} onClick={async e => {
-                                    e.preventDefault();
-                                    const d = await api('/api/pipeline/corpus');
-                                    setCorpusData(d.pairs); setCorpusFilter(''); setExpandedTerm(null);
-                                    dialogRef.current?.showModal();
-                                }}>{liveStats?.pairs_total ?? status.corpus_lines} pairs</a>
-                                <a href="#" style={{color:'var(--text-muted)',fontSize:11}} onClick={async e => {
-                                    e.preventDefault();
-                                    if (confirm('Delete all corpus pairs?')) { await api('/api/pipeline/reset-corpus', {method:'POST'}); load(); }
-                                }}>reset</a>
-                            </>}
-                        </div>
-
-                        <div className="stats-grid" style={{marginBottom:12}}>
-                            <div className="stat-card"><div className="value">{liveStats?.pairs_total ?? status.corpus_lines ?? 0}</div><div className="label">Total Pairs</div></div>
-                            <div className="stat-card"><div className="value">{status.vocab_reviewed || 0}</div><div className="label">Vocab Reviewed</div></div>
-                            {liveStats && <div className="stat-card"><div className="value">{liveStats.pairs_written}</div><div className="label">This Run</div></div>}
-                            {liveStats && <div className="stat-card"><div className="value">{liveStats.items_done}/{liveStats.items_total}</div><div className="label">Terms</div></div>}
-                            {liveStats?.pairs_per_sec > 0 && <div className="stat-card"><div className="value">{liveStats.pairs_per_sec}</div><div className="label">pairs/sec</div></div>}
-                            {liveStats?.avg_tts_ms > 0 && <div className="stat-card"><div className="value" style={{fontSize:16}}>TTS {liveStats.avg_tts_ms}ms / ASR {liveStats.avg_asr_ms}ms / Align {liveStats.avg_align_ms}ms</div><div className="label">Avg per pair</div></div>}
-                            {liveStats?.errors > 0 && <div className="stat-card"><div className="value" style={{color:'var(--error)'}}>{liveStats.errors}</div><div className="label">Errors</div></div>}
-                        </div>
-
-                        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                            <label style={{fontSize:12,color:'var(--text-muted)'}}>TTS</label>
-                            <select value={backend} onChange={e => setBackend(e.target.value)} disabled={corpusRunning} style={inputStyle}>
-                                {(status.backends||[]).map(b => <option key={b} value={b}>{b}</option>)}
-                            </select>
-                            <label style={{fontSize:12,color:'var(--text-muted)',marginLeft:8}}>Passes</label>
-                            <input type="number" value={corpusPasses} onChange={e => setCorpusPasses(+e.target.value || 25)} disabled={corpusRunning}
-                                style={{...inputStyle,width:50}} />
-                            <label style={{fontSize:12,color:'var(--text-muted)',marginLeft:8}}>Batch</label>
-                            <input type="number" value={corpusLimit} onChange={e => setCorpusLimit(+e.target.value)} disabled={corpusRunning}
-                                style={{...inputStyle,width:60}} />
-                            <label style={{fontSize:11,color:'var(--text-muted)',marginLeft:4,display:'flex',alignItems:'center',gap:3,cursor:'pointer'}}>
-                                <input type="checkbox" checked={corpusLimit === 0} onChange={e => setCorpusLimit(e.target.checked ? 0 : 200)} disabled={corpusRunning} /> endless
-                            </label>
-                            <label style={{fontSize:11,color:'var(--text-muted)',marginLeft:8,display:'flex',alignItems:'center',gap:3,cursor:'pointer'}}>
-                                <input type="checkbox" checked={dualAsr} onChange={e => setDualAsr(e.target.checked)} disabled={corpusRunning} /> dual ASR
-                            </label>
-                            <div style={{flex:1}} />
-                            {corpusRunning
-                                ? <button className="btn btn-sm" style={{borderColor:'var(--warning)',color:'var(--warning)',background:'rgba(210,153,34,0.1)'}}
-                                    onClick={stopJob} disabled={stopping}>{stopping ? 'Stopping...' : 'Stop'}</button>
-                                : <button className="btn btn-primary btn-sm" disabled={!canGenerate}
-                                    onClick={() => startJob('corpus', {tts_backend: backend, limit: corpusLimit, passes: corpusPasses, dual_asr: dualAsr})}>Generate</button>
-                            }
-                        </div>
-
-                        {jobLog && corpusRunning && <pre ref={logRef} className="stage-log" style={{marginTop:10,maxHeight:150}}>{jobLog}</pre>}
-                    </div>
-
-                    <div className="card">
-                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
-                            <h3 style={{margin:0,flex:1}}>2. Prepare Training Data</h3>
-                            {status.training_data_exists && <>
-                                <a href="#" style={{color:'var(--success)',fontSize:13,fontWeight:600}} onClick={async e => {
-                                    e.preventDefault();
-                                    setPreviewData(null); setPreviewLoading(true);
-                                    try {
-                                        const d = await api('/api/pipeline/preview-training');
-                                        setPreviewData(d);
-                                    } catch (err) { setError(err.message); }
-                                    setPreviewLoading(false);
-                                }}>{status.train_count?.toLocaleString()} train / {status.valid_count?.toLocaleString()} valid</a>
-                                <a href="#" style={{color:'var(--text-muted)',fontSize:11}} onClick={async e => {
-                                    e.preventDefault();
-                                    if (confirm('Delete training data?')) {
-                                        await api('/api/pipeline/reset-training', {method:'POST'});
-                                        setPreviewData(null); load();
-                                    }
-                                }}>reset</a>
-                            </>}
-                        </div>
-
-                        <div style={{display:'flex',gap:16,alignItems:'flex-start',marginBottom:8,flexWrap:'wrap'}}>
-                            <div>
-                                <label style={{fontSize:12,color:'var(--text-muted)',display:'block',marginBottom:2}}>Total examples</label>
-                                <input type="number" value={totalExamples} onChange={e => setTotalExamples(parseInt(e.target.value)||12000)} disabled={prepareRunning}
-                                    style={{...inputStyle,width:80}} />
-                                <div style={{fontSize:10,color:'var(--text-muted)',marginTop:2}}>How many training prompts to generate total.</div>
-                            </div>
-                            <div>
-                                <label style={{fontSize:12,color:'var(--text-muted)',display:'block',marginBottom:2}}>Error rate %</label>
-                                <input type="number" value={errorRate} onChange={e => setErrorRate(Math.min(100, Math.max(0, parseInt(e.target.value)||50)))} disabled={prepareRunning}
-                                    min="0" max="100"
-                                    style={{...inputStyle,width:60}} />
-                                <div style={{fontSize:10,color:'var(--text-muted)',marginTop:2}}>% with real ASR errors. Rest are identity (no correction needed).</div>
-                            </div>
-                            <div style={{flex:1,display:'flex',alignItems:'flex-end',justifyContent:'flex-end',paddingTop:16}}>
-                                {prepareRunning
-                                    ? <button className="btn btn-sm" style={{borderColor:'var(--warning)',color:'var(--warning)',background:'rgba(210,153,34,0.1)'}}
-                                        onClick={stopJob} disabled={stopping}>{stopping ? 'Stopping...' : 'Stop'}</button>
-                                    : <button className="btn btn-primary btn-sm" disabled={isRunning || !status.corpus_exists}
-                                        onClick={() => startJob('prepare', {total_examples: totalExamples, error_rate: errorRate / 100})}>Prepare</button>
-                                }
-                            </div>
-                        </div>
-
-                        {status.corpus_exists && !prepareRunning && (
-                            <div style={{fontSize:12,color:'var(--text-muted)',padding:'6px 0',borderTop:'1px solid var(--border)',marginTop:4}}>
-                                {Math.round(totalExamples * errorRate / 100).toLocaleString()} error examples (sampled from {status.corpus_lines?.toLocaleString()} corpus pairs)
-                                {' + '}{Math.round(totalExamples * (100 - errorRate) / 100).toLocaleString()} identity examples
-                                {' = '}{totalExamples.toLocaleString()} total.
-                                {' '}90% train / 10% valid.
-                            </div>
-                        )}
-
-                        {jobLog && prepareRunning && <pre ref={logRef} className="stage-log" style={{marginTop:10,maxHeight:150}}>{jobLog}</pre>}
-
-                        {previewLoading && <div style={{fontSize:12,color:'var(--text-muted)',marginTop:8}}>Loading preview...</div>}
-                        {previewData && (
-                            <div style={{marginTop:12,borderTop:'1px solid var(--border)',paddingTop:12}}>
-                                <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:8}}>
-                                    <b style={{fontSize:13}}>Training Data Preview</b>
-                                    <span style={{fontSize:11,color:'var(--text-muted)'}}>{previewData.correction_count?.toLocaleString()} error + {previewData.identity_count?.toLocaleString()} identity = {previewData.total?.toLocaleString()} total</span>
-                                    <div style={{flex:1}} />
-                                    <button onClick={() => setPreviewData(null)} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:14}}>&times;</button>
-                                </div>
-                                {previewData.correction_samples?.length > 0 && <>
-                                    <div style={{fontSize:11,fontWeight:600,color:'var(--success)',marginBottom:4}}>Error examples (random sample):</div>
-                                    <div style={{maxHeight:200,overflow:'auto',marginBottom:12}}>
-                                        {previewData.correction_samples.map((s, i) => (
-                                            <div key={i} style={{fontSize:11,fontFamily:'monospace',padding:'4px 8px',background:i%2?'transparent':'rgba(255,255,255,0.02)',lineHeight:1.6,whiteSpace:'pre-wrap'}}>
-                                                {s.prompt}
-                                                {'\n'}<span style={{color:'var(--success)'}}>{s.completion}</span>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </>}
-                                {previewData.identity_samples?.length > 0 && <>
-                                    <div style={{fontSize:11,fontWeight:600,color:'var(--accent)',marginBottom:4}}>Identity examples (random sample):</div>
-                                    <div style={{maxHeight:200,overflow:'auto'}}>
-                                        {previewData.identity_samples.map((s, i) => (
-                                            <div key={i} style={{fontSize:11,fontFamily:'monospace',padding:'4px 8px',background:i%2?'transparent':'rgba(255,255,255,0.02)',lineHeight:1.6,whiteSpace:'pre-wrap'}}>
-                                                {s.prompt}
-                                                {'\n'}<span style={{color:'var(--accent)'}}>{s.completion}</span>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </>}
-                            </div>
-                        )}
-                    </div>
-
                     <dialog ref={dialogRef} style={{
                         background:'var(--card-bg)', color:'var(--text)', border:'1px solid var(--border)',
                         borderRadius:12, padding:0, width:'min(90vw, 900px)', maxHeight:'80vh',
                     }} onClick={e => { if (e.target === dialogRef.current) dialogRef.current.close(); }}>
                         <div style={{padding:'16px 20px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', gap:12}}>
                             <h3 style={{margin:0, flex:1}}>Corpus Pairs {corpusData && <span style={{fontWeight:300,fontSize:14,color:'var(--text-muted)'}}>({corpusData.length})</span>}</h3>
-                            <label style={{fontSize:11,color:'var(--text-muted)',display:'flex',alignItems:'center',gap:4,cursor:'pointer'}}>
-                                <input type="checkbox" checked={showNoisy} onChange={e => setShowNoisy(e.target.checked)} /> Show noisy
-                            </label>
-                            <input type="text" placeholder="Filter..." value={corpusFilter} onChange={e => setCorpusFilter(e.target.value)}
+                            <input type="text" placeholder="Filter by term..." value={corpusFilter} onChange={e => setCorpusFilter(e.target.value)}
                                 style={{padding:'4px 10px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text)',fontFamily:'Jost,sans-serif',fontSize:13,width:200}} />
                             <button onClick={() => dialogRef.current.close()} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:18}}>&times;</button>
                         </div>
                         <div style={{overflow:'auto', maxHeight:'calc(80vh - 60px)', padding:'0 20px 16px'}}>
                             {corpusData && (() => {
                                 const f = corpusFilter.toLowerCase();
-                                let filtered = showNoisy ? corpusData : corpusData.filter(p => p.clean !== false);
+                                let filtered = corpusData;
                                 if (f) filtered = filtered.filter(p =>
                                     (p.term||'').toLowerCase().includes(f) ||
-                                    (p.qwen||'').toLowerCase().includes(f) ||
-                                    (p.parakeet||'').toLowerCase().includes(f) ||
-                                    (p.sentence||p.original||'').toLowerCase().includes(f)
+                                    (p.original||'').toLowerCase().includes(f) ||
+                                    (p.qwen||'').toLowerCase().includes(f)
                                 );
-                                // Group by term
-                                const groups = {};
-                                filtered.forEach((p, idx) => {
-                                    const term = p.term || '?';
-                                    if (!groups[term]) groups[term] = [];
-                                    groups[term].push({...p, idx});
-                                });
-                                const terms = Object.keys(groups).sort((a,b) => a.localeCompare(b, undefined, {sensitivity:'base'}));
-                                // Build summary per term: unique ASR outputs with counts
-                                const summaries = {};
-                                terms.forEach(term => {
-                                    const passes = groups[term];
-                                    const asr = {};
-                                    let cleanCount = 0;
-                                    passes.forEach(p => {
-                                        if (p.clean) cleanCount++;
-                                        const origKey = (p.original || term).toLowerCase().replace(/[.,!?]/g,'').trim();
-                                        [p.qwen, p.parakeet].filter(Boolean).forEach(o => {
-                                            const key = o.toLowerCase().replace(/[.,!?]/g,'').trim();
-                                            if (!asr[key]) asr[key] = {text: o, count: 0, correct: key === origKey};
-                                            asr[key].count++;
-                                        });
-                                    });
-                                    summaries[term] = {asr: Object.values(asr).sort((a,b) => b.count - a.count), cleanCount, total: passes.length};
-                                });
-
-                                const renderPassDetail = (p, i) => {
-                                    const tt = p.cons_time || p.term_time;
-                                    const origFrag = p.original || p.term;
-                                    const qwenMatch = p.qwen?.toLowerCase().replace(/[.,!?]/g,'').trim() === origFrag.toLowerCase().replace(/[.,!?]/g,'').trim();
-                                    const paraMatch = p.parakeet?.toLowerCase().replace(/[.,!?]/g,'').trim() === origFrag.toLowerCase().replace(/[.,!?]/g,'').trim();
-                                    return (
-                                        <div key={i} style={{marginBottom:10,padding:'8px 10px',background:'rgba(255,255,255,0.02)',borderRadius:6,fontSize:12,lineHeight:1.6}}>
-                                            {p.sentence && <div style={{color:'var(--text-muted)'}}><b>Sentence:</b> {p.sentence}</div>}
-                                            {p.spoken && p.spoken !== p.sentence && <div style={{color:'var(--text-muted)'}}><b>Spoken:</b> {p.spoken}</div>}
-                                            {tt && <div style={{color:'var(--text-muted)'}}>
-                                                <b>Range:</b> {tt[0]?.toFixed(2)}s – {tt[1]?.toFixed(2)}s
-                                                {p.clean === false && <span style={{marginLeft:8,color:'var(--warning)',fontSize:11}}>noisy</span>}
-                                                {p.clean === true && <span style={{marginLeft:8,color:'var(--success)',fontSize:11}}>clean</span>}
-                                            </div>}
-                                            <div style={{display:'flex',gap:16,marginTop:6,padding:'4px 8px',background:'rgba(0,0,0,0.2)',borderRadius:4,fontFamily:'monospace',fontSize:13}}>
-                                                <div><span style={{color:'rgba(88,166,255,0.7)',fontWeight:600}}>{origFrag}</span></div>
-                                                <div style={{color:'var(--text-muted)'}}>&rarr;</div>
-                                                <div><span style={{color:qwenMatch?'var(--success)':'var(--error)',fontWeight:600}}>{p.qwen||'—'}</span><span style={{color:'var(--text-muted)',fontSize:10,marginLeft:4}}>Q</span></div>
-                                                <div><span style={{color:paraMatch?'var(--success)':'var(--error)',fontWeight:600}}>{p.parakeet||'—'}</span><span style={{color:'var(--text-muted)',fontSize:10,marginLeft:4}}>P</span></div>
-                                            </div>
-                                            {p.qwen_full && <div style={{color:'var(--text-muted)',fontSize:11,marginTop:2}}>Q full: {p.qwen_full}</div>}
-                                            {p.parakeet_full && <div style={{color:'var(--text-muted)',fontSize:11}}>P full: {p.parakeet_full}</div>}
-                                            {p.tri_debug && <details style={{marginTop:4}}>
-                                                <summary style={{color:'var(--text-muted)',fontSize:10,cursor:'pointer'}}>Tri-boundary debug</summary>
-                                                <pre style={{fontSize:9,color:'var(--text-muted)',margin:'4px 0',whiteSpace:'pre-wrap',fontFamily:'monospace'}}>{JSON.stringify(p.tri_debug, null, 2)}</pre>
-                                            </details>}
-                                            {(p.orig_alignment || p.qwen_alignment) && (() => {
-                                                const allItems = [...(p.orig_alignment||[]),...(p.qwen_alignment||[]),...(p.parakeet_alignment||[])];
-                                                const maxTime = allItems.length ? Math.max(...allItems.map(a=>a.e)) : 1;
-                                                const pct = t => (t/maxTime*100).toFixed(2)+'%';
-                                                // Build sets of extracted word indices by matching the extracted text
-                                                // against the alignment items sequentially
-                                                const extractedIndices = (items, extracted) => {
-                                                    if (!extracted) return new Set();
-                                                    const words = extracted.split(/\s+/);
-                                                    const indices = new Set();
-                                                    let wi = 0;
-                                                    for (let i = 0; i < items.length && wi < words.length; i++) {
-                                                        if (items[i].w.toLowerCase() === words[wi].toLowerCase()) {
-                                                            indices.add(i);
-                                                            wi++;
-                                                        }
-                                                    }
-                                                    return indices;
-                                                };
-                                                const origIdx = extractedIndices(p.orig_alignment||[], p.original);
-                                                const qwenIdx = extractedIndices(p.qwen_alignment||[], p.qwen);
-                                                const paraIdx = extractedIndices(p.parakeet_alignment||[], p.parakeet);
-
-                                                const renderTimeline = (label, items, color, highlighted) => items && (
-                                                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:3}}>
-                                                        <span style={{fontSize:9,color:'var(--text-muted)',width:55,textAlign:'right',flexShrink:0,fontWeight:600}}>{label}</span>
-                                                        <div style={{position:'relative',flex:1,height:22,background:'rgba(255,255,255,0.03)',borderRadius:3,overflow:'hidden'}}>
-                                                            {items.map((a,j) => {
-                                                                const hl = highlighted.has(j);
-                                                                return (<div key={j} title={`${a.w} (${a.s}s–${a.e}s)`} style={{
-                                                                    position:'absolute',left:pct(a.s),width:pct(Math.max(a.e-a.s,0.02)),top:2,bottom:2,borderRadius:2,
-                                                                    background:hl?color:'rgba(255,255,255,0.08)',border:`1px solid ${hl?color:'rgba(255,255,255,0.12)'}`,
-                                                                    display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden',
-                                                                }}><span style={{fontSize:8,color:hl?'#fff':'var(--text-muted)',whiteSpace:'nowrap',padding:'0 2px'}}>{a.w}</span></div>);
-                                                            })}
-                                                        </div>
-                                                    </div>
-                                                );
-                                                return (
-                                                    <div style={{marginTop:6}}>
-                                                        {renderTimeline('Original', p.orig_alignment, 'rgba(88,166,255,0.6)', origIdx)}
-                                                        {renderTimeline('Qwen', p.qwen_alignment, 'rgba(210,153,34,0.7)', qwenIdx)}
-                                                        {renderTimeline('Parakeet', p.parakeet_alignment, 'rgba(163,113,247,0.7)', paraIdx)}
-                                                        <div style={{display:'flex',justifyContent:'space-between',fontSize:9,color:'var(--text-muted)',marginTop:1,paddingLeft:61}}>
-                                                            <span>0s</span><span>{maxTime.toFixed(1)}s</span>
-                                                        </div>
-                                                    </div>
-                                                );
-                                            })()}
-                                        </div>
-                                    );
-                                };
 
                                 return (
                                     <div>
-                                        {terms.map(term => {
-                                            const s = summaries[term];
-                                            const expanded = expandedTerm === term;
+                                        {filtered.map((p, i) => {
+                                            const expanded = expandedTerm === p.id;
+                                            const tt = p.cons_time;
                                             return (
-                                                <div key={term} style={{marginBottom:2,borderBottom:'1px solid var(--border)'}}>
-                                                    <div onClick={() => setExpandedTerm(expanded ? null : term)}
+                                                <div key={p.id || i} style={{borderBottom:'1px solid var(--border)'}}>
+                                                    <div onClick={() => setExpandedTerm(expanded ? null : p.id)}
                                                         style={{display:'flex',alignItems:'center',gap:10,padding:'8px 4px',cursor:'pointer',userSelect:'none'}}>
-                                                        <span style={{fontSize:11,color:'var(--text-muted)',width:12}}>{expanded ? '▼' : '▶'}</span>
-                                                        <span style={{fontWeight:700,fontSize:14,minWidth:100}}>{term}</span>
-                                                        <span style={{color:'var(--text-muted)',fontSize:11}}>{s.total} passes{s.cleanCount < s.total ? `, ${s.cleanCount} clean` : ''}</span>
-                                                        <div style={{flex:1,display:'flex',gap:8,flexWrap:'wrap',justifyContent:'flex-end'}}>
-                                                            {s.asr.map((o,i) => (
-                                                                <span key={i} style={{whiteSpace:'nowrap',fontSize:12}}>
-                                                                    <span style={{color:o.correct?'var(--success)':'var(--error)'}}>{o.text}</span>
-                                                                    <span className={`count-badge ${o.correct?'correct':'wrong'}`}>{o.count}</span>
-                                                                </span>
-                                                            ))}
-                                                        </div>
+                                                        <span style={{fontSize:11,color:'var(--text-muted)',width:12}}>{expanded ? '\u25BC' : '\u25B6'}</span>
+                                                        <span style={{fontWeight:600,fontSize:12,minWidth:80,color:'var(--text-muted)'}}>{p.term}</span>
+                                                        <span style={{color:'rgba(88,166,255,0.8)',fontFamily:'monospace',fontSize:13}}>{p.original}</span>
+                                                        <span style={{color:'var(--text-muted)'}}>{'\u2192'}</span>
+                                                        <span style={{color: p.is_mistake ? 'rgba(210,153,34,0.9)' : 'var(--success)', fontFamily:'monospace',fontSize:13}}>{p.qwen}</span>
+                                                        <div style={{flex:1}} />
+                                                        <span style={{fontSize:11,color:'var(--text-muted)',fontFamily:'monospace'}}>{'\u00d7'}{p.hit_count}</span>
                                                     </div>
                                                     {expanded && (
-                                                        <div style={{padding:'4px 4px 12px 26px'}}>
-                                                            {groups[term].map((p,i) => renderPassDetail(p, i))}
+                                                        <div style={{padding:'4px 4px 12px 26px',fontSize:12,lineHeight:1.6}}>
+                                                            {p.sentence && <div style={{color:'var(--text-muted)'}}><b>Sentence:</b> {p.sentence}</div>}
+                                                            {p.spoken && p.spoken !== p.sentence && <div style={{color:'var(--text-muted)'}}><b>Spoken:</b> {p.spoken}</div>}
+                                                            {(p.orig_alignment || p.qwen_alignment) && (() => {
+                                                                const allItems = [...(p.orig_alignment||[]),...(p.qwen_alignment||[]),...(p.parakeet_alignment||[])];
+                                                                const maxTime = allItems.length ? Math.max(...allItems.map(a=>a.e)) : 1;
+                                                                const pct = t => (t/maxTime*100).toFixed(2)+'%';
+                                                                const ti = p.trim_info;
+                                                                const tl = ti?.trimmed_left || 0;
+                                                                const tr = ti?.trimmed_right || 0;
+                                                                const classify = (items) => {
+                                                                    if (!tt) return {kept: new Set(), trimmed: new Set()};
+                                                                    const inRange = [];
+                                                                    for (let j=0;j<items.length;j++) if (items[j].e>tt[0]&&items[j].s<tt[1]) inRange.push(j);
+                                                                    const kept = new Set(), trimmed = new Set();
+                                                                    for (let j=0;j<inRange.length;j++) {
+                                                                        if (j < tl || j >= inRange.length - tr) trimmed.add(inRange[j]);
+                                                                        else kept.add(inRange[j]);
+                                                                    }
+                                                                    return {kept, trimmed};
+                                                                };
+                                                                const renderTL = (label, items, color, fullText) => items && items.length > 0 && (() => {
+                                                                    const {kept, trimmed} = classify(items);
+                                                                    return (<div style={{marginBottom:4}}>
+                                                                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:1}}>
+                                                                        <span style={{fontSize:9,color:'var(--text-muted)',width:55,textAlign:'right',flexShrink:0,fontWeight:600}}>{label}</span>
+                                                                        <span style={{fontSize:10,color:color,opacity:0.7,fontFamily:'monospace',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{fullText}</span>
+                                                                    </div>
+                                                                    <div style={{display:'flex',alignItems:'center',gap:6}}>
+                                                                        <span style={{width:55,flexShrink:0}} />
+                                                                        <div style={{position:'relative',flex:1,height:22,background:'rgba(255,255,255,0.03)',borderRadius:3,overflow:'hidden'}}>
+                                                                            {items.map((a,j) => {
+                                                                                const isKept = kept.has(j);
+                                                                                const isTrimmed = trimmed.has(j);
+                                                                                return (<div key={j} title={`${a.w} (${a.s.toFixed(2)}s\u2013${a.e.toFixed(2)}s)${isTrimmed?' [trimmed]':''}`} style={{
+                                                                                    position:'absolute',left:pct(a.s),width:pct(Math.max(a.e-a.s,0.02)),top:2,bottom:2,borderRadius:2,
+                                                                                    background: isKept ? color : isTrimmed ? color.replace(/[\d.]+\)$/,'0.2)') : 'rgba(255,255,255,0.08)',
+                                                                                    border:`1px solid ${isKept ? color : isTrimmed ? color.replace(/[\d.]+\)$/,'0.3)') : 'rgba(255,255,255,0.12)'}`,
+                                                                                    display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden',
+                                                                                }}><span style={{fontSize:8,color: isKept?'#fff':isTrimmed?'rgba(255,255,255,0.4)':'var(--text-muted)',whiteSpace:'nowrap',padding:'0 2px',
+                                                                                    textDecoration:isTrimmed?'line-through':'none'}}>{a.w}</span></div>);
+                                                                            })}
+                                                                        </div>
+                                                                    </div>
+                                                                    </div>);
+                                                                })();
+                                                                const origText = (p.orig_alignment||[]).map(a=>a.w).join(' ');
+                                                                const qwenText = (p.qwen_alignment||[]).map(a=>a.w).join(' ');
+                                                                const paraText = (p.parakeet_alignment||[]).map(a=>a.w).join(' ');
+                                                                return (<div style={{marginTop:6}}>
+                                                                    {renderTL('Original', p.orig_alignment, 'rgba(88,166,255,0.6)', origText)}
+                                                                    {renderTL('Qwen', p.qwen_alignment, 'rgba(210,153,34,0.7)', qwenText)}
+                                                                    {renderTL('Parakeet', p.parakeet_alignment, 'rgba(163,113,247,0.7)', paraText)}
+                                                                    <div style={{display:'flex',justifyContent:'space-between',fontSize:9,color:'var(--text-muted)',marginTop:1,paddingLeft:61}}>
+                                                                        <span>0s</span><span>{maxTime.toFixed(1)}s</span>
+                                                                    </div>
+                                                                </div>);
+                                                            })()}
                                                         </div>
                                                     )}
                                                 </div>
                                             );
                                         })}
-                                        <div className="corpus-total">{filtered.length} pairs across {terms.length} terms</div>
+                                        <div style={{textAlign:'center',padding:8,color:'var(--text-muted)',fontSize:12}}>{filtered.length} pairs shown</div>
                                     </div>
                                 );
                             })()}
@@ -3511,6 +3396,11 @@
             const [layers, setLayers] = useState(8);
             const [patience, setPatience] = useState(10);
             const [stepsPerEval, setStepsPerEval] = useState(500);
+            const [totalExamples, setTotalExamples] = useState(12000);
+            const [errorRate, setErrorRate] = useState(50);
+            const [previewData, setPreviewData] = useState(null);
+            const [previewLoading, setPreviewLoading] = useState(false);
+            const [stopping, setStopping] = useState(false);
             const pollRef = useRef(null);
             const logRef = useRef(null);
 
@@ -3531,15 +3421,15 @@
                 return () => clearInterval(pollRef.current);
             }, [runningJob?.id]);
 
-            const startJob = async (config) => {
-                setError(null);
+            const startJob = async (type, config) => {
+                setError(null); setJobLog('');
                 try {
-                    const res = await api('/api/jobs/train', {method: 'POST', body: JSON.stringify(config)});
-                    if (res.job_id) setRunningJob({id: res.job_id, job_type: 'train'});
+                    const res = await api(`/api/jobs/${type}`, {method: 'POST', body: JSON.stringify(config)});
+                    if (res.job_id) setRunningJob({id: res.job_id, job_type: type});
                     else if (res.error) setError(res.error);
                 } catch (e) { setError(e.message); }
             };
-            const stopJob = async () => { try { await api('/api/jobs/stop', {method: 'POST'}); } catch (e) {} };
+            const stopJob = async () => { setStopping(true); try { await api('/api/jobs/stop', {method: 'POST'}); } catch (e) {} setStopping(false); };
 
             if (!status) return <div className="container"><p>Loading...</p></div>;
             const isRunning = !!runningJob;
@@ -3553,10 +3443,86 @@
             const paramRow = {display:'flex',gap:12,alignItems:'flex-start',marginBottom:12};
             const paramLabel = {fontSize:12,color:'var(--text-muted)',fontWeight:600,minWidth:90,paddingTop:6};
 
+            const rt = runningJob?.job_type;
+            const prepareRunning = rt === 'prepare';
+
             return (
                 <div className="container">
                     <h2>Train</h2>
                     {error && <div className="pipeline-error" style={{marginBottom:12}}>{error}</div>}
+
+                    <div className="card" style={{marginBottom:16}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                            <h3 style={{margin:0,flex:1}}>1. Prepare Training Data</h3>
+                            {status.training_data_exists && <>
+                                <a href="#" style={{color:'var(--success)',fontSize:13,fontWeight:600}} onClick={async e => {
+                                    e.preventDefault();
+                                    setPreviewData(null); setPreviewLoading(true);
+                                    try { setPreviewData(await api('/api/pipeline/preview-training')); } catch (err) { setError(err.message); }
+                                    setPreviewLoading(false);
+                                }}>{status.train_count?.toLocaleString()} train / {status.valid_count?.toLocaleString()} valid</a>
+                                <a href="#" style={{color:'var(--text-muted)',fontSize:11}} onClick={async e => {
+                                    e.preventDefault();
+                                    if (confirm('Delete training data?')) { await api('/api/pipeline/reset-training', {method:'POST'}); setPreviewData(null); load(); }
+                                }}>reset</a>
+                            </>}
+                        </div>
+                        <div style={{display:'flex',gap:16,alignItems:'flex-start',marginBottom:8,flexWrap:'wrap'}}>
+                            <div>
+                                <label style={{fontSize:12,color:'var(--text-muted)',display:'block',marginBottom:2}}>Total examples</label>
+                                <input type="number" value={totalExamples} onChange={e => setTotalExamples(parseInt(e.target.value)||12000)} disabled={prepareRunning} style={{...inputStyle,width:80}} />
+                                <div style={{fontSize:10,color:'var(--text-muted)',marginTop:2}}>How many training prompts to generate total.</div>
+                            </div>
+                            <div>
+                                <label style={{fontSize:12,color:'var(--text-muted)',display:'block',marginBottom:2}}>Error rate %</label>
+                                <input type="number" value={errorRate} onChange={e => setErrorRate(Math.min(100,Math.max(0,parseInt(e.target.value)||50)))} disabled={prepareRunning} min="0" max="100" style={{...inputStyle,width:60}} />
+                                <div style={{fontSize:10,color:'var(--text-muted)',marginTop:2}}>% with real ASR errors. Rest are identity.</div>
+                            </div>
+                            <div style={{flex:1,display:'flex',alignItems:'flex-end',justifyContent:'flex-end',paddingTop:16}}>
+                                {prepareRunning
+                                    ? <button className="btn btn-sm" style={{borderColor:'var(--warning)',color:'var(--warning)',background:'rgba(210,153,34,0.1)'}} onClick={stopJob} disabled={stopping}>{stopping ? 'Stopping...' : 'Stop'}</button>
+                                    : <button className="btn btn-primary btn-sm" disabled={isRunning || !status.corpus_exists} onClick={() => startJob('prepare', {total_examples: totalExamples, error_rate: errorRate / 100})}>Prepare</button>
+                                }
+                            </div>
+                        </div>
+                        {status.corpus_exists && !prepareRunning && (
+                            <div style={{fontSize:12,color:'var(--text-muted)',padding:'6px 0',borderTop:'1px solid var(--border)',marginTop:4}}>
+                                {Math.round(totalExamples * errorRate / 100).toLocaleString()} error + {Math.round(totalExamples * (100 - errorRate) / 100).toLocaleString()} identity = {totalExamples.toLocaleString()} total. 90% train / 10% valid.
+                            </div>
+                        )}
+                        {jobLog && prepareRunning && <pre ref={logRef} className="stage-log" style={{marginTop:10,maxHeight:150}}>{jobLog}</pre>}
+                        {previewLoading && <div style={{fontSize:12,color:'var(--text-muted)',marginTop:8}}>Loading preview...</div>}
+                        {previewData && (
+                            <div style={{marginTop:12,borderTop:'1px solid var(--border)',paddingTop:12}}>
+                                <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:8}}>
+                                    <b style={{fontSize:13}}>Training Data Preview</b>
+                                    <span style={{fontSize:11,color:'var(--text-muted)'}}>{previewData.correction_count?.toLocaleString()} error + {previewData.identity_count?.toLocaleString()} identity = {previewData.total?.toLocaleString()} total</span>
+                                    <div style={{flex:1}} />
+                                    <button onClick={() => setPreviewData(null)} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:14}}>&times;</button>
+                                </div>
+                                {previewData.correction_samples?.length > 0 && <>
+                                    <div style={{fontSize:11,fontWeight:600,color:'var(--success)',marginBottom:4}}>Error examples:</div>
+                                    <div style={{maxHeight:200,overflow:'auto',marginBottom:12}}>
+                                        {previewData.correction_samples.map((s, i) => (
+                                            <div key={i} style={{fontSize:11,fontFamily:'monospace',padding:'4px 8px',background:i%2?'transparent':'rgba(255,255,255,0.02)',lineHeight:1.6,whiteSpace:'pre-wrap'}}>
+                                                {s.prompt}{'\n'}<span style={{color:'var(--success)'}}>{s.completion}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </>}
+                                {previewData.identity_samples?.length > 0 && <>
+                                    <div style={{fontSize:11,fontWeight:600,color:'var(--accent)',marginBottom:4}}>Identity examples:</div>
+                                    <div style={{maxHeight:200,overflow:'auto'}}>
+                                        {previewData.identity_samples.map((s, i) => (
+                                            <div key={i} style={{fontSize:11,fontFamily:'monospace',padding:'4px 8px',background:i%2?'transparent':'rgba(255,255,255,0.02)',lineHeight:1.6,whiteSpace:'pre-wrap'}}>
+                                                {s.prompt}{'\n'}<span style={{color:'var(--accent)'}}>{s.completion}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </>}
+                            </div>
+                        )}
+                    </div>
 
                     {status.adapters_exist && (
                         <div className="stats-grid" style={{marginBottom:16}}>
@@ -3622,11 +3588,11 @@
 
                         <div style={{display:'flex',gap:8,alignItems:'center',marginTop:8,borderTop:'1px solid var(--border)',paddingTop:12}}>
                             <div style={{flex:1}} />
-                            {!status.training_data_exists && <span style={{fontSize:12,color:'var(--text-muted)'}}>Prepare training data first on the Corpus tab.</span>}
+                            {!status.training_data_exists && <span style={{fontSize:12,color:'var(--text-muted)'}}>Prepare training data first (see above).</span>}
                             {isRunning
                                 ? <button className="btn" style={{borderColor:'var(--warning)',color:'var(--warning)',background:'rgba(210,153,34,0.1)'}} onClick={stopJob}>Stop</button>
                                 : <button className="btn btn-primary" disabled={!status.training_data_exists}
-                                    onClick={() => startJob({model, iters, batch_size: batch, num_layers: layers, patience, steps_per_eval: stepsPerEval})}>Train</button>
+                                    onClick={() => startJob('train', {model, iters, batch_size: batch, num_layers: layers, patience, steps_per_eval: stepsPerEval})}>Train</button>
                             }
                         </div>
                         {jobLog && <pre ref={logRef} className="stage-log" style={{marginTop:12,maxHeight:400}}>{jobLog}</pre>}

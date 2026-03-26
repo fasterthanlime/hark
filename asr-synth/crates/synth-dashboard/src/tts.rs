@@ -170,25 +170,29 @@ impl LocalTtsBackend for PocketTtsBackend {
     }
 }
 
-/// Pool of pocket-tts workers sharing model weights via Arc.
-/// Each worker has its own voice_state. generate() picks a free worker.
+/// Pool of fully isolated pocket-tts workers.
+/// Each worker has its own TTSModel on its own Metal device (separate command queue +
+/// buffer pool), so concurrent calls are truly isolated — no shared GPU state.
 struct PocketTtsPool {
-    model: std::sync::Arc<pocket_tts::TTSModel>,
-    workers: Vec<Mutex<pocket_tts::ModelState>>,
+    workers: Vec<Mutex<PocketTtsWorker>>,
     sample_rate: u32,
+}
+
+struct PocketTtsWorker {
+    model: pocket_tts::TTSModel,
+    voice_state: pocket_tts::ModelState,
 }
 
 impl LocalTtsBackend for PocketTtsPool {
     fn name(&self) -> &'static str { "pocket-hq" }
 
     fn generate(&self, text: &str) -> Result<TtsAudio> {
-        // Try to find an available worker, otherwise block on the first one.
-        // Each worker has its own ModelState; model weights are shared read-only.
-        let voice_state = self.workers.iter()
+        // Try to find a free worker, otherwise block on the first one.
+        let worker = self.workers.iter()
             .find_map(|w| w.try_lock().ok())
             .unwrap_or_else(|| self.workers[0].lock().unwrap());
 
-        let audio = self.model.generate(text, &voice_state)
+        let audio = worker.model.generate(text, &worker.voice_state)
             .map_err(|e| anyhow::anyhow!("pocket-tts-hq: {e}"))?;
         let samples: Vec<f32> = audio.flatten_all()?.to_vec1()?;
         Ok(TtsAudio { samples, sample_rate: self.sample_rate })
@@ -441,9 +445,10 @@ fn decode_wav(wav_bytes: &[u8]) -> Result<TtsAudio> {
 
 // ==================== Manager ====================
 
-/// Holds all TTS backends. Local backends handle their own concurrency.
+/// Holds all TTS backends. Local backends are Arc-wrapped so they can be
+/// sent into spawn_blocking without blocking the async runtime.
 pub struct TtsManager {
-    local: Vec<Box<dyn LocalTtsBackend>>,
+    local: Vec<std::sync::Arc<dyn LocalTtsBackend>>,
     remote: Vec<Box<dyn RemoteTtsBackend>>,
 }
 
@@ -456,11 +461,15 @@ impl TtsManager {
         names
     }
 
-    /// Generate audio. Local backends run synchronously, remote backends run async.
+    /// Generate audio. Local backends run in spawn_blocking, remote backends run async.
     pub async fn generate(&self, backend_name: &str, text: &str) -> Result<TtsAudio> {
         for local in &self.local {
             if local.name() == backend_name {
-                return local.generate(text);
+                let local = local.clone();
+                let text = text.to_string();
+                return tokio::task::spawn_blocking(move || local.generate(&text))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("spawn_blocking: {e}"))?;
             }
         }
 
@@ -476,14 +485,14 @@ impl TtsManager {
 
 /// Build a TtsManager with all available backends
 pub fn init(voice_path: &str, _kokoro_voice: &str, tts_workers: usize) -> TtsManager {
-    let mut local: Vec<Box<dyn LocalTtsBackend>> = Vec::new();
+    let mut local: Vec<std::sync::Arc<dyn LocalTtsBackend>> = Vec::new();
     let mut remote: Vec<Box<dyn RemoteTtsBackend>> = Vec::new();
 
-    // Pocket-tts HQ pool — N workers sharing one model
+    // Pocket-tts HQ pool — N isolated Metal workers
     match PocketTtsPool::load(voice_path, tts_workers) {
         Ok(pool) => {
             eprintln!("pocket-tts-hq ready ({tts_workers} workers, {} Hz)", pool.sample_rate);
-            local.push(Box::new(pool));
+            local.push(std::sync::Arc::new(pool));
         }
         Err(e) => eprintln!("pocket-tts-hq not available: {e}"),
     }
@@ -531,22 +540,32 @@ impl PocketTtsBackend {
 
 impl PocketTtsPool {
     fn load(voice_path: &str, num_workers: usize) -> Result<Self> {
-        eprintln!("Loading pocket-tts (full precision)...");
-        let model = pocket_tts::TTSModel::load("b6369a24")?;
-        let voice_state = model
-            .get_voice_state(voice_path)
-            .map_err(|e| anyhow::anyhow!("loading voice '{voice_path}': {e}"))?;
-        let sample_rate = model.sample_rate as u32;
+        let num_workers = num_workers.max(1);
+        eprintln!("Loading pocket-tts ({num_workers} workers, each on its own Metal device)...");
 
-        let workers: Vec<Mutex<pocket_tts::ModelState>> = (0..num_workers)
-            .map(|_| Mutex::new(voice_state.clone()))
-            .collect();
+        let mut workers = Vec::with_capacity(num_workers);
+        let mut sample_rate = 0u32;
 
-        Ok(Self {
-            model: std::sync::Arc::new(model),
-            workers,
-            sample_rate,
-        })
+        for i in 0..num_workers {
+            let device = candle_core::Device::new_metal(0)
+                .map_err(|e| anyhow::anyhow!("Metal device init for worker {i}: {e}"))?;
+            let model = pocket_tts::TTSModel::load_with_params_device(
+                "b6369a24",
+                pocket_tts::config::defaults::TEMPERATURE,
+                pocket_tts::config::defaults::LSD_DECODE_STEPS,
+                pocket_tts::config::defaults::EOS_THRESHOLD,
+                None,
+                &device,
+            )?;
+            let voice_state = model
+                .get_voice_state(voice_path)
+                .map_err(|e| anyhow::anyhow!("worker {i} voice '{voice_path}': {e}"))?;
+            sample_rate = model.sample_rate as u32;
+            eprintln!("  worker {i} ready ({sample_rate} Hz, Metal device {:?})", device);
+            workers.push(Mutex::new(PocketTtsWorker { model, voice_state }));
+        }
+
+        Ok(Self { workers, sample_rate })
     }
 }
 
