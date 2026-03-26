@@ -3287,11 +3287,17 @@
 
                     <dialog ref={dialogRef} style={{
                         background:'var(--card-bg)', color:'var(--text)', border:'1px solid var(--border)',
-                        borderRadius:12, padding:0, width:'min(90vw, 900px)', maxHeight:'80vh',
+                        borderRadius:12, padding:0, width:'min(90vw, 900px)', height:'90vh',
+                        display:'flex', flexDirection:'column',
                     }} onClick={e => { if (e.target === dialogRef.current) dialogRef.current.close(); }}>
-                        <div style={{padding:'16px 20px', borderBottom:'1px solid var(--border)'}}>
+                        <div style={{padding:'16px 20px', borderBottom:'1px solid var(--border)', flexShrink:0}}>
                             <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:10}}>
                                 <h3 style={{margin:0, flex:1}}>Corpus Pairs {corpusData && <span style={{fontWeight:300,fontSize:14,color:'var(--text-muted)'}}>({corpusData.length})</span>}</h3>
+                                <button title="Refresh" onClick={async () => {
+                                    const q = reviewTab === 'unreviewed' ? 'mistakes=1&review=unreviewed' : `review=${reviewTab}`;
+                                    const d = await api(`/api/pipeline/corpus?${q}&limit=200`);
+                                    setCorpusData(d.pairs);
+                                }} style={{background:'none',border:'1px solid var(--border)',borderRadius:4,color:'var(--text-muted)',cursor:'pointer',padding:'2px 8px',fontSize:13}}>{'\u21BB'}</button>
                                 <input type="text" placeholder="Filter by term..." value={corpusFilter} onChange={e => setCorpusFilter(e.target.value)}
                                     style={{padding:'4px 10px',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text)',fontFamily:'Jost,sans-serif',fontSize:13,width:200}} />
                                 <button onClick={() => dialogRef.current.close()} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:18}}>&times;</button>
@@ -3313,7 +3319,7 @@
                                 })}
                             </div>
                         </div>
-                        <div style={{overflow:'auto', maxHeight:'calc(80vh - 60px)', padding:'0 20px 16px'}}>
+                        <div style={{overflow:'auto', flex:1, padding:'0 20px 16px'}}>
                             {corpusData && (() => {
                                 const f = corpusFilter.toLowerCase();
                                 let filtered = corpusData;
