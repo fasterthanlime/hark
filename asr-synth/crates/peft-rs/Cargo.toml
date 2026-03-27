@@ -2,7 +2,7 @@
 name = "peft-rs"
 version = "1.0.1"
 edition = "2021"
-rust-version = "1.92"
+rust-version = "1.91"
 license = "MIT"
 description = "Comprehensive PEFT (Parameter-Efficient Fine-Tuning) adapter library for Rust"
 authors = ["Tyler Zervas <tz-dev@vectorweight.com>"]
