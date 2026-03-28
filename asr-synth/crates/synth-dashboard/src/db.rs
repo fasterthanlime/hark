@@ -1716,11 +1716,6 @@ impl Db {
                        TRIM(TRIM(qwen_heard), '.,!?;:()[]{}"''`“”‘’') AS surface_form
                 FROM vocab_confusions
                 WHERE qwen_match = 0
-                UNION ALL
-                SELECT term,
-                       TRIM(TRIM(parakeet_heard), '.,!?;:()[]{}"''`“”‘’') AS surface_form
-                FROM vocab_confusions
-                WHERE parakeet_match = 0
             ),
             grouped AS (
                 SELECT LOWER(surface_form) AS surface_key,

@@ -334,6 +334,27 @@ fn normalize_suggested_term(term: &str) -> String {
         .to_lowercase()
 }
 
+fn normalize_counterexample_surface_match(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut prev_space = true;
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            prev_space = false;
+        } else if !prev_space {
+            out.push(' ');
+            prev_space = true;
+        }
+    }
+    out.trim().to_string()
+}
+
+fn counterexample_surface_is_present(surface: &str, transcript: &str) -> bool {
+    let surface = normalize_counterexample_surface_match(surface);
+    let transcript = normalize_counterexample_surface_match(transcript);
+    !surface.is_empty() && !transcript.is_empty() && transcript.contains(&surface)
+}
+
 fn sanitize_spellcheck_issues(value: serde_json::Value) -> serde_json::Value {
     let raw = if let Some(items) = value.get("issues").and_then(|v| v.as_array()) {
         items.clone()
@@ -1406,7 +1427,7 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .into_response());
             };
-            if !sentence.to_lowercase().contains(&surface.to_lowercase()) {
+            if !counterexample_surface_is_present(surface, &sentence) {
                 return Ok(Json(
                     serde_json::json!({"error": format!("Counterexample sentence must contain '{}'", surface)}),
                 )
@@ -1425,7 +1446,7 @@ async fn main() -> anyhow::Result<()> {
             target_terms.sort_by_key(|t| t.to_ascii_lowercase());
             target_terms.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
             for term in &target_terms {
-                if sentence.to_lowercase().contains(&term.to_lowercase()) {
+                if counterexample_surface_is_present(term, &sentence) {
                     return Ok(Json(
                         serde_json::json!({"error": format!("Counterexample sentence must not contain canonical term '{}'", term)}),
                     )
@@ -1588,9 +1609,7 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|e| err(e))??
         };
 
-        let contains_surface = qwen_clean
-            .to_lowercase()
-            .contains(&surface_form.to_lowercase());
+        let contains_surface = counterexample_surface_is_present(&surface_form, &qwen_clean);
 
         Ok(Json(serde_json::json!({
             "qwen_clean": qwen_clean,
@@ -1794,7 +1813,7 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .map_err(|e| err(e))??;
 
-                if !qwen.to_lowercase().contains(&surface2.to_lowercase()) {
+                if !counterexample_surface_is_present(&surface2, &qwen) {
                     return Ok((
                         StatusCode::BAD_REQUEST,
                         format!(

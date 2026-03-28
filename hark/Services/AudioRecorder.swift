@@ -22,6 +22,12 @@ final class AudioRecorder: @unchecked Sendable {
     private var capturedSamples: [Float] = []
     private var isCapturing = false
     private var isWarm = false
+    /// True while waiting to stop at the next tap callback boundary.
+    private var stopCapturePending = false
+    private var stopCaptureSignal: DispatchSemaphore?
+    private var stopCaptureDrainSamplesRemaining = 0
+    private let stopCaptureDrainSeconds: TimeInterval = 0.25
+    private let stopCaptureBoundaryTimeoutSeconds: TimeInterval = 0.35
 
     private var onLevel: (@Sendable (Float) -> Void)?
     private var onSpectrum: (@Sendable ([Float]) -> Void)?
@@ -110,6 +116,9 @@ final class AudioRecorder: @unchecked Sendable {
         lock.lock()
         isWarm = false
         isCapturing = false
+        stopCapturePending = false
+        stopCaptureSignal = nil
+        stopCaptureDrainSamplesRemaining = 0
         lock.unlock()
 
         engine?.inputNode.removeTap(onBus: 0)
@@ -146,6 +155,9 @@ final class AudioRecorder: @unchecked Sendable {
             }
         }
 
+        stopCapturePending = false
+        stopCaptureSignal = nil
+        stopCaptureDrainSamplesRemaining = 0
         isCapturing = true
     }
 
@@ -168,8 +180,36 @@ final class AudioRecorder: @unchecked Sendable {
 
     /// Stop capturing and return audio samples resampled to 16kHz mono float32.
     func stopCapture() -> [Float] {
+        var waitSignal: DispatchSemaphore?
+
+        lock.lock()
+        if isCapturing {
+            let signal = DispatchSemaphore(value: 0)
+            stopCapturePending = true
+            stopCaptureSignal = signal
+            stopCaptureDrainSamplesRemaining = max(
+                1,
+                Int((nativeSampleRate * stopCaptureDrainSeconds).rounded())
+            )
+            waitSignal = signal
+        } else {
+            stopCapturePending = false
+            stopCaptureSignal = nil
+            stopCaptureDrainSamplesRemaining = 0
+        }
+        lock.unlock()
+
+        // Wait for a short post-stop drain window so input-node queued audio is
+        // captured before finalization.
+        if let waitSignal {
+            _ = waitSignal.wait(timeout: .now() + stopCaptureBoundaryTimeoutSeconds)
+        }
+
         lock.lock()
         isCapturing = false
+        stopCapturePending = false
+        stopCaptureSignal = nil
+        stopCaptureDrainSamplesRemaining = 0
         let captured = capturedSamples
         let capturedRate = nativeSampleRate
         capturedSamples.removeAll()
@@ -229,10 +269,10 @@ final class AudioRecorder: @unchecked Sendable {
             onSpectrum(bands)
         }
 
+        var stopSignalToFire: DispatchSemaphore?
         lock.lock()
-        defer { lock.unlock() }
 
-        if isCapturing {
+        if isCapturing || stopCapturePending {
             // Actively capturing - append to captured samples
             let maxNativeSamples = Int(nativeSampleRate * maximumDuration)
             let remaining = maxNativeSamples - capturedSamples.count
@@ -247,6 +287,16 @@ final class AudioRecorder: @unchecked Sendable {
             } else {
                 isCapturing = false
             }
+
+            if stopCapturePending {
+                stopCaptureDrainSamplesRemaining = max(0, stopCaptureDrainSamplesRemaining - count)
+                if stopCaptureDrainSamplesRemaining == 0 {
+                    stopCapturePending = false
+                    isCapturing = false
+                    stopSignalToFire = stopCaptureSignal
+                    stopCaptureSignal = nil
+                }
+            }
         } else if isWarm && preBufferCapacity > 0 {
             // Warm but not capturing - fill circular pre-buffer
             for sample in bufferPointer {
@@ -254,6 +304,10 @@ final class AudioRecorder: @unchecked Sendable {
                 preBufferWriteIndex += 1
             }
         }
+        lock.unlock()
+
+        // Signal outside the lock to avoid waking waiter into lock contention.
+        stopSignalToFire?.signal()
     }
 
     private func computeSpectrum(_ samples: UnsafeBufferPointer<Float>, setup: vDSP_DFT_Setup) -> [Float] {

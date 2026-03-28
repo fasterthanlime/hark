@@ -120,6 +120,10 @@ pub struct StreamingState {
     speech_detected: bool,
 }
 
+const VAD_WINDOW_SIZE: usize = 160; // 10ms at 16kHz
+const VAD_SPEECH_RMS_THRESHOLD: f32 = 0.01; // ~-40dBFS
+const POST_SPEECH_SILENCE_RMS_THRESHOLD: f32 = 0.006; // ~-44dBFS
+
 impl AsrInference {
     /// Initialize a new streaming transcription session.
     pub fn init_streaming(&self, options: StreamingOptions) -> StreamingState {
@@ -161,6 +165,12 @@ impl AsrInference {
                 return Ok(None);
             }
         } else {
+            // After speech has started, skip fully silent chunks when no partial
+            // chunk is pending. This avoids sending long empty/silent tails that
+            // can induce hallucinations.
+            if state.buffer.is_empty() && is_effectively_silent(samples, POST_SPEECH_SILENCE_RMS_THRESHOLD) {
+                return Ok(None);
+            }
             state.buffer.extend_from_slice(samples);
         }
 
@@ -333,17 +343,35 @@ pub(crate) fn build_prefix(inner: &AsrInferenceInner, state: &StreamingState) ->
 /// The threshold is set conservatively — it should catch normal speech but ignore
 /// typical ambient room noise and microphone self-noise.
 fn detect_speech_onset(samples: &[f32]) -> Option<usize> {
-    const WINDOW_SIZE: usize = 160; // 10ms at 16kHz
-    const RMS_THRESHOLD: f32 = 0.01; // ~-40dBFS, well above typical noise floor
-
-    for (i, window) in samples.chunks(WINDOW_SIZE).enumerate() {
+    // Require two consecutive "speechy" windows to avoid one-window spikes
+    // (key clicks/taps) opening the gate.
+    let mut consecutive = 0usize;
+    let mut first_idx = 0usize;
+    for (i, window) in samples.chunks(VAD_WINDOW_SIZE).enumerate() {
         let sum_sq: f32 = window.iter().map(|s| s * s).sum();
         let rms = (sum_sq / window.len() as f32).sqrt();
-        if rms > RMS_THRESHOLD {
-            return Some(i * WINDOW_SIZE);
+        if rms > VAD_SPEECH_RMS_THRESHOLD {
+            if consecutive == 0 {
+                first_idx = i;
+            }
+            consecutive += 1;
+            if consecutive >= 2 {
+                return Some(first_idx * VAD_WINDOW_SIZE);
+            }
+        } else {
+            consecutive = 0;
         }
     }
     None
+}
+
+fn is_effectively_silent(samples: &[f32], threshold: f32) -> bool {
+    if samples.is_empty() {
+        return true;
+    }
+    let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+    let rms = (sum_sq / samples.len() as f32).sqrt();
+    rms < threshold
 }
 
 /// Try to drain one full chunk from the buffer into the audio accumulator.
@@ -789,6 +817,16 @@ mod tests {
     fn test_vad_immediate_speech() {
         let speech = vec![0.05; 320]; // 20ms of speech
         assert_eq!(detect_speech_onset(&speech), Some(0));
+    }
+
+    #[test]
+    fn test_vad_single_window_spike_ignored() {
+        let mut samples = vec![0.001; 1600]; // silence
+        // One 10ms spike above threshold should not trigger onset by itself.
+        for s in &mut samples[800..960] {
+            *s = 0.05;
+        }
+        assert_eq!(detect_speech_onset(&samples), None);
     }
 
     #[test]

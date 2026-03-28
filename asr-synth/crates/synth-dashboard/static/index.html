@@ -2955,6 +2955,7 @@
             const [counterexampleSpeakRecording, setCounterexampleSpeakRecording] = useState(false);
             const [counterexampleSpeakError, setCounterexampleSpeakError] = useState(null);
             const [counterexampleDraft, setCounterexampleDraft] = useState(null);
+            const [counterexampleSavedCount, setCounterexampleSavedCount] = useState(0);
             const recordingRecorderRef = useRef(null);
             const rapidFireRecorderRef = useRef(null);
             const rapidFireAutostartRef = useRef(false);
@@ -3092,10 +3093,12 @@
                     setCounterexampleReviewError(null);
                     setCounterexampleSpeakError(null);
                     setCounterexampleDraft(null);
+                    setCounterexampleSavedCount(0);
                     return res.item || null;
                 } catch (e) {
                     setCounterexampleReview(null);
                     setCounterexampleReviewError(e.message);
+                    setCounterexampleSavedCount(0);
                     return null;
                 }
             };
@@ -3383,10 +3386,18 @@
                     for (const id of (submit.ids || [submit.id]).filter(Boolean)) {
                         await uploadSentenceTake({id}, counterexampleDraft.wavBytes);
                     }
+                    await api('/api/author/counterexample-surfaces/decision', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            surface_form: counterexampleReview.surface_form,
+                            decision: 'keep',
+                        }),
+                    });
                     await loadSentences();
                     await loadStats();
                     setCounterexampleDraft(null);
-                    await loadCounterexampleReview();
+                    setCounterexampleSavedCount(n => n + 1);
+                    setCounterexampleSpeakError(null);
                 } catch (e) {
                     setCounterexampleSpeakError(e.message);
                 } finally {
@@ -3767,6 +3778,16 @@
                                     <div style={{fontSize:13,color:'var(--text-muted)',lineHeight:1.5}}>
                                         Say any sentence where <span style={{fontFamily:'monospace',color:'var(--warning)'}}>{counterexampleReview.surface_form}</span> is actually correct and should stay unchanged.
                                     </div>
+                                    {counterexampleSavedCount > 0 && (
+                                        <div style={{display:'flex',gap:8,alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',padding:'8px 10px',border:'1px solid var(--border)',borderRadius:8,background:'rgba(63,185,80,0.08)'}}>
+                                            <div style={{fontSize:13,color:'var(--success)'}}>
+                                                Saved {counterexampleSavedCount} counterexample{counterexampleSavedCount === 1 ? '' : 's'} for this surface.
+                                            </div>
+                                            <button className="btn btn-sm" onClick={loadCounterexampleReview} disabled={counterexampleSpeakBusy || counterexampleReviewBusy}>
+                                                Next surface
+                                            </button>
+                                        </div>
+                                    )}
                                     <div style={{display:'flex',gap:10,alignItems:'center',justifyContent:'center',flexWrap:'wrap'}}>
                                         <button className={`record-btn ${counterexampleSpeakRecording ? 'active' : ''}`} onClick={counterexampleSpeakRecording ? () => stopCounterexampleRecording() : startCounterexampleRecording} disabled={counterexampleSpeakBusy || counterexampleReviewBusy}
                                             title={counterexampleSpeakRecording ? 'Stop recording' : 'Record a counterexample take'}>

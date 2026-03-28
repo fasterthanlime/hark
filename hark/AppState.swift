@@ -426,6 +426,6 @@ struct TranscriptionHistoryItem: Identifiable {
         if text.count <= 50 {
             return text
         }
-        return String(text.prefix(47)) + "..."
+        return "..." + String(text.suffix(47))
     }
 }

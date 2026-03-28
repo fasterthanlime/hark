@@ -93,6 +93,16 @@ fn is_sentence_closer(ch: char) -> bool {
     )
 }
 
+const MIN_COMMIT_WORDS: usize = 5;
+const MIN_COMMIT_CHARS: usize = 24;
+const MIN_COMPLETE_SENTENCES_BEFORE_COMMIT: usize = 3;
+
+fn content_word_count(text: &str) -> usize {
+    text.split_whitespace()
+        .filter(|token| token.chars().any(|ch| ch.is_alphanumeric()))
+        .count()
+}
+
 /// Return byte indices right after complete sentence boundaries.
 fn sentence_boundaries(text: &str) -> Vec<usize> {
     let chars: Vec<(usize, char)> = text.char_indices().collect();
@@ -129,15 +139,19 @@ fn sentence_boundaries(text: &str) -> Vec<usize> {
 }
 
 /// Conservative commit policy:
-/// when we have at least two complete sentences, commit only the first one.
+/// when we have at least three complete sentences, commit only the first one.
+/// This keeps a two-sentence lookahead to avoid committing too eagerly.
 fn split_for_commit(text: &str) -> Option<(&str, &str)> {
     let boundaries = sentence_boundaries(text);
-    if boundaries.len() < 2 {
+    if boundaries.len() < MIN_COMPLETE_SENTENCES_BEFORE_COMMIT {
         return None;
     }
     let cut = boundaries[0];
     let committed = text[..cut].trim();
     if committed.is_empty() {
+        return None;
+    }
+    if content_word_count(committed) < MIN_COMMIT_WORDS || committed.chars().count() < MIN_COMMIT_CHARS {
         return None;
     }
     let remainder = text[cut..].trim_start();
@@ -367,7 +381,11 @@ pub extern "C" fn asr_session_create(
 ) -> *mut AsrSession {
     let engine_ref = unsafe { &*engine };
     let arc = engine_ref.inner.clone();
-    let mut streaming_opts = StreamingOptions::default().with_chunk_size_sec(opts.chunk_size_sec);
+    let mut streaming_opts = StreamingOptions::default()
+        .with_chunk_size_sec(opts.chunk_size_sec)
+        // Keep a larger mutable suffix so punctuation/endings can be revised
+        // instead of being frozen too aggressively between chunks.
+        .with_unfixed_token_num(12);
     if !opts.language.is_null() {
         if let Ok(lang) = unsafe { CStr::from_ptr(opts.language) }.to_str() {
             if !lang.is_empty() {
@@ -429,8 +447,9 @@ pub extern "C" fn asr_session_feed(
             Ok(Some(result)) => {
                 let current_text = join_segments(&s.pending_prefix, &result.text);
 
-                // Commit the oldest sentence once we have >=2 complete sentences
-                // buffered, then restart from that text boundary.
+                // Commit the oldest sentence once we have >=3 complete sentences
+                // buffered (two-sentence lookahead), then restart from that
+                // text boundary.
                 //
                 // We first flush/finalize the current sub-session to avoid losing
                 // any buffered samples that haven't crossed a chunk boundary yet.
@@ -575,25 +594,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn split_for_commit_needs_two_complete_sentences() {
+    fn split_for_commit_needs_three_complete_sentences() {
         assert!(split_for_commit("hello world.").is_none());
-        assert!(split_for_commit("hello world. next bit").is_none());
+        assert!(split_for_commit("hello world. next bit is complete.").is_none());
     }
 
     #[test]
     fn split_for_commit_commits_oldest_sentence_only() {
         let (commit, rest) =
-            split_for_commit("First sentence. Second sentence. Third").expect("should split");
-        assert_eq!(commit, "First sentence.");
-        assert_eq!(rest, "Second sentence. Third");
+            split_for_commit(
+                "First sentence has enough words now. Second sentence continues here. Third sentence is complete. Fourth"
+            )
+                .expect("should split");
+        assert_eq!(commit, "First sentence has enough words now.");
+        assert_eq!(rest, "Second sentence continues here. Third sentence is complete. Fourth");
     }
 
     #[test]
     fn split_for_commit_handles_unicode_punctuation() {
         let (commit, rest) =
-            split_for_commit("Bonjour ! Encore une phrase ? Suite").expect("should split");
-        assert_eq!(commit, "Bonjour !");
-        assert_eq!(rest, "Encore une phrase ? Suite");
+            split_for_commit("Bonjour ceci est une phrase longue ! Encore une phrase ? Oui c'est complet. Suite")
+                .expect("should split");
+        assert_eq!(commit, "Bonjour ceci est une phrase longue !");
+        assert_eq!(rest, "Encore une phrase ? Oui c'est complet. Suite");
+    }
+
+    #[test]
+    fn split_for_commit_rejects_short_first_sentence() {
+        assert!(
+            split_for_commit("Yep. This is a full second sentence indeed. Third sentence is complete.")
+                .is_none()
+        );
     }
 
     #[test]

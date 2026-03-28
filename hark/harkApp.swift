@@ -161,7 +161,7 @@ struct HarkApp: App {
     private static let toggleModeThresholdSeconds: TimeInterval = 0.3
     private static let minimumSpeechDurationSeconds = 0.2
     private static let transcriptionSampleRate = 16_000.0
-    private static let finalizationSilencePaddingSeconds = 0.25
+    private static let finalizationSilencePaddingSeconds = 0.35
 
     var body: some Scene {
         MenuBarExtra {
@@ -790,7 +790,7 @@ struct HarkApp: App {
                 Int((Self.finalizationSilencePaddingSeconds * Self.transcriptionSampleRate).rounded())
             )
             var finalizeChunk = remaining ?? []
-            if !allSamples.isEmpty, padSampleCount > 0 {
+            if !finalizeChunk.isEmpty, padSampleCount > 0 {
                 finalizeChunk.append(contentsOf: repeatElement(Float(0), count: padSampleCount))
             }
             let finalText: String? = await Task.detached {
@@ -806,9 +806,9 @@ struct HarkApp: App {
                 }
             }
 
-            // If streaming produced nothing (e.g. too short for a chunk boundary),
-            // fall back to a single-shot transcription of all captured audio.
-            if text.isEmpty && !allSamples.isEmpty {
+            // If streaming produced nothing, fall back to a single-shot
+            // transcription of all captured audio.
+            if text.isEmpty && !allSamples.isEmpty && !Self.isEffectivelySilent(allSamples) {
                 let transcriptionService = self.transcriptionService
                 var samples = allSamples
                 if padSampleCount > 0 {
@@ -833,6 +833,13 @@ struct HarkApp: App {
         streamingSession = nil
 
         await finishAndPaste(text: text, skipPaste: skipPaste, forceSubmit: forceSubmit)
+    }
+
+    private nonisolated static func isEffectivelySilent(_ samples: [Float], rmsThreshold: Float = 0.006) -> Bool {
+        guard !samples.isEmpty else { return true }
+        let sumSquares = samples.reduce(Float(0)) { $0 + ($1 * $1) }
+        let rms = sqrtf(sumSquares / Float(samples.count))
+        return rms < rmsThreshold
     }
 
     @MainActor
