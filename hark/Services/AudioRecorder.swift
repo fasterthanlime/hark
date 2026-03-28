@@ -1,6 +1,7 @@
 import AVFoundation
 import Accelerate
 import Foundation
+import os
 
 /// Records microphone audio and returns raw float32 samples at 16kHz.
 /// Supports "warm" mode where the engine runs continuously with a pre-buffer.
@@ -8,6 +9,10 @@ final class AudioRecorder: @unchecked Sendable {
     static let defaultMaximumDuration: TimeInterval = 90
     static let defaultPreBufferDuration: TimeInterval = 0.2  // 200ms pre-buffer
     static let spectrumBandCount = 6
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "hark",
+        category: "AudioRecorder"
+    )
 
     private var engine: AVAudioEngine?
     private var nativeSampleRate: Double = 0
@@ -27,6 +32,7 @@ final class AudioRecorder: @unchecked Sendable {
     private var stopCaptureSignal: DispatchSemaphore?
     private var stopCaptureSilenceSamples = 0
     private var stopCaptureSamplesUntilTimeout = 0
+    private var stopCaptureCompletionReason = "none"
     private let stopCaptureMaxWaitSeconds: TimeInterval = 0.5
     private let stopCaptureRequiredSilenceSeconds: TimeInterval = 0.12
     private let stopCaptureSilenceRmsThreshold: Float = 0.008
@@ -123,6 +129,7 @@ final class AudioRecorder: @unchecked Sendable {
         stopCaptureSignal = nil
         stopCaptureSilenceSamples = 0
         stopCaptureSamplesUntilTimeout = 0
+        stopCaptureCompletionReason = "none"
         lock.unlock()
 
         engine?.inputNode.removeTap(onBus: 0)
@@ -163,6 +170,7 @@ final class AudioRecorder: @unchecked Sendable {
         stopCaptureSignal = nil
         stopCaptureSilenceSamples = 0
         stopCaptureSamplesUntilTimeout = 0
+        stopCaptureCompletionReason = "none"
         isCapturing = true
     }
 
@@ -186,6 +194,8 @@ final class AudioRecorder: @unchecked Sendable {
     /// Stop capturing and return audio samples resampled to 16kHz mono float32.
     func stopCapture() -> [Float] {
         var waitSignal: DispatchSemaphore?
+        let stopRequestedAt = ProcessInfo.processInfo.systemUptime
+        var waitResult: DispatchTimeoutResult?
 
         lock.lock()
         if isCapturing {
@@ -197,31 +207,43 @@ final class AudioRecorder: @unchecked Sendable {
                 1,
                 Int((nativeSampleRate * stopCaptureMaxWaitSeconds).rounded())
             )
+            stopCaptureCompletionReason = "pending"
             waitSignal = signal
         } else {
             stopCapturePending = false
             stopCaptureSignal = nil
             stopCaptureSilenceSamples = 0
             stopCaptureSamplesUntilTimeout = 0
+            stopCaptureCompletionReason = "not_capturing"
         }
         lock.unlock()
 
         // Wait for VAD tail-stop (silence or timeout) so we avoid cutting
         // speech endings when key-up happens near the final words.
         if let waitSignal {
-            _ = waitSignal.wait(timeout: .now() + stopCaptureBoundaryTimeoutSeconds)
+            waitResult = waitSignal.wait(timeout: .now() + stopCaptureBoundaryTimeoutSeconds)
         }
 
         lock.lock()
+        if waitResult == .timedOut {
+            stopCaptureCompletionReason = "wait_timeout"
+        }
         isCapturing = false
         stopCapturePending = false
         stopCaptureSignal = nil
         stopCaptureSilenceSamples = 0
         stopCaptureSamplesUntilTimeout = 0
+        let completionReason = stopCaptureCompletionReason
+        stopCaptureCompletionReason = "none"
         let captured = capturedSamples
         let capturedRate = nativeSampleRate
         capturedSamples.removeAll()
         lock.unlock()
+
+        let stopElapsedMs = Int(((ProcessInfo.processInfo.systemUptime - stopRequestedAt) * 1000).rounded())
+        Self.logger.warning(
+            "[hark] stopCapture: reason=\(completionReason, privacy: .public) wait_ms=\(stopElapsedMs) captured_native=\(captured.count)"
+        )
 
         guard !captured.isEmpty else { return [] }
 
@@ -312,6 +334,7 @@ final class AudioRecorder: @unchecked Sendable {
                     isCapturing = false
                     stopSignalToFire = stopCaptureSignal
                     stopCaptureSignal = nil
+                    stopCaptureCompletionReason = reachedSilence ? "vad_silence" : "vad_timeout"
                     stopCaptureSilenceSamples = 0
                     stopCaptureSamplesUntilTimeout = 0
                 }

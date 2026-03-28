@@ -743,6 +743,7 @@ struct HarkApp: App {
     @MainActor
     private func stopRecordingAndTranscribe(cancelTimeoutTask: Bool = true, skipPaste: Bool = false, forceSubmit: Bool = false) async {
         guard appState.phase == .recording else { return }
+        let stopStartedAt = ProcessInfo.processInfo.systemUptime
 
         _ = appState.transition(to: .transcribing)
 
@@ -757,15 +758,18 @@ struct HarkApp: App {
         // Stop the streaming loop.
         let stask = streamingTask
         streamingTask = nil
+        stask?.cancel()
 
         // Stop capture and use the definitive captured buffer at stop time.
         // Using `peekCapture()` here can miss tail audio arriving between peek and stop.
+        let captureStopStartedAt = ProcessInfo.processInfo.systemUptime
         let allSamples: [Float]
         if audioRecorder.isWarmedUp {
             allSamples = audioRecorder.stopCapture()
         } else {
             allSamples = audioRecorder.stop()
         }
+        let captureStopMs = Int(((ProcessInfo.processInfo.systemUptime - captureStopStartedAt) * 1000).rounded())
         appState.audioLevel = 0
         if !appState.activeInputDeviceKeepWarm, audioRecorder.isWarmedUp {
             audioRecorder.coolDown()
@@ -779,7 +783,9 @@ struct HarkApp: App {
             appState.isFinishing = true
 
             // Wait for the streaming loop to exit so we don't race on the session.
+            let streamJoinStartedAt = ProcessInfo.processInfo.systemUptime
             let result = await stask?.value
+            let streamJoinMs = Int(((ProcessInfo.processInfo.systemUptime - streamJoinStartedAt) * 1000).rounded())
             let processedCount = result?.processedSampleCount ?? 0
             let remainingCount = max(0, allSamples.count - processedCount)
 
@@ -792,16 +798,27 @@ struct HarkApp: App {
                 0,
                 Int((Self.finalizationSilencePaddingSeconds * Self.transcriptionSampleRate).rounded())
             )
-            var finalizeChunk = remaining ?? []
-            if padSampleCount > 0 {
-                finalizeChunk.append(contentsOf: repeatElement(Float(0), count: padSampleCount))
-            }
-            let finalText: String? = await Task.detached {
-                if !finalizeChunk.isEmpty {
-                    _ = transcriptionService.feed(session: session, samples: finalizeChunk)
+            let finalizeChunk: [Float] = {
+                var chunk = remaining ?? []
+                if padSampleCount > 0 {
+                    chunk.append(contentsOf: repeatElement(Float(0), count: padSampleCount))
                 }
-                return transcriptionService.finish(session: session)
+                return chunk
+            }()
+            let finalizeMetrics: (text: String?, feedMs: Int, finishMs: Int) = await Task.detached {
+                [transcriptionService, session, finalizeChunk] in
+                var feedMs = 0
+                if !finalizeChunk.isEmpty {
+                    let feedStartedAt = ProcessInfo.processInfo.systemUptime
+                    _ = transcriptionService.feed(session: session, samples: finalizeChunk)
+                    feedMs = Int(((ProcessInfo.processInfo.systemUptime - feedStartedAt) * 1000).rounded())
+                }
+                let finishStartedAt = ProcessInfo.processInfo.systemUptime
+                let finishText = transcriptionService.finish(session: session)
+                let finishMs = Int(((ProcessInfo.processInfo.systemUptime - finishStartedAt) * 1000).rounded())
+                return (text: finishText, feedMs: feedMs, finishMs: finishMs)
             }.value
+            let finalText = finalizeMetrics.text
             if let finalText {
                 let trimmed = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
@@ -817,16 +834,23 @@ struct HarkApp: App {
                 if padSampleCount > 0 {
                     samples.append(contentsOf: repeatElement(Float(0), count: padSampleCount))
                 }
+                let fallbackStartedAt = ProcessInfo.processInfo.systemUptime
                 let fallbackText: String? = await Task.detached {
                     transcriptionService.transcribeSamples(samples)
                 }.value
+                let fallbackMs = Int(((ProcessInfo.processInfo.systemUptime - fallbackStartedAt) * 1000).rounded())
                 if let fallbackText {
                     let trimmed = fallbackText.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !trimmed.isEmpty {
                         text = trimmed
                     }
                 }
+                Self.logger.warning("[hark] stop-timing fallback_ms=\(fallbackMs) samples=\(samples.count)")
             }
+
+            Self.logger.warning(
+                "[hark] stop-timing capture_stop_ms=\(captureStopMs) stream_join_ms=\(streamJoinMs) finalize_feed_ms=\(finalizeMetrics.feedMs) finish_ms=\(finalizeMetrics.finishMs) finalize_chunk=\(finalizeChunk.count) processed=\(processedCount) remaining=\(remainingCount)"
+            )
 
             // Show the final transcript in the overlay (no animation).
             appState.partialTranscript = text
@@ -835,6 +859,8 @@ struct HarkApp: App {
         }
         streamingSession = nil
 
+        let totalStopMs = Int(((ProcessInfo.processInfo.systemUptime - stopStartedAt) * 1000).rounded())
+        Self.logger.warning("[hark] stop-timing total_stop_to_finish_ms=\(totalStopMs)")
         await finishAndPaste(text: text, skipPaste: skipPaste, forceSubmit: forceSubmit)
     }
 
