@@ -34,10 +34,10 @@ struct RecordingOverlayView: View {
 
     private let maxTextHeight: CGFloat = 120 // ~6 lines at 17pt
     private let committedRGB = (r: 1.00, g: 1.00, b: 1.00)
-    private let pendingRGB = (r: 0.74, g: 0.87, b: 1.00)
-    private let freshRGB = (r: 1.00, g: 0.78, b: 0.52)
-    private let pendingOpacity: Double = 0.92
-    private let freshStartOpacity: Double = 0.55
+    private let pendingRGB = (r: 0.86, g: 0.84, b: 0.80)
+    private let freshRGB = (r: 0.98, g: 0.72, b: 0.46)
+    private let pendingOpacity: Double = 0.82
+    private let freshStartOpacity: Double = 0.5
 
     private var isScrolling: Bool { textContentHeight > maxTextHeight }
 

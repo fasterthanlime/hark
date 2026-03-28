@@ -2,6 +2,7 @@
 #define QWEN3_ASR_FFI_H
 
 #include <stddef.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -86,6 +87,19 @@ char *asr_session_feed(AsrSession *session,
  * This excludes the current pending/uncommitted tail.
  */
 size_t asr_session_committed_utf16_len(const AsrSession *session);
+
+/*
+ * Return the most recently detected language for this session.
+ * Returns a freshly-allocated string (free with asr_string_free), or NULL.
+ */
+char *asr_session_last_language(const AsrSession *session);
+
+/*
+ * Force or clear language for an active session.
+ * Pass language=NULL (or empty) to restore auto-detection.
+ * Returns true on success, false on error (check *out_err).
+ */
+bool asr_session_set_language(AsrSession *session, const char *language, char **out_err);
 
 /*
  * Finalize the session and return the complete transcript.

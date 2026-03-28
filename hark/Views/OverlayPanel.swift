@@ -89,6 +89,26 @@ final class FloatingPanel<Content: View>: NSPanel {
         setFrameOrigin(NSPoint(x: x, y: y))
     }
 
+    /// Position the panel near the given cursor location while staying inside the visible frame.
+    func positionNearCursor(_ cursor: NSPoint, on screen: NSScreen? = nil) {
+        guard let screen = screen ?? NSScreen.main else { return }
+        let visible = screen.visibleFrame
+        let margin: CGFloat = 10
+        let verticalOffset: CGFloat = 22
+
+        var x = cursor.x - (frame.width / 2)
+        var y = cursor.y + verticalOffset
+
+        // If there isn't room above the cursor, place the bubble below it.
+        if y + frame.height > visible.maxY - margin {
+            y = cursor.y - frame.height - verticalOffset
+        }
+
+        x = min(max(x, visible.minX + margin), visible.maxX - frame.width - margin)
+        y = min(max(y, visible.minY + margin), visible.maxY - frame.height - margin)
+        setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
     required init?(coder: NSCoder) {
         fatalError("init(coder:) not supported")
     }

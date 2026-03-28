@@ -234,6 +234,17 @@ impl AsrInference {
 
         Ok(result)
     }
+
+    /// Override or clear the forced language for an active streaming state.
+    ///
+    /// Passing `Some("english")` forces decoding toward that language for
+    /// subsequent streaming steps. Passing `None` restores auto-detection.
+    pub fn set_streaming_language(&self, state: &mut StreamingState, language: Option<&str>) {
+        state.options.language = language
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_lowercase());
+    }
 }
 
 /// Encode audio using incremental encoder (leverages window cache).

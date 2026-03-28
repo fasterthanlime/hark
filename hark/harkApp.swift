@@ -22,6 +22,7 @@ private struct StreamingResult {
     let text: String
     let signal: StreamingSignal
     let processedSampleCount: Int
+    let autoLockedLanguage: String?
 }
 
 /// Intercepts Esc/Return while recording so those keys do not leak to the app behind Hark.
@@ -161,7 +162,8 @@ struct HarkApp: App {
     private static let toggleModeThresholdSeconds: TimeInterval = 0.3
     private static let minimumSpeechDurationSeconds = 0.2
     private static let transcriptionSampleRate = 16_000.0
-    private static let finalizationSilencePaddingSeconds = 0.35
+    private static let finalizationSilencePaddingSeconds = 0.20
+    private static let finalizationMinimumSilencePaddingSeconds = 0.05
 
     var body: some Scene {
         MenuBarExtra {
@@ -550,11 +552,13 @@ struct HarkApp: App {
         let audioRecorder = self.audioRecorder
         let appState = self.appState
         let session = self.streamingSession!
+        let shouldAutoLockLanguage = appState.currentLanguage == nil
 
         streamingTask = Task.detached { () -> StreamingResult in
             var processedCount = 0
             var lastText = ""
             var signal: StreamingSignal = .none
+            var autoLockedLanguage: String?
 
             while !Task.isCancelled {
                 // Check phase on main actor
@@ -569,9 +573,9 @@ struct HarkApp: App {
                 }
 
                 let newChunk = Array(allSamples[processedCount...])
-                processedCount = allSamples.count
 
                 let update: StreamingTranscriptUpdate? = transcriptionService.feed(session: session, samples: newChunk)
+                processedCount = allSamples.count
 
                 if let update {
                     let trimmed = update.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -584,6 +588,15 @@ struct HarkApp: App {
                         await MainActor.run {
                             appState.partialTranscript = trimmed
                             appState.partialTranscriptCommittedUTF16 = committedUTF16
+                        }
+
+                        if shouldAutoLockLanguage, autoLockedLanguage == nil {
+                            if let detectedLanguage = HarkApp.normalizedSupportedLanguage(update.detectedLanguage) {
+                                if transcriptionService.setLanguage(session: session, language: detectedLanguage) {
+                                    autoLockedLanguage = detectedLanguage
+                                    print("[hark] language-lock lang=\(detectedLanguage)")
+                                }
+                            }
                         }
 
                         // Check "over and out" first (higher priority).
@@ -603,7 +616,12 @@ struct HarkApp: App {
             // Strip the trigger phrase from the text.
             lastText = HarkApp.stripTrigger(lastText, signal: signal)
 
-            return StreamingResult(text: lastText, signal: signal, processedSampleCount: processedCount)
+            return StreamingResult(
+                text: lastText,
+                signal: signal,
+                processedSampleCount: processedCount,
+                autoLockedLanguage: autoLockedLanguage
+            )
         }
 
         // Watcher: handles "over" and "over and out" when they fire mid-recording.
@@ -638,8 +656,10 @@ struct HarkApp: App {
                 _ = appState.transition(to: .recording)
                 appState.partialTranscript = ""
                 appState.partialTranscriptCommittedUTF16 = 0
+                let languageForRestart = appState.currentLanguage ?? result.autoLockedLanguage
                 streamingSession = transcriptionService.createSession(
-                    language: appState.currentLanguage
+                    language: languageForRestart,
+                    prompt: appState.vocabPrompt
                 )
                 startStreamingLoop()
             } else {
@@ -668,7 +688,6 @@ struct HarkApp: App {
     private nonisolated static func stripTrigger(_ text: String, signal: StreamingSignal) -> String {
         guard signal != .none else { return text }
         var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lower = s.lowercased()
 
         let suffix: String
         switch signal {
@@ -688,6 +707,40 @@ struct HarkApp: App {
             s = s.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return s
+    }
+
+    private nonisolated static func normalizedSupportedLanguage(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        var normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return nil }
+
+        if normalized.hasPrefix("language ") {
+            normalized = String(normalized.dropFirst("language ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        let aliases: [String: String] = [
+            "en": "english",
+            "english": "english",
+            "fr": "french",
+            "french": "french",
+            "es": "spanish",
+            "spanish": "spanish",
+            "de": "german",
+            "german": "german",
+            "pl": "polish",
+            "polish": "polish",
+        ]
+
+        let mapped = aliases[normalized] ?? normalized
+
+        // User policy: French stays French, Polish stays Polish, everything else locks to English.
+        if mapped == "french" {
+            return "french"
+        }
+        if mapped == "polish" {
+            return "polish"
+        }
+        return "english"
     }
 
     @MainActor
@@ -794,10 +847,18 @@ struct HarkApp: App {
             // Feed remaining unprocessed audio and finalize — off main thread.
             let transcriptionService = self.transcriptionService
             let remaining = processedCount < allSamples.count ? Array(allSamples[processedCount...]) : nil
-            let padSampleCount = max(
+            let configuredPadSampleCount = max(
                 0,
                 Int((Self.finalizationSilencePaddingSeconds * Self.transcriptionSampleRate).rounded())
             )
+            let minimumPadSampleCount = max(
+                0,
+                Int((Self.finalizationMinimumSilencePaddingSeconds * Self.transcriptionSampleRate).rounded())
+            )
+            let hasTrailingSilence = Self.hasTrailingSilence(allSamples)
+            let padSampleCount = hasTrailingSilence
+                ? minimumPadSampleCount
+                : configuredPadSampleCount
             let finalizeChunk: [Float] = {
                 var chunk = remaining ?? []
                 if padSampleCount > 0 {
@@ -849,7 +910,7 @@ struct HarkApp: App {
             }
 
             Self.logger.warning(
-                "[hark] stop-timing capture_stop_ms=\(captureStopMs) stream_join_ms=\(streamJoinMs) finalize_feed_ms=\(finalizeMetrics.feedMs) finish_ms=\(finalizeMetrics.finishMs) finalize_chunk=\(finalizeChunk.count) processed=\(processedCount) remaining=\(remainingCount)"
+                "[hark] stop-timing capture_stop_ms=\(captureStopMs) stream_join_ms=\(streamJoinMs) finalize_feed_ms=\(finalizeMetrics.feedMs) finish_ms=\(finalizeMetrics.finishMs) finalize_chunk=\(finalizeChunk.count) pad_samples=\(padSampleCount) processed=\(processedCount) remaining=\(remainingCount)"
             )
 
             // Show the final transcript in the overlay (no animation).
@@ -871,6 +932,18 @@ struct HarkApp: App {
         return rms < rmsThreshold
     }
 
+    private nonisolated static func hasTrailingSilence(
+        _ samples: [Float],
+        durationSec: Double = 0.12,
+        rmsThreshold: Float = 0.008
+    ) -> Bool {
+        guard !samples.isEmpty else { return true }
+        let trailingCount = max(1, Int((durationSec * Self.transcriptionSampleRate).rounded()))
+        let start = max(0, samples.count - trailingCount)
+        let tail = Array(samples[start...])
+        return isEffectivelySilent(tail, rmsThreshold: rmsThreshold)
+    }
+
     @MainActor
     private func finishAndPaste(text: String, skipPaste: Bool = false, forceSubmit: Bool = false) async {
         // Don't clear partialTranscript here — let the dismiss animation show the final text.
@@ -879,6 +952,7 @@ struct HarkApp: App {
         if text.isEmpty || skipPaste {
             _ = appState.transition(to: .idle)
             overlayManager.hideWithResult(.cancelled)
+            playCancelSound()
             if !text.isEmpty { appState.addToHistory(text) }
             return
         }
@@ -907,6 +981,7 @@ struct HarkApp: App {
 
         do {
             try await pasteTask.value
+            playPastedSound()
             _ = appState.transition(to: .idle)
         } catch {
             _ = appState.transition(to: .error(error.localizedDescription))
@@ -1247,6 +1322,18 @@ struct HarkApp: App {
 
     private func playStartSound() {
         guard let sound = NSSound(named: "Tink") else { return }
+        sound.volume = calculateSoundVolume()
+        sound.play()
+    }
+
+    private func playPastedSound() {
+        guard let sound = NSSound(named: "Hero") else { return }
+        sound.volume = calculateSoundVolume()
+        sound.play()
+    }
+
+    private func playCancelSound() {
+        guard let sound = NSSound(named: "Pop") else { return }
         sound.volume = calculateSoundVolume()
         sound.play()
     }

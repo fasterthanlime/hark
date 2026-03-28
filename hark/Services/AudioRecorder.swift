@@ -33,10 +33,13 @@ final class AudioRecorder: @unchecked Sendable {
     private var stopCaptureSilenceSamples = 0
     private var stopCaptureSamplesUntilTimeout = 0
     private var stopCaptureCompletionReason = "none"
-    private let stopCaptureMaxWaitSeconds: TimeInterval = 0.5
-    private let stopCaptureRequiredSilenceSeconds: TimeInterval = 0.12
+    private var lastObservedRms: Float = 0
+    private let stopCaptureFastWaitSeconds: TimeInterval = 0.05
+    private let stopCaptureSpeechWaitSeconds: TimeInterval = 0.18
+    private let stopCaptureRequiredSilenceSeconds: TimeInterval = 0.03
+    private let stopCaptureSpeechRmsThreshold: Float = 0.012
     private let stopCaptureSilenceRmsThreshold: Float = 0.008
-    private let stopCaptureBoundaryTimeoutSeconds: TimeInterval = 0.65
+    private let stopCaptureBoundaryTimeoutSeconds: TimeInterval = 0.4
 
     private var onLevel: (@Sendable (Float) -> Void)?
     private var onSpectrum: (@Sendable ([Float]) -> Void)?
@@ -130,6 +133,7 @@ final class AudioRecorder: @unchecked Sendable {
         stopCaptureSilenceSamples = 0
         stopCaptureSamplesUntilTimeout = 0
         stopCaptureCompletionReason = "none"
+        lastObservedRms = 0
         lock.unlock()
 
         engine?.inputNode.removeTap(onBus: 0)
@@ -171,6 +175,7 @@ final class AudioRecorder: @unchecked Sendable {
         stopCaptureSilenceSamples = 0
         stopCaptureSamplesUntilTimeout = 0
         stopCaptureCompletionReason = "none"
+        lastObservedRms = 0
         isCapturing = true
     }
 
@@ -196,20 +201,30 @@ final class AudioRecorder: @unchecked Sendable {
         var waitSignal: DispatchSemaphore?
         let stopRequestedAt = ProcessInfo.processInfo.systemUptime
         var waitResult: DispatchTimeoutResult?
+        var configuredMaxWaitMs = 0
+        var stopRequestedRms: Float = 0
 
         lock.lock()
         if isCapturing {
+            stopRequestedRms = lastObservedRms
+            let maxWaitSeconds =
+                stopRequestedRms >= stopCaptureSpeechRmsThreshold
+                ? stopCaptureSpeechWaitSeconds
+                : stopCaptureFastWaitSeconds
+            configuredMaxWaitMs = Int((maxWaitSeconds * 1000).rounded())
             let signal = DispatchSemaphore(value: 0)
             stopCapturePending = true
             stopCaptureSignal = signal
             stopCaptureSilenceSamples = 0
             stopCaptureSamplesUntilTimeout = max(
                 1,
-                Int((nativeSampleRate * stopCaptureMaxWaitSeconds).rounded())
+                Int((nativeSampleRate * maxWaitSeconds).rounded())
             )
             stopCaptureCompletionReason = "pending"
             waitSignal = signal
         } else {
+            configuredMaxWaitMs = 0
+            stopRequestedRms = lastObservedRms
             stopCapturePending = false
             stopCaptureSignal = nil
             stopCaptureSilenceSamples = 0
@@ -242,7 +257,7 @@ final class AudioRecorder: @unchecked Sendable {
 
         let stopElapsedMs = Int(((ProcessInfo.processInfo.systemUptime - stopRequestedAt) * 1000).rounded())
         Self.logger.warning(
-            "[hark] stopCapture: reason=\(completionReason, privacy: .public) wait_ms=\(stopElapsedMs) captured_native=\(captured.count)"
+            "[hark] stopCapture: reason=\(completionReason, privacy: .public) wait_ms=\(stopElapsedMs) max_wait_ms=\(configuredMaxWaitMs) start_rms=\(stopRequestedRms) captured_native=\(captured.count)"
         )
 
         guard !captured.isEmpty else { return [] }
@@ -297,6 +312,7 @@ final class AudioRecorder: @unchecked Sendable {
 
         var stopSignalToFire: DispatchSemaphore?
         lock.lock()
+        lastObservedRms = rms
 
         if isCapturing || stopCapturePending {
             // Actively capturing - append to captured samples

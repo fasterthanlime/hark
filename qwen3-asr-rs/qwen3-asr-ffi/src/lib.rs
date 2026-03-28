@@ -16,6 +16,7 @@ pub struct AsrSession {
     state: StreamingState,
     transcript: String,
     pending_prefix: String,
+    detected_language: String,
     session_samples: usize,
     session_limit: usize,
     chunk_size_sec: f32,
@@ -82,6 +83,10 @@ fn join_segments(a: &str, b: &str) -> String {
     out
 }
 
+fn normalize_language_name(language: &str) -> String {
+    language.trim().to_lowercase()
+}
+
 fn is_sentence_terminal(ch: char) -> bool {
     matches!(ch, '.' | '!' | '?' | '。' | '！' | '？')
 }
@@ -93,9 +98,9 @@ fn is_sentence_closer(ch: char) -> bool {
     )
 }
 
-const MIN_COMMIT_WORDS: usize = 5;
-const MIN_COMMIT_CHARS: usize = 24;
-const MIN_COMPLETE_SENTENCES_BEFORE_COMMIT: usize = 3;
+const MIN_COMMIT_WORDS: usize = 4;
+const MIN_COMMIT_CHARS: usize = 16;
+const MIN_COMPLETE_SENTENCES_BEFORE_COMMIT: usize = 2;
 
 fn content_word_count(text: &str) -> usize {
     text.split_whitespace()
@@ -138,9 +143,9 @@ fn sentence_boundaries(text: &str) -> Vec<usize> {
     out
 }
 
-/// Conservative commit policy:
-/// when we have at least three complete sentences, commit only the first one.
-/// This keeps a two-sentence lookahead to avoid committing too eagerly.
+/// Commit policy:
+/// when we have at least two complete sentences, commit only the first one.
+/// This keeps a one-sentence lookahead while avoiding long growing prefixes.
 fn split_for_commit(text: &str) -> Option<(&str, &str)> {
     let boundaries = sentence_boundaries(text);
     if boundaries.len() < MIN_COMPLETE_SENTENCES_BEFORE_COMMIT {
@@ -418,6 +423,7 @@ pub extern "C" fn asr_session_create(
         state,
         transcript: String::new(),
         pending_prefix: String::new(),
+        detected_language: String::new(),
         session_samples: 0,
         session_limit,
         chunk_size_sec: opts.chunk_size_sec,
@@ -445,6 +451,7 @@ pub extern "C" fn asr_session_feed(
 
         match s.engine.feed_audio(&mut s.state, audio) {
             Ok(Some(result)) => {
+                s.detected_language = normalize_language_name(&result.language);
                 let current_text = join_segments(&s.pending_prefix, &result.text);
 
                 // Commit the oldest sentence once we have >=3 complete sentences
@@ -458,6 +465,7 @@ pub extern "C" fn asr_session_feed(
                         .engine
                         .finish_streaming(&mut s.state)
                         .map_err(|e| format!("{e:#}"))?;
+                    s.detected_language = normalize_language_name(&flushed.language);
                     let full_tail = join_segments(&s.pending_prefix, &flushed.text);
                     if let Some((committed, remainder)) = split_for_commit(&full_tail) {
                         append_segment(&mut s.transcript, committed);
@@ -523,6 +531,75 @@ pub extern "C" fn asr_session_committed_utf16_len(session: *const AsrSession) ->
     result.unwrap_or(0)
 }
 
+/// Return the most recently detected language for the session.
+///
+/// Returns NULL if unavailable.
+#[no_mangle]
+pub extern "C" fn asr_session_last_language(session: *const AsrSession) -> *mut c_char {
+    if session.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let s = unsafe { &*session };
+        if s.detected_language.is_empty() {
+            return None;
+        }
+        Some(s.detected_language.clone())
+    }));
+
+    match result {
+        Ok(Some(language)) => to_c_string(language),
+        _ => std::ptr::null_mut(),
+    }
+}
+
+/// Force or clear language for an active streaming session.
+///
+/// `language=NULL` (or empty string) restores auto-detection.
+/// Returns true on success, false on error (check `*out_err`).
+#[no_mangle]
+pub extern "C" fn asr_session_set_language(
+    session: *mut AsrSession,
+    language: *const c_char,
+    out_err: *mut *mut c_char,
+) -> bool {
+    if session.is_null() {
+        set_error(out_err, "session is null".into());
+        return false;
+    }
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let s = unsafe { &mut *session };
+        let requested = if language.is_null() {
+            None
+        } else {
+            let raw = unsafe { CStr::from_ptr(language) }
+                .to_str()
+                .map_err(|e| format!("invalid language: {e}"))?;
+            let normalized = normalize_language_name(raw);
+            if normalized.is_empty() { None } else { Some(normalized) }
+        };
+
+        s.language = requested.clone();
+        s.engine
+            .set_streaming_language(&mut s.state, requested.as_deref());
+        Ok::<(), String>(())
+    }));
+
+    match result {
+        Ok(Ok(())) => true,
+        Ok(Err(msg)) => {
+            set_error(out_err, msg);
+            false
+        }
+        Err(_) => {
+            set_error(out_err, "panic during set_language".into());
+            false
+        }
+    }
+}
+
 /// Finalize the session and return the complete transcript.
 ///
 /// Returns a newly-allocated C string (caller must free with `asr_string_free`).
@@ -538,6 +615,7 @@ pub extern "C" fn asr_session_finish(
             .engine
             .finish_streaming(&mut s.state)
             .map_err(|e| format!("{e:#}"))?;
+        s.detected_language = normalize_language_name(&final_result.language);
         let full_tail = join_segments(&s.pending_prefix, &final_result.text);
         append_segment(&mut s.transcript, &full_tail);
         s.pending_prefix.clear();
@@ -582,6 +660,7 @@ pub extern "C" fn asr_string_free(s: *mut c_char) {
 fn rotate_session(s: &mut AsrSession) {
     // Finalize current sub-session.
     if let Ok(result) = s.engine.finish_streaming(&mut s.state) {
+        s.detected_language = normalize_language_name(&result.language);
         let full_tail = join_segments(&s.pending_prefix, &result.text);
         append_segment(&mut s.transcript, &full_tail);
         s.pending_prefix.clear();
@@ -594,9 +673,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn split_for_commit_needs_three_complete_sentences() {
-        assert!(split_for_commit("hello world.").is_none());
-        assert!(split_for_commit("hello world. next bit is complete.").is_none());
+    fn split_for_commit_needs_two_complete_sentences() {
+        assert!(split_for_commit("First sentence has enough words now.").is_none());
+        let (commit, rest) = split_for_commit(
+            "First sentence has enough words now. Second sentence is complete too."
+        )
+        .expect("should split with two complete sentences");
+        assert_eq!(commit, "First sentence has enough words now.");
+        assert_eq!(rest, "Second sentence is complete too.");
     }
 
     #[test]

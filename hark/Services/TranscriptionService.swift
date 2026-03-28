@@ -192,10 +192,12 @@ final class TranscriptionService: @unchecked Sendable {
 
         let committedUTF16 = Int(asr_session_committed_utf16_len_ffi(session.ptr))
         let clampedCommittedUTF16 = min(max(0, committedUTF16), (text as NSString).length)
+        let detectedLanguage = sessionLastLanguage(session: session)
 
         return StreamingTranscriptUpdate(
             text: text,
-            committedUTF16Count: clampedCommittedUTF16
+            committedUTF16Count: clampedCommittedUTF16,
+            detectedLanguage: detectedLanguage
         )
     }
 
@@ -215,6 +217,37 @@ final class TranscriptionService: @unchecked Sendable {
         let text = String(cString: result)
         asr_string_free(result)
         return text
+    }
+
+    /// Override or clear forced language for an active streaming session.
+    /// Pass `nil` to restore auto-detection.
+    func setLanguage(session: StreamingSession, language: String?) -> Bool {
+        var err: UnsafeMutablePointer<CChar>?
+        let success: Bool = {
+            guard let language else {
+                return asr_session_set_language(session.ptr, nil, &err)
+            }
+            return language.withCString { langPtr in
+                asr_session_set_language(session.ptr, langPtr, &err)
+            }
+        }()
+
+        if let err {
+            let msg = String(cString: err, encoding: .utf8) ?? "unknown"
+            asr_string_free(err)
+            Self.logger.error("setLanguage error: \(msg, privacy: .public)")
+            return false
+        }
+
+        return success
+    }
+
+    private func sessionLastLanguage(session: StreamingSession) -> String? {
+        guard let raw = asr_session_last_language(session.ptr) else { return nil }
+        let text = String(cString: raw)
+        asr_string_free(raw)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 
@@ -259,4 +292,5 @@ enum ModelLoadUpdate: Sendable {
 struct StreamingTranscriptUpdate: Sendable {
     let text: String
     let committedUTF16Count: Int
+    let detectedLanguage: String?
 }
