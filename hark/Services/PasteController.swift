@@ -84,9 +84,19 @@ struct PasteController {
 
     // MARK: - Direct AX input
 
+    /// Result of capturing the focused AX text element.
+    struct CapturedTextField {
+        let element: AXUIElement
+        /// The real text content (empty if only placeholder was present).
+        let text: String
+        /// The cursor position (UTF-16 offset).
+        let cursorPosition: Int
+    }
+
     /// Captures the focused AX text element so we can write to it repeatedly
-    /// during streaming transcription.
-    static func captureFocusedTextField() -> AXUIElement? {
+    /// during streaming transcription. Returns nil if the focused element
+    /// doesn't support text value manipulation.
+    static func captureFocusedTextField() -> CapturedTextField? {
         let systemWide = AXUIElementCreateSystemWide()
         var focusedRef: AnyObject?
         guard AXUIElementCopyAttributeValue(
@@ -107,63 +117,151 @@ struct PasteController {
             element,
             kAXValueAttribute as CFString,
             &valueRef
-        ) == .success, valueRef is String else {
+        ) == .success, let rawValue = valueRef as? String else {
             return nil
         }
-        return element
+
+        // Check if the value is just placeholder text — if so, treat as empty.
+        var placeholderRef: AnyObject?
+        let text: String
+        if AXUIElementCopyAttributeValue(
+            element,
+            kAXPlaceholderValueAttribute as CFString,
+            &placeholderRef
+        ) == .success, let placeholder = placeholderRef as? String, rawValue == placeholder {
+            text = ""
+        } else {
+            text = rawValue
+        }
+
+        // Read cursor position
+        var cursorPosition = (text as NSString).length
+        var rangeRef: AnyObject?
+        if AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
+           let rangeRef, CFGetTypeID(rangeRef) == AXValueGetTypeID() {
+            let rangeValue = unsafeBitCast(rangeRef, to: AXValue.self)
+            var range = CFRange(location: 0, length: 0)
+            if AXValueGetValue(rangeValue, .cfRange, &range) {
+                cursorPosition = min(range.location, (text as NSString).length)
+            }
+        }
+
+        return CapturedTextField(element: element, text: text, cursorPosition: cursorPosition)
     }
 
-    /// Write text directly into an AX text element, splicing dictated text
-    /// between `replaceFrom` and `replaceTo` (UTF-16 offsets). Text before
-    /// `replaceFrom` and after `replaceTo` is preserved. The cursor is placed
-    /// at the end of the inserted text.
+    /// Write text directly into a text field using keyboard simulation.
+    /// Computes the diff between `previousText` and `text`:
+    /// - Common prefix is left alone
+    /// - Changed tail is deleted with Delete keypresses, then new tail is typed
+    /// - No AX value rewriting, no selection flashing
     @discardableResult
     static func setDirectText(
         _ text: String,
+        previousText: String,
         on element: AXUIElement,
-        replaceFrom: Int,
-        replaceTo: Int
+        replaceFrom: Int
     ) -> Bool {
-        // Read current value to splice
-        var valueRef: AnyObject?
-        let currentText: String
-        if AXUIElementCopyAttributeValue(
-            element,
-            kAXValueAttribute as CFString,
-            &valueRef
-        ) == .success, let existing = valueRef as? String {
-            currentText = existing
-        } else {
-            currentText = ""
+        if previousText.isEmpty && text.isEmpty { return true }
+
+        // Find where old and new text diverge
+        let commonPrefix = previousText.commonPrefix(with: text)
+        let oldTail = String(previousText[commonPrefix.endIndex...])
+        let newTail = String(text[commonPrefix.endIndex...])
+
+        if previousText.isEmpty {
+            // First insertion: position cursor via AX, then type
+            var range = CFRange(location: replaceFrom, length: 0)
+            if let rangeValue = AXValueCreate(.cfRange, &range) {
+                AXUIElementSetAttributeValue(
+                    element,
+                    kAXSelectedTextRangeAttribute as CFString,
+                    rangeValue
+                )
+            }
+            typeText(newTail)
+            return true
         }
 
-        let ns = currentText as NSString
-        let clampedFrom = min(max(0, replaceFrom), ns.length)
-        let clampedTo = min(max(clampedFrom, replaceTo), ns.length)
-        let prefix = ns.substring(to: clampedFrom)
-        let suffix = ns.substring(from: clampedTo)
-        let newValue = prefix + text + suffix
+        // Delete the old tail using Option+Delete (word-level) + Delete (remainder)
+        if !oldTail.isEmpty {
+            deleteBackward(text: oldTail)
+        }
 
-        // Set the value
-        let setResult = AXUIElementSetAttributeValue(
-            element,
-            kAXValueAttribute as CFString,
-            newValue as CFTypeRef
-        )
-        guard setResult == .success else { return false }
-
-        // Place cursor right after the inserted text
-        let cursorPos = (prefix as NSString).length + (text as NSString).length
-        var range = CFRange(location: cursorPos, length: 0)
-        if let rangeValue = AXValueCreate(.cfRange, &range) {
-            AXUIElementSetAttributeValue(
-                element,
-                kAXSelectedTextRangeAttribute as CFString,
-                rangeValue
-            )
+        // Type the new tail
+        if !newTail.isEmpty {
+            typeText(newTail)
         }
 
         return true
+    }
+
+    /// Delete `text` backward from the cursor using Option+Delete (word-level)
+    /// and plain Delete (character-level) for any remaining partial word at the start.
+    private static func deleteBackward(text: String) {
+        guard !text.isEmpty else { return }
+
+        // Count word boundaries in the text to know how many Option+Deletes we need.
+        // We work backward: each Option+Delete removes one word (including trailing whitespace).
+        // After the word deletes, mop up any remaining characters with plain Delete.
+        let deleteKeyCode = CGKeyCode(kVK_Delete)
+
+        // Use NSString word enumeration to count words — this matches macOS word boundaries.
+        let ns = text as NSString
+        var wordCount = 0
+        var coveredUTF16 = 0
+        ns.enumerateSubstrings(
+            in: NSRange(location: 0, length: ns.length),
+            options: [.byWords, .reverse]
+        ) { _, substringRange, enclosingRange, _ in
+            wordCount += 1
+            // enclosingRange includes surrounding whitespace
+            coveredUTF16 = ns.length - enclosingRange.location
+        }
+
+        // Characters before the first word boundary (e.g. leading punctuation/spaces
+        // that aren't part of a word) — delete these character by character
+        let remainingChars = ns.length - coveredUTF16
+
+        // Option+Delete for each word
+        for _ in 0..<wordCount {
+            guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: deleteKeyCode, keyDown: true),
+                  let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: deleteKeyCode, keyDown: false)
+            else { continue }
+            keyDown.flags = .maskAlternate
+            keyUp.flags = .maskAlternate
+            keyDown.post(tap: .cghidEventTap)
+            keyUp.post(tap: .cghidEventTap)
+        }
+
+        // Plain Delete for any remaining characters
+        for _ in 0..<remainingChars {
+            guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: deleteKeyCode, keyDown: true),
+                  let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: deleteKeyCode, keyDown: false)
+            else { continue }
+            keyDown.flags = []
+            keyUp.flags = []
+            keyDown.post(tap: .cghidEventTap)
+            keyUp.post(tap: .cghidEventTap)
+        }
+    }
+
+    /// Type text via CGEvent unicode keyboard events.
+    private static func typeText(_ text: String) {
+        let utf16 = Array(text.utf16)
+        let chunkSize = 20
+        for offset in stride(from: 0, to: utf16.count, by: chunkSize) {
+            let end = min(offset + chunkSize, utf16.count)
+            var chunk = Array(utf16[offset..<end])
+
+            guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true) else { continue }
+            keyDown.flags = []
+            keyDown.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: &chunk)
+            keyDown.post(tap: .cghidEventTap)
+
+            guard let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else { continue }
+            keyUp.flags = []
+            keyUp.post(tap: .cghidEventTap)
+        }
     }
 
     // MARK: - Private

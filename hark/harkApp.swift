@@ -560,8 +560,10 @@ struct HarkApp: App {
     @State private var directInputElement: AXUIElement?
     /// UTF-16 offset in the AX text field where our dictated text begins.
     @State private var directInputOrigin: Int = 0
-    /// UTF-16 offset where the last dictated text ends (for replacing on updates).
-    @State private var directInputEnd: Int = 0
+    /// Original text content of the AX field at recording start, for restoring on cancel.
+    @State private var directInputOriginalText: String?
+    /// The last dictated text written to the AX field, for computing diffs.
+    @State private var directInputLastText: String = ""
     @State private var forensicsSession: ForensicsSession?
     @State private var tinkSound: NSSound?
     @State private var popSound: NSSound?
@@ -1080,23 +1082,16 @@ struct HarkApp: App {
         pasteTargetBundleID = frontApp?.bundleIdentifier
 
         // Capture AX text field for direct input mode
-        if appState.currentDirectInput, let element = PasteController.captureFocusedTextField() {
-            directInputElement = element
-            // Read current cursor position as our insertion origin
-            var rangeRef: AnyObject?
-            if AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
-               let rangeRef, CFGetTypeID(rangeRef) == AXValueGetTypeID() {
-                let rangeValue = unsafeBitCast(rangeRef, to: AXValue.self)
-                var range = CFRange(location: 0, length: 0)
-                if AXValueGetValue(rangeValue, .cfRange, &range) {
-                    directInputOrigin = range.location
-                    directInputEnd = range.location
-                }
-            }
+        if appState.currentDirectInput, let captured = PasteController.captureFocusedTextField() {
+            directInputElement = captured.element
+            directInputOrigin = captured.cursorPosition
+            directInputOriginalText = captured.text
+            directInputLastText = ""
         } else {
             directInputElement = nil
             directInputOrigin = 0
-            directInputEnd = 0
+            directInputOriginalText = nil
+            directInputLastText = ""
         }
         appState.overlayLockedBundleID = pasteTargetBundleID
         appState.overlayLockedAppName = frontApp?.localizedName
@@ -1266,11 +1261,11 @@ struct HarkApp: App {
                             if let element = directInputElement {
                                 PasteController.setDirectText(
                                     trimmed,
+                                    previousText: directInputLastText,
                                     on: element,
-                                    replaceFrom: directInputOrigin,
-                                    replaceTo: directInputEnd
+                                    replaceFrom: directInputOrigin
                                 )
-                                directInputEnd = directInputOrigin + (trimmed as NSString).length
+                                directInputLastText = trimmed
                             }
                         }
 
@@ -1339,7 +1334,7 @@ struct HarkApp: App {
                     _ = appState.transition(to: .pasting)
                     if let element = directInputElement {
                         // Direct input: text is already in the field, just finalize + submit
-                        PasteController.setDirectText(result.text, on: element, replaceFrom: directInputOrigin, replaceTo: directInputEnd)
+                        PasteController.setDirectText(result.text, previousText: directInputLastText, on: element, replaceFrom: directInputOrigin)
                         let returnKeyCode: CGKeyCode = 36
                         if let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: true),
                            let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: false) {
@@ -1394,6 +1389,7 @@ struct HarkApp: App {
                 streamingSession = nil
                 pasteTargetBundleID = nil
                 directInputElement = nil
+                directInputOriginalText = nil
                 appState.overlayLockedBundleID = nil
                 appState.overlayLockedAppName = nil
                 appState.overlayTetherOutOfApp = false
@@ -1901,6 +1897,26 @@ struct HarkApp: App {
         return matches
     }
 
+    /// Restore the AX text field to its original content (before dictation started).
+    @MainActor
+    private func restoreDirectInputOriginalText() {
+        guard let element = directInputElement, let originalText = directInputOriginalText else { return }
+        AXUIElementSetAttributeValue(
+            element,
+            kAXValueAttribute as CFString,
+            originalText as CFTypeRef
+        )
+        // Restore cursor to original position
+        var range = CFRange(location: directInputOrigin, length: 0)
+        if let rangeValue = AXValueCreate(.cfRange, &range) {
+            AXUIElementSetAttributeValue(
+                element,
+                kAXSelectedTextRangeAttribute as CFString,
+                rangeValue
+            )
+        }
+    }
+
     @MainActor
     private func finishAndPaste(text: String, skipPaste: Bool = false, forceSubmit: Bool = false) async {
         // Don't clear partialTranscript here — let the dismiss animation show the final text.
@@ -1922,6 +1938,8 @@ struct HarkApp: App {
             }
             forensicsSession = nil
             pasteTargetBundleID = nil
+            directInputElement = nil
+            directInputOriginalText = nil
             appState.overlayLockedBundleID = nil
             appState.overlayLockedAppName = nil
             appState.overlayTetherOutOfApp = false
@@ -1931,6 +1949,8 @@ struct HarkApp: App {
             traceEvent("finish_no_paste", [
                 "reason": text.isEmpty ? "empty_text" : "skip_paste",
             ])
+            // Restore original text field contents on cancel
+            restoreDirectInputOriginalText()
             _ = appState.transition(to: .idle)
             overlayManager.hideWithResult(.cancelled)
             playCancelSound()
@@ -1942,6 +1962,7 @@ struct HarkApp: App {
             traceEvent("finish_paste_blocked", [
                 "reason": "locked_target_mismatch",
             ])
+            restoreDirectInputOriginalText()
             _ = appState.transition(to: .idle)
             overlayManager.hideWithResult(.cancelled)
             playCancelSound()
@@ -1969,7 +1990,7 @@ struct HarkApp: App {
                 "submit": String(shouldSubmit),
             ])
             _ = appState.transition(to: .pasting)
-            PasteController.setDirectText(text, on: element, replaceFrom: directInputOrigin, replaceTo: directInputEnd)
+            PasteController.setDirectText(text, previousText: directInputLastText, on: element, replaceFrom: directInputOrigin)
             if shouldSubmit {
                 try? await Task.sleep(for: .milliseconds(50))
                 // Simulate Enter after the direct write
