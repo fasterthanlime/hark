@@ -2193,6 +2193,7 @@ struct HarkApp: App {
             forName: NSNotification.Name("fasterthanlime.hark.imeCancel"),
             object: nil, queue: .main
         ) { [self] _ in
+            Self.logger.warning("[hark] received imeCancel notification, phase=\(String(describing: self.appState.phase))")
             Task { @MainActor in
                 guard self.appState.phase == .recording else { return }
                 await self.stopRecordingAndTranscribe(skipPaste: true, forceSubmit: false)
@@ -2204,8 +2205,12 @@ struct HarkApp: App {
             forName: NSNotification.Name("fasterthanlime.hark.imeSubmit"),
             object: nil, queue: .main
         ) { [self] _ in
+            Self.logger.warning("[hark] received imeSubmit notification, phase=\(String(describing: self.appState.phase))")
             Task { @MainActor in
-                guard self.appState.phase == .recording else { return }
+                guard self.appState.phase == .recording else {
+                    Self.logger.warning("[hark] imeSubmit ignored: not recording")
+                    return
+                }
                 await self.stopRecordingAndTranscribe(skipPaste: false, forceSubmit: true)
             }
         }
