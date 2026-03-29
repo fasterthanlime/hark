@@ -131,6 +131,13 @@ final class HarkInputClient {
 
     /// Commit final text via distributed notification.
     static func sendCommitText(_ text: String) {
+        // Clear isDictating first so the IME stops intercepting keys
+        DistributedNotificationCenter.default().postNotificationName(
+            NSNotification.Name("fasterthanlime.hark.stopDictating"),
+            object: nil,
+            userInfo: nil,
+            deliverImmediately: true
+        )
         DistributedNotificationCenter.default().postNotificationName(
             NSNotification.Name("fasterthanlime.hark.commitText"),
             object: nil,

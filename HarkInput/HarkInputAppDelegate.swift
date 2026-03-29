@@ -55,6 +55,12 @@ class HarkInputAppDelegate: NSObject, NSApplicationDelegate {
         ) { _ in
             HarkXPCService.shared.cancelInput()
         }
+        dnc.addObserver(
+            forName: NSNotification.Name("fasterthanlime.hark.stopDictating"),
+            object: nil, queue: .main
+        ) { _ in
+            HarkXPCService.shared.isDictating = false
+        }
         Self.logger.warning("Distributed notification listeners registered")
     }
 }
