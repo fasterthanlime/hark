@@ -2039,10 +2039,13 @@ struct HarkApp: App {
             // If we're tethered to a different app, bring it back before committing.
             if let lockedBundle = pasteTargetBundleID,
                NSWorkspace.shared.frontmostApplication?.bundleIdentifier != lockedBundle {
-                if let app = NSRunningApplication.runningApplications(withBundleIdentifier: lockedBundle).first {
-                    app.activate()
+                let apps = NSRunningApplication.runningApplications(withBundleIdentifier: lockedBundle)
+                Self.logger.warning("[hark] re-activating locked app bundle=\(lockedBundle, privacy: .public) found=\(apps.count)")
+                if let app = apps.first {
+                    let ok = app.activate(options: [.activateIgnoringOtherApps])
+                    Self.logger.warning("[hark] activate result=\(ok) pid=\(app.processIdentifier)")
                     // Give the app a moment to come to front and re-activate the IME
-                    try? await Task.sleep(for: .milliseconds(300))
+                    try? await Task.sleep(for: .milliseconds(500))
                 }
             }
 

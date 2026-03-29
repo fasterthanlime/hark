@@ -77,7 +77,7 @@ struct RecordingOverlayView: View {
 
             transcriptBody(maxTextHeight: textViewportHeight)
                 .frame(maxWidth: .infinity, maxHeight: textViewportHeight, alignment: .topLeading)
-                .opacity(directInput ? 0 : 1)
+                .opacity(directInput && !appState.overlayTetherOutOfApp ? 0 : 1)
 
             if !appState.overlayFooterAbove {
                 footerBand
