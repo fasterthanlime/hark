@@ -2070,7 +2070,10 @@ struct HarkApp: App {
             }
 
             if shouldSubmit {
-                try? await Task.sleep(for: .milliseconds(50))
+                // Wait for the IME commit to land before simulating Enter.
+                // The distributed notification → IME → insertText round trip
+                // needs time, especially in terminals.
+                try? await Task.sleep(for: .milliseconds(300))
                 let returnKeyCode: CGKeyCode = 36
                 if let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: true),
                    let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: false) {
