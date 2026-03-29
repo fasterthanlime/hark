@@ -584,7 +584,7 @@ struct HarkApp: App {
     private static let minimumSpeechDurationSeconds = 0.2
     private static let accidentalDoublePressRecordingThresholdSeconds: TimeInterval = 0.5
     private static let accidentalDoublePressIgnoreWindowSeconds: TimeInterval = 0.5
-    private static let streamingChunkSizeSec: Float = 0.4
+    // streamingChunkSizeSec is now in AppState (configurable)
     private static let transcriptionSampleRate = 16_000.0
     // Silence padding after remaining audio. With the race condition fixed,
     // finalization reliably processes all samples, so minimal padding is needed.
@@ -696,6 +696,9 @@ struct HarkApp: App {
         }
         if let saved = UserDefaults.standard.dictionary(forKey: AppState.appInsertionStrategyDefaultsKey) as? [String: String] {
             appState.appInsertionStrategy = saved
+        }
+        if UserDefaults.standard.object(forKey: AppState.streamingChunkSizeDefaultsKey) != nil {
+            appState.streamingChunkSizeSec = UserDefaults.standard.float(forKey: AppState.streamingChunkSizeDefaultsKey)
         }
         if let saved = UserDefaults.standard.dictionary(
             forKey: AppState.inputDeviceWarmPreferencesDefaultsKey
@@ -1183,7 +1186,7 @@ struct HarkApp: App {
         guard appState.phase == .recording else { return }
         let language = appState.currentLanguage
         let prompt = appState.vocabPrompt
-        let chunkSizeSec = Self.streamingChunkSizeSec
+        let chunkSizeSec = appState.streamingChunkSizeSec
         let createStartedAt = ProcessInfo.processInfo.systemUptime
         let createdSession: StreamingSession? = await Task.detached(priority: .userInitiated) {
             [transcriptionService, language, prompt, chunkSizeSec] in
@@ -1245,7 +1248,7 @@ struct HarkApp: App {
         // Start streaming transcription
         traceEvent("streaming_session_create", [
             "session_exists": (streamingSession != nil).description,
-            "chunk_size_sec": String(format: "%.2f", Self.streamingChunkSizeSec),
+            "chunk_size_sec": String(format: "%.2f", appState.streamingChunkSizeSec),
         ])
         startStreamingTranscription()
     }

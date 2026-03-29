@@ -272,6 +272,18 @@ final class AppState {
     /// Compat shim — returns currentVocabPrompt for session creation.
     var vocabPrompt: String? { currentVocabPrompt }
 
+    // MARK: - Streaming chunk size
+
+    static let streamingChunkSizeDefaultsKey = "streamingChunkSizeSec"
+    static let streamingChunkSizeOptions: [Float] = [0.2, 0.3, 0.4, 0.5, 0.75, 1.0]
+    static let streamingChunkSizeDefault: Float = 0.4
+
+    var streamingChunkSizeSec: Float = streamingChunkSizeDefault {
+        didSet {
+            UserDefaults.standard.set(streamingChunkSizeSec, forKey: Self.streamingChunkSizeDefaultsKey)
+        }
+    }
+
     /// Real-time microphone audio level (0–1), updated from the audio tap.
     var audioLevel: Float = 0
 

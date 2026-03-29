@@ -549,6 +549,24 @@ struct MenuBarView: View {
                 isHovering: $isHoveringForensicsHTMLDump,
                 action: onToggleForensicsHTMLDump
             )
+
+            // Streaming chunk size picker
+            HStack {
+                Text("Chunk Size")
+                    .font(.system(.caption))
+                Spacer()
+                Picker("", selection: Binding(
+                    get: { appState.streamingChunkSizeSec },
+                    set: { appState.streamingChunkSizeSec = $0 }
+                )) {
+                    ForEach(AppState.streamingChunkSizeOptions, id: \.self) { size in
+                        Text("\(size, specifier: "%.2f")s").tag(size)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 80)
+            }
+            .padding(.horizontal, 6)
         }
     }
 
