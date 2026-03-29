@@ -933,20 +933,47 @@ struct HarkApp: App {
         trace.addRustBatch(json)
     }
 
-    @MainActor
-    private func runFinalization(
+    private static func runFinalizationStatic(
+        transcriptionService: TranscriptionService,
         session: StreamingSession,
         allSamples: [Float],
         processedCount: Int,
         preFinalizeText: String,
-        trace: ForensicsSession?
+        trace: ForensicsSession?,
+        finalizationSilencePaddingSeconds: Double,
+        finalizationMinimumSilencePaddingSeconds: Double,
+        transcriptionSampleRate: Double
     ) async -> FinalizationRunResult {
-        let transcriptionService = self.transcriptionService
-        let finalizationSilencePaddingSeconds = Self.finalizationSilencePaddingSeconds
-        let finalizationMinimumSilencePaddingSeconds = Self.finalizationMinimumSilencePaddingSeconds
-        let transcriptionSampleRate = Self.transcriptionSampleRate
         return await Task.detached(priority: .userInitiated) {
-            let prepareStartedAt = ProcessInfo.processInfo.systemUptime
+            Self.runFinalizationSync(
+                transcriptionService: transcriptionService,
+                session: session,
+                allSamples: allSamples,
+                processedCount: processedCount,
+                preFinalizeText: preFinalizeText,
+                trace: trace,
+                finalizationSilencePaddingSeconds: finalizationSilencePaddingSeconds,
+                finalizationMinimumSilencePaddingSeconds: finalizationMinimumSilencePaddingSeconds,
+                transcriptionSampleRate: transcriptionSampleRate
+            )
+        }.value
+    }
+
+    private nonisolated static func runFinalizationSync(
+        transcriptionService: TranscriptionService,
+        session: StreamingSession,
+        allSamples: [Float],
+        processedCount: Int,
+        preFinalizeText: String,
+        trace: ForensicsSession?,
+        finalizationSilencePaddingSeconds: Double,
+        finalizationMinimumSilencePaddingSeconds: Double,
+        transcriptionSampleRate: Double
+    ) -> FinalizationRunResult {
+        let finalizationSilencePaddingSeconds = finalizationSilencePaddingSeconds
+        let finalizationMinimumSilencePaddingSeconds = finalizationMinimumSilencePaddingSeconds
+        let transcriptionSampleRate = transcriptionSampleRate
+        let prepareStartedAt = ProcessInfo.processInfo.systemUptime
             let remaining = processedCount < allSamples.count ? Array(allSamples[processedCount...]) : []
             let remainingCount = max(0, allSamples.count - processedCount)
 
@@ -1035,7 +1062,6 @@ struct HarkApp: App {
                 fallbackSamples: fallbackSamples,
                 finalizeBufferRelPath: finalizeBufferRelPath
             )
-        }.value
     }
 
     @MainActor
@@ -1657,7 +1683,6 @@ struct HarkApp: App {
     @MainActor
     private func stopRecordingAndTranscribe(cancelTimeoutTask: Bool = true, skipPaste: Bool = false, forceSubmit: Bool = false) async {
         guard appState.phase == .recording else { return }
-        let stopStartedAt = ProcessInfo.processInfo.systemUptime
         let recordingDurationMs = Int(
             ((recordingStartedAt.map { Date().timeIntervalSince($0) } ?? 0) * 1000).rounded()
         )
@@ -1667,136 +1692,129 @@ struct HarkApp: App {
             "force_submit": String(forceSubmit),
         ])
 
+        // Phase 1: Quick state changes on main (no blocking).
         _ = appState.transition(to: .transcribing)
         appState.isFinishing = true
 
-        if cancelTimeoutTask {
-            cancelRecordingTimeout()
-        }
+        if cancelTimeoutTask { cancelRecordingTimeout() }
         removeEscapeMonitor()
         appState.isLockedMode = false
         keyDownTime = nil
         recordingStartedAt = nil
         hotkeyMonitor.allowExtraModifiers = false
 
-        // Stop the streaming loop.
         let stask = streamingTask
         streamingTask = nil
         stask?.cancel()
 
-        // Stop capture off-main and use the definitive captured buffer at stop time.
-        // Using `peekCapture()` here can miss tail audio arriving between peek and stop.
-        let shouldKeepWarm = appState.activeInputDeviceKeepWarm
+        // Capture references for the background task.
         let recorder = self.audioRecorder
-        let captureStop = await Task.detached(priority: .userInitiated) { () -> (samples: [Float], stopMs: Int, isWarmedAfterStop: Bool) in
+        let shouldKeepWarm = appState.activeInputDeviceKeepWarm
+        let session = streamingSession
+        let preFinalizeText = appState.partialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trace = forensicsSession
+
+        // Phase 2: All heavy work on a detached task — main is free for animations.
+        let finalizationResult: (text: String, allSamples: [Float], remainingSamples: [Float], finalizeChunk: [Float], padSampleCount: Int, captureStopMs: Int, streamJoinMs: Int, feedMs: Int, finishMs: Int, prepareMs: Int, remainingCount: Int, fallbackMs: Int?, fallbackSamples: Int?, finalizeBufferRelPath: String?) = await Task.detached(priority: .userInitiated) { [transcriptionService] in
+            // Stop capture
             let captureStopStartedAt = ProcessInfo.processInfo.systemUptime
-            let samples: [Float]
+            let allSamples: [Float]
             if recorder.isWarmedUp {
-                samples = recorder.stopCapture()
+                allSamples = recorder.stopCapture()
             } else {
-                samples = recorder.stop()
+                allSamples = recorder.stop()
             }
-            let stopMs = Int(((ProcessInfo.processInfo.systemUptime - captureStopStartedAt) * 1000).rounded())
-            return (samples: samples, stopMs: stopMs, isWarmedAfterStop: recorder.isWarmedUp)
-        }.value
-        let allSamples = captureStop.samples
-        let captureStopMs = captureStop.stopMs
-        traceEvent("capture_stopped", [
-            "capture_stop_ms": String(captureStopMs),
-            "all_samples": String(allSamples.count),
-        ])
-        appState.audioLevel = 0
-        if !shouldKeepWarm, captureStop.isWarmedAfterStop {
-            await Task.detached(priority: .userInitiated) {
+            let captureStopMs = Int(((ProcessInfo.processInfo.systemUptime - captureStopStartedAt) * 1000).rounded())
+
+            if !shouldKeepWarm, recorder.isWarmedUp {
                 recorder.coolDown()
-            }.value
+            }
+
+            // Join the streaming task
+            let streamJoinStartedAt = ProcessInfo.processInfo.systemUptime
+            let streamResult = await stask?.value
+            let streamJoinMs = Int(((ProcessInfo.processInfo.systemUptime - streamJoinStartedAt) * 1000).rounded())
+            let processedCount = streamResult?.processedSampleCount ?? 0
+
+            // Finalize
+            var text = preFinalizeText
+            var remainingSamples: [Float] = []
+            var finalizeChunk: [Float] = []
+            var padSampleCount = 0
+            var feedMs = 0
+            var finishMs = 0
+            var prepareMs = 0
+            var remainingCount = 0
+            var fallbackMs: Int?
+            var fallbackSamples: Int?
+            var finalizeBufferRelPath: String?
+
+            if let session {
+                // Drain debug events from streaming
+                if let trace {
+                    let json = transcriptionService.takeDebugEventsJSON(session: session)
+                    trace.addRustBatch(json)
+                }
+
+                remainingCount = max(0, allSamples.count - processedCount)
+                let finalization = await HarkApp.runFinalizationStatic(
+                    transcriptionService: transcriptionService,
+                    session: session,
+                    allSamples: allSamples,
+                    processedCount: processedCount,
+                    preFinalizeText: preFinalizeText,
+                    trace: trace,
+                    finalizationSilencePaddingSeconds: Self.finalizationSilencePaddingSeconds,
+                    finalizationMinimumSilencePaddingSeconds: Self.finalizationMinimumSilencePaddingSeconds,
+                    transcriptionSampleRate: Self.transcriptionSampleRate
+                )
+                remainingSamples = finalization.remainingSamples
+                finalizeChunk = finalization.finalizeChunk
+                padSampleCount = finalization.padSampleCount
+                feedMs = finalization.feedMs
+                finishMs = finalization.finishMs
+                prepareMs = finalization.prepareMs
+                fallbackMs = finalization.fallbackMs
+                fallbackSamples = finalization.fallbackSamples
+                finalizeBufferRelPath = finalization.finalizeBufferRelPath
+                text = finalization.text
+
+                // Drain debug events from finalization
+                if let trace {
+                    let json = transcriptionService.takeDebugEventsJSON(session: session)
+                    trace.addRustBatch(json)
+                }
+            }
+
+            return (text: text, allSamples: allSamples, remainingSamples: remainingSamples, finalizeChunk: finalizeChunk, padSampleCount: padSampleCount, captureStopMs: captureStopMs, streamJoinMs: streamJoinMs, feedMs: feedMs, finishMs: finishMs, prepareMs: prepareMs, remainingCount: remainingCount, fallbackMs: fallbackMs, fallbackSamples: fallbackSamples, finalizeBufferRelPath: finalizeBufferRelPath)
+        }.value
+
+        // Phase 3: Back on main — update UI and commit.
+        let text = finalizationResult.text
+        appState.audioLevel = 0
+        if !shouldKeepWarm {
             appState.spectrumBands = Array(repeating: 0, count: AudioRecorder.spectrumBandCount)
         }
 
-        // Feed any remaining samples and finalize the session to get the complete transcript.
-        var text = appState.partialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-        let preFinalizeText = text
-        var debugProcessedCount = 0
-        var debugRemainingSamples: [Float] = []
-        var debugFinalizeChunk: [Float] = []
-        var debugPadSampleCount = 0
-        var debugStreamJoinMs = 0
-        var debugFinalizeFeedMs = 0
-        var debugFinishMs = 0
-        var debugFallbackMs: Int?
-        Self.logger.warning("[hark] stop: partial='\(text, privacy: .public)' sessionExists=\(streamingSession != nil) samples=\(allSamples.count)")
-        if let session = streamingSession {
-            // Wait for the streaming loop to exit so we don't race on the session.
-            let streamJoinStartedAt = ProcessInfo.processInfo.systemUptime
-            let result = await stask?.value
-            let streamJoinMs = Int(((ProcessInfo.processInfo.systemUptime - streamJoinStartedAt) * 1000).rounded())
-            let processedCount = result?.processedSampleCount ?? 0
-            let remainingCount = max(0, allSamples.count - processedCount)
-            await drainAsrDebugEventsAsync(into: forensicsSession, session: session)
-            debugProcessedCount = processedCount
-            debugStreamJoinMs = streamJoinMs
-            traceEvent("stream_join_done", [
-                "stream_join_ms": String(streamJoinMs),
-                "processed_samples": String(processedCount),
-                "remaining_samples": String(remainingCount),
-            ])
-
-            Self.logger.warning("[hark] finalize: processed=\(processedCount) total=\(allSamples.count) remaining=\(remainingCount)")
-
-            let finalization = await runFinalization(
-                session: session,
-                allSamples: allSamples,
-                processedCount: processedCount,
-                preFinalizeText: preFinalizeText,
-                trace: forensicsSession
-            )
-            debugRemainingSamples = finalization.remainingSamples
-            debugFinalizeChunk = finalization.finalizeChunk
-            debugPadSampleCount = finalization.padSampleCount
-            debugFinalizeFeedMs = finalization.feedMs
-            debugFinishMs = finalization.finishMs
-            debugFallbackMs = finalization.fallbackMs
-
-            await drainAsrDebugEventsAsync(into: forensicsSession, session: session)
-            traceEvent("finalize_prepare_done", [
-                "prepare_ms": String(finalization.prepareMs),
-                "remaining_samples": String(finalization.remainingCount),
-                "finalize_chunk_samples": String(finalization.finalizeChunk.count),
-                "pad_samples": String(finalization.padSampleCount),
-            ])
-            traceEvent("finalize_done", [
-                "finalize_feed_ms": String(finalization.feedMs),
-                "finish_ms": String(finalization.finishMs),
-                "finalize_chunk_samples": String(finalization.finalizeChunk.count),
-                "pad_samples": String(finalization.padSampleCount),
-                "finalize_buffer_audio_relpath": finalization.finalizeBufferRelPath ?? "",
-            ])
-            if let fallbackMs = finalization.fallbackMs {
-                traceEvent("fallback_decode_done", [
-                    "fallback_ms": String(fallbackMs),
-                    "fallback_samples": String(finalization.fallbackSamples ?? 0),
-                ])
-                Self.logger.warning(
-                    "[hark] stop-timing fallback_ms=\(fallbackMs) samples=\(finalization.fallbackSamples ?? 0) pre_len=\(preFinalizeText.count) post_len=\(finalization.text.count) remaining=\(finalization.remainingCount)"
-                )
-            }
-            text = finalization.text
-
-            Self.logger.warning(
-                "[hark] stop-timing capture_stop_ms=\(captureStopMs) stream_join_ms=\(streamJoinMs) finalize_prepare_ms=\(finalization.prepareMs) finalize_feed_ms=\(finalization.feedMs) finish_ms=\(finalization.finishMs) finalize_chunk=\(finalization.finalizeChunk.count) pad_samples=\(finalization.padSampleCount) processed=\(processedCount) remaining=\(finalization.remainingCount)"
-            )
-
-            // Show the final transcript in the overlay (no animation).
-            appState.partialTranscript = text
-            appState.partialTranscriptCommittedUTF16 = (text as NSString).length
-        }
+        appState.partialTranscript = text
+        appState.partialTranscriptCommittedUTF16 = (text as NSString).length
         streamingSession = nil
         appState.isFinishing = false
 
-        let totalStopMs = Int(((ProcessInfo.processInfo.systemUptime - stopStartedAt) * 1000).rounded())
-        Self.logger.warning("[hark] stop-timing total_stop_to_finish_ms=\(totalStopMs)")
+        traceEvent("capture_stopped", [
+            "capture_stop_ms": String(finalizationResult.captureStopMs),
+            "all_samples": String(finalizationResult.allSamples.count),
+        ])
+        traceEvent("stream_join_done", [
+            "stream_join_ms": String(finalizationResult.streamJoinMs),
+        ])
+        traceEvent("finalize_done", [
+            "finalize_feed_ms": String(finalizationResult.feedMs),
+            "finish_ms": String(finalizationResult.finishMs),
+            "pad_samples": String(finalizationResult.padSampleCount),
+            "finalize_buffer_audio_relpath": finalizationResult.finalizeBufferRelPath ?? "",
+        ])
         traceEvent("stop_ready_to_paste", [
-            "total_stop_to_finish_ms": String(totalStopMs),
             "final_text_len": String(text.count),
         ])
 
@@ -1804,14 +1822,10 @@ struct HarkApp: App {
            recordingDurationMs < Int((Self.accidentalDoublePressRecordingThresholdSeconds * 1000).rounded()) {
             let ignoreUntil = Date().addingTimeInterval(Self.accidentalDoublePressIgnoreWindowSeconds)
             ignoreHotkeyUntil = ignoreUntil
-            Self.logger.warning(
-                "[hark] hotkey: short_recording duration_ms=\(recordingDurationMs) ignore_until=\(ignoreUntil.timeIntervalSince1970)"
-            )
         }
 
         if Self.tailDebugDumpEnabled && appState.forensicsHTMLDumpEnabled {
             let dumpID = Self.newTailDebugSessionID()
-            let finalTextChars = text.count
             let metadata = TailDebugMetadata(
                 id: dumpID,
                 timestampISO8601: ISO8601DateFormatter().string(from: Date()),
@@ -1819,41 +1833,41 @@ struct HarkApp: App {
                 recordingDurationMs: recordingDurationMs,
                 skipPaste: skipPaste,
                 forceSubmit: forceSubmit,
-                totalSamples: allSamples.count,
-                processedSamples: debugProcessedCount,
-                remainingSamples: debugRemainingSamples.count,
-                finalizeSamples: debugFinalizeChunk.count,
-                padSamples: debugPadSampleCount,
+                totalSamples: finalizationResult.allSamples.count,
+                processedSamples: 0,
+                remainingSamples: finalizationResult.remainingSamples.count,
+                finalizeSamples: finalizationResult.finalizeChunk.count,
+                padSamples: finalizationResult.padSampleCount,
                 preFinalizeTextChars: preFinalizeText.count,
-                finalTextChars: finalTextChars,
+                finalTextChars: text.count,
                 preFinalizeText: preFinalizeText,
                 finalText: text,
-                captureStopMs: captureStopMs,
-                streamJoinMs: debugStreamJoinMs,
-                finalizeFeedMs: debugFinalizeFeedMs,
-                finishMs: debugFinishMs,
-                fallbackMs: debugFallbackMs
+                captureStopMs: finalizationResult.captureStopMs,
+                streamJoinMs: finalizationResult.streamJoinMs,
+                finalizeFeedMs: finalizationResult.feedMs,
+                finishMs: finalizationResult.finishMs,
+                fallbackMs: finalizationResult.fallbackMs
             )
             Task.detached(priority: .background) {
                 Self.dumpTailDebugArtifacts(
                     metadata: metadata,
-                    allSamples: allSamples,
-                    remainingSamples: debugRemainingSamples,
-                    finalizeSamples: debugFinalizeChunk
+                    allSamples: finalizationResult.allSamples,
+                    remainingSamples: finalizationResult.remainingSamples,
+                    finalizeSamples: finalizationResult.finalizeChunk
                 )
             }
-            Self.logger.warning("[hark] tail-debug dump_id=\(dumpID, privacy: .public)")
         }
 
-        if let trace = forensicsSession {
-            let allSamplesCopy = allSamples
-            let remainingCopy = debugRemainingSamples
-            let finalizeCopy = debugFinalizeChunk
-            await Task.detached(priority: .utility) {
-                trace.setAudio(all: allSamplesCopy, remaining: remainingCopy, finalize: finalizeCopy)
+        if let trace {
+            let r = finalizationResult
+            Task.detached(priority: .utility) {
+                trace.setAudio(all: r.allSamples, remaining: r.remainingSamples, finalize: r.finalizeChunk)
                 trace.setFinalText(text)
-            }.value
+                trace.event("session_end")
+                trace.writeHTMLDump()
+            }
         }
+        forensicsSession = nil
 
         await finishAndPaste(text: text, skipPaste: skipPaste, forceSubmit: forceSubmit)
     }
