@@ -1240,10 +1240,6 @@ struct HarkApp: App {
             var autoLockedLanguage: String?
 
             while !Task.isCancelled {
-                // Check phase on main actor
-                let isRecording = await MainActor.run { appState.phase == .recording }
-                guard isRecording else { break }
-
                 let allSamples = await MainActor.run { audioRecorder.peekCapture() }
 
                 guard allSamples.count > processedCount + 800 else {
