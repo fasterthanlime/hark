@@ -430,7 +430,7 @@ struct ThinkingBarsView: View {
     var body: some View {
         TimelineView(.animation) { context in
             let elapsed = context.date.timeIntervalSince(startDate)
-            let phase = CGFloat(elapsed / 0.8 * .pi * 2)
+            let phase = CGFloat(elapsed / 2.0 * .pi * 2)
 
             HStack(alignment: .center, spacing: spacing) {
                 ForEach(0..<barCount, id: \.self) { index in
