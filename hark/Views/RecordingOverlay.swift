@@ -75,10 +75,9 @@ struct RecordingOverlayView: View {
                     .padding(.bottom, footerOutsideGap)
             }
 
-            if !directInput {
-                transcriptBody(maxTextHeight: textViewportHeight)
-                    .frame(maxWidth: .infinity, maxHeight: textViewportHeight, alignment: .topLeading)
-            }
+            transcriptBody(maxTextHeight: textViewportHeight)
+                .frame(maxWidth: .infinity, maxHeight: textViewportHeight, alignment: .topLeading)
+                .opacity(directInput ? 0 : 1)
 
             if !appState.overlayFooterAbove {
                 footerBand
@@ -86,7 +85,7 @@ struct RecordingOverlayView: View {
                     .padding(.top, footerOutsideGap)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: directInput ? .center : .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func transcriptBody(maxTextHeight: CGFloat) -> some View {
