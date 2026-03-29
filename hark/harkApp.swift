@@ -1247,7 +1247,7 @@ struct HarkApp: App {
             var autoLockedLanguage: String?
 
             while !Task.isCancelled {
-                let allSamples = await MainActor.run { audioRecorder.peekCapture() }
+                let allSamples = audioRecorder.peekCapture()
 
                 guard allSamples.count > processedCount + 800 else {
                     try? await Task.sleep(for: .milliseconds(30))
