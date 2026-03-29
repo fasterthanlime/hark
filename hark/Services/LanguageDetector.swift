@@ -40,7 +40,7 @@ struct LanguageDetector {
               let windowRef,
               CFGetTypeID(windowRef) == AXUIElementGetTypeID()
         else {
-            logger.info("No focused window for \(app.localizedName ?? "?", privacy: .public)")
+            logger.warning("No focused window for \(app.localizedName ?? "?", privacy: .public)")
             return nil
         }
         let window = unsafeBitCast(windowRef, to: AXUIElement.self)
@@ -53,7 +53,7 @@ struct LanguageDetector {
 
         let combined = texts.joined(separator: " ")
         guard combined.count >= 20 else {
-            logger.info("Not enough text for detection: \(combined.count) chars from \(visited) elements")
+            logger.warning("Not enough text for detection: \(combined.count) chars from \(visited) elements")
             return nil
         }
 
@@ -61,25 +61,25 @@ struct LanguageDetector {
         recognizer.processString(combined)
 
         guard let dominant = recognizer.dominantLanguage else {
-            logger.info("No dominant language from \(combined.count) chars")
+            logger.warning("No dominant language from \(combined.count) chars")
             return nil
         }
 
         let confidence = recognizer.languageHypotheses(withMaximum: 1)[dominant] ?? 0
 
         guard let qwen3Name = nlToQwen3[dominant] else {
-            logger.info("Detected \(dominant.rawValue, privacy: .public) (conf=\(confidence, format: .fixed(precision: 2))) — not supported")
+            logger.warning("Detected \(dominant.rawValue, privacy: .public) (conf=\(confidence, format: .fixed(precision: 2))) — not supported")
             return nil
         }
 
         // For non-English, require high confidence
         let threshold: Double = (dominant == .english) ? 0.5 : 0.8
         guard confidence >= threshold else {
-            logger.info("\(qwen3Name, privacy: .public) conf=\(confidence, format: .fixed(precision: 2)) below threshold \(threshold, format: .fixed(precision: 2))")
+            logger.warning("\(qwen3Name, privacy: .public) conf=\(confidence, format: .fixed(precision: 2)) below threshold \(threshold, format: .fixed(precision: 2))")
             return nil
         }
 
-        logger.info("Detected \(qwen3Name, privacy: .public) (conf=\(confidence, format: .fixed(precision: 2))) from \(combined.count) chars / \(visited) elements")
+        logger.warning("Detected \(qwen3Name, privacy: .public) (conf=\(confidence, format: .fixed(precision: 2))) from \(combined.count) chars / \(visited) elements")
         return qwen3Name
     }
 
