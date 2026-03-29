@@ -1184,7 +1184,14 @@ struct HarkApp: App {
         // Create streaming session off-main so first-record startup does not
         // stall key-up handling or UI responsiveness.
         guard appState.phase == .recording else { return }
-        let language = appState.currentLanguage
+        // If no language is explicitly set, try detecting from the text field content.
+        var language = appState.currentLanguage
+        if language == nil {
+            if let detected = LanguageDetector.detectFromFocusedElement() {
+                language = detected
+                traceEvent("language_auto_detected", ["language": detected])
+            }
+        }
         let prompt = appState.vocabPrompt
         let chunkSizeSec = appState.streamingChunkSizeSec
         let createStartedAt = ProcessInfo.processInfo.systemUptime
