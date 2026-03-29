@@ -1549,7 +1549,7 @@ struct HarkApp: App {
             let submit = shiftSubmitArmed
             shiftSubmitArmed = false
         appState.submitArmed = false
-            await stopRecordingAndTranscribe(forceSubmit: submit)
+            stopRecordingAndTranscribe(forceSubmit: submit)
             return
         }
 
@@ -1571,7 +1571,7 @@ struct HarkApp: App {
         let submit = shiftSubmitArmed
         shiftSubmitArmed = false
         appState.submitArmed = false
-        await stopRecordingAndTranscribe(forceSubmit: submit)
+        stopRecordingAndTranscribe(forceSubmit: submit)
     }
 
     @MainActor
@@ -1586,7 +1586,7 @@ struct HarkApp: App {
 
             guard appState.phase == .recording else { return }
             recordingTimeoutTask = nil
-            await stopRecordingAndTranscribe(cancelTimeoutTask: false)
+            stopRecordingAndTranscribe(cancelTimeoutTask: false)
         }
     }
 
@@ -1681,7 +1681,7 @@ struct HarkApp: App {
     }
 
     @MainActor
-    private func stopRecordingAndTranscribe(cancelTimeoutTask: Bool = true, skipPaste: Bool = false, forceSubmit: Bool = false) async {
+    private func stopRecordingAndTranscribe(cancelTimeoutTask: Bool = true, skipPaste: Bool = false, forceSubmit: Bool = false) {
         guard appState.phase == .recording else { return }
         let recordingDurationMs = Int(
             ((recordingStartedAt.map { Date().timeIntervalSince($0) } ?? 0) * 1000).rounded()
@@ -1715,7 +1715,8 @@ struct HarkApp: App {
         let trace = forensicsSession
 
         // Phase 2: All heavy work on a detached task — main is free for animations.
-        let finalizationResult: (text: String, allSamples: [Float], remainingSamples: [Float], finalizeChunk: [Float], padSampleCount: Int, captureStopMs: Int, streamJoinMs: Int, feedMs: Int, finishMs: Int, prepareMs: Int, remainingCount: Int, fallbackMs: Int?, fallbackSamples: Int?, finalizeBufferRelPath: String?) = await Task.detached(priority: .userInitiated) { [transcriptionService] in
+        // Fire-and-forget: Phase 3 (UI updates + paste) runs on MainActor inside.
+        Task.detached(priority: .userInitiated) { [transcriptionService, self] in
             // Stop capture
             let captureStopStartedAt = ProcessInfo.processInfo.systemUptime
             let allSamples: [Float]
@@ -1786,90 +1787,93 @@ struct HarkApp: App {
                 }
             }
 
-            return (text: text, allSamples: allSamples, remainingSamples: remainingSamples, finalizeChunk: finalizeChunk, padSampleCount: padSampleCount, captureStopMs: captureStopMs, streamJoinMs: streamJoinMs, feedMs: feedMs, finishMs: finishMs, prepareMs: prepareMs, remainingCount: remainingCount, fallbackMs: fallbackMs, fallbackSamples: fallbackSamples, finalizeBufferRelPath: finalizeBufferRelPath)
-        }.value
+            let finalizationResult = (text: text, allSamples: allSamples, remainingSamples: remainingSamples, finalizeChunk: finalizeChunk, padSampleCount: padSampleCount, captureStopMs: captureStopMs, streamJoinMs: streamJoinMs, feedMs: feedMs, finishMs: finishMs, prepareMs: prepareMs, remainingCount: remainingCount, fallbackMs: fallbackMs, fallbackSamples: fallbackSamples, finalizeBufferRelPath: finalizeBufferRelPath)
 
-        // Phase 3: Back on main — update UI and commit.
-        let text = finalizationResult.text
-        appState.audioLevel = 0
-        if !shouldKeepWarm {
-            appState.spectrumBands = Array(repeating: 0, count: AudioRecorder.spectrumBandCount)
-        }
+            // Phase 3: Back on main — update UI and commit.
+            await MainActor.run {
+                let text = finalizationResult.text
+                self.appState.audioLevel = 0
+                if !shouldKeepWarm {
+                    self.appState.spectrumBands = Array(repeating: 0, count: AudioRecorder.spectrumBandCount)
+                }
 
-        appState.partialTranscript = text
-        appState.partialTranscriptCommittedUTF16 = (text as NSString).length
-        streamingSession = nil
-        appState.isFinishing = false
+                self.appState.partialTranscript = text
+                self.appState.partialTranscriptCommittedUTF16 = (text as NSString).length
+                self.streamingSession = nil
+                self.appState.isFinishing = false
 
-        traceEvent("capture_stopped", [
-            "capture_stop_ms": String(finalizationResult.captureStopMs),
-            "all_samples": String(finalizationResult.allSamples.count),
-        ])
-        traceEvent("stream_join_done", [
-            "stream_join_ms": String(finalizationResult.streamJoinMs),
-        ])
-        traceEvent("finalize_done", [
-            "finalize_feed_ms": String(finalizationResult.feedMs),
-            "finish_ms": String(finalizationResult.finishMs),
-            "pad_samples": String(finalizationResult.padSampleCount),
-            "finalize_buffer_audio_relpath": finalizationResult.finalizeBufferRelPath ?? "",
-        ])
-        traceEvent("stop_ready_to_paste", [
-            "final_text_len": String(text.count),
-        ])
+                self.traceEvent("capture_stopped", [
+                    "capture_stop_ms": String(finalizationResult.captureStopMs),
+                    "all_samples": String(finalizationResult.allSamples.count),
+                ])
+                self.traceEvent("stream_join_done", [
+                    "stream_join_ms": String(finalizationResult.streamJoinMs),
+                ])
+                self.traceEvent("finalize_done", [
+                    "finalize_feed_ms": String(finalizationResult.feedMs),
+                    "finish_ms": String(finalizationResult.finishMs),
+                    "pad_samples": String(finalizationResult.padSampleCount),
+                    "finalize_buffer_audio_relpath": finalizationResult.finalizeBufferRelPath ?? "",
+                ])
+                self.traceEvent("stop_ready_to_paste", [
+                    "final_text_len": String(text.count),
+                ])
 
-        if recordingDurationMs > 0,
-           recordingDurationMs < Int((Self.accidentalDoublePressRecordingThresholdSeconds * 1000).rounded()) {
-            let ignoreUntil = Date().addingTimeInterval(Self.accidentalDoublePressIgnoreWindowSeconds)
-            ignoreHotkeyUntil = ignoreUntil
-        }
+                if recordingDurationMs > 0,
+                   recordingDurationMs < Int((Self.accidentalDoublePressRecordingThresholdSeconds * 1000).rounded()) {
+                    let ignoreUntil = Date().addingTimeInterval(Self.accidentalDoublePressIgnoreWindowSeconds)
+                    self.ignoreHotkeyUntil = ignoreUntil
+                }
 
-        if Self.tailDebugDumpEnabled && appState.forensicsHTMLDumpEnabled {
-            let dumpID = Self.newTailDebugSessionID()
-            let metadata = TailDebugMetadata(
-                id: dumpID,
-                timestampISO8601: ISO8601DateFormatter().string(from: Date()),
-                appBundle: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
-                recordingDurationMs: recordingDurationMs,
-                skipPaste: skipPaste,
-                forceSubmit: forceSubmit,
-                totalSamples: finalizationResult.allSamples.count,
-                processedSamples: 0,
-                remainingSamples: finalizationResult.remainingSamples.count,
-                finalizeSamples: finalizationResult.finalizeChunk.count,
-                padSamples: finalizationResult.padSampleCount,
-                preFinalizeTextChars: preFinalizeText.count,
-                finalTextChars: text.count,
-                preFinalizeText: preFinalizeText,
-                finalText: text,
-                captureStopMs: finalizationResult.captureStopMs,
-                streamJoinMs: finalizationResult.streamJoinMs,
-                finalizeFeedMs: finalizationResult.feedMs,
-                finishMs: finalizationResult.finishMs,
-                fallbackMs: finalizationResult.fallbackMs
-            )
-            Task.detached(priority: .background) {
-                Self.dumpTailDebugArtifacts(
-                    metadata: metadata,
-                    allSamples: finalizationResult.allSamples,
-                    remainingSamples: finalizationResult.remainingSamples,
-                    finalizeSamples: finalizationResult.finalizeChunk
-                )
+                if Self.tailDebugDumpEnabled && self.appState.forensicsHTMLDumpEnabled {
+                    let dumpID = Self.newTailDebugSessionID()
+                    let metadata = TailDebugMetadata(
+                        id: dumpID,
+                        timestampISO8601: ISO8601DateFormatter().string(from: Date()),
+                        appBundle: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+                        recordingDurationMs: recordingDurationMs,
+                        skipPaste: skipPaste,
+                        forceSubmit: forceSubmit,
+                        totalSamples: finalizationResult.allSamples.count,
+                        processedSamples: 0,
+                        remainingSamples: finalizationResult.remainingSamples.count,
+                        finalizeSamples: finalizationResult.finalizeChunk.count,
+                        padSamples: finalizationResult.padSampleCount,
+                        preFinalizeTextChars: preFinalizeText.count,
+                        finalTextChars: text.count,
+                        preFinalizeText: preFinalizeText,
+                        finalText: text,
+                        captureStopMs: finalizationResult.captureStopMs,
+                        streamJoinMs: finalizationResult.streamJoinMs,
+                        finalizeFeedMs: finalizationResult.feedMs,
+                        finishMs: finalizationResult.finishMs,
+                        fallbackMs: finalizationResult.fallbackMs
+                    )
+                    Task.detached(priority: .background) {
+                        Self.dumpTailDebugArtifacts(
+                            metadata: metadata,
+                            allSamples: finalizationResult.allSamples,
+                            remainingSamples: finalizationResult.remainingSamples,
+                            finalizeSamples: finalizationResult.finalizeChunk
+                        )
+                    }
+                }
+
+                if let trace {
+                    let r = finalizationResult
+                    Task.detached(priority: .utility) {
+                        trace.setAudio(all: r.allSamples, remaining: r.remainingSamples, finalize: r.finalizeChunk)
+                        trace.setFinalText(text)
+                        trace.event("session_end")
+                        trace.writeHTMLDump()
+                    }
+                }
+                self.forensicsSession = nil
             }
-        }
 
-        if let trace {
-            let r = finalizationResult
-            Task.detached(priority: .utility) {
-                trace.setAudio(all: r.allSamples, remaining: r.remainingSamples, finalize: r.finalizeChunk)
-                trace.setFinalText(text)
-                trace.event("session_end")
-                trace.writeHTMLDump()
-            }
+            // finishAndPaste is async, so call it outside MainActor.run but still on main.
+            await self.finishAndPaste(text: text, skipPaste: skipPaste, forceSubmit: forceSubmit)
         }
-        forensicsSession = nil
-
-        await finishAndPaste(text: text, skipPaste: skipPaste, forceSubmit: forceSubmit)
     }
 
     private nonisolated static func isEffectivelySilent(_ samples: [Float], rmsThreshold: Float = 0.006) -> Bool {
@@ -2271,7 +2275,7 @@ struct HarkApp: App {
             queue: .main
         ) { [self] _ in
             Task { @MainActor in
-                await self.stopRecordingAndTranscribe(skipPaste: true, forceSubmit: false)
+                self.stopRecordingAndTranscribe(skipPaste: true, forceSubmit: false)
             }
         }
         recordingControlObservers.append(cancelObserver)
@@ -2282,7 +2286,7 @@ struct HarkApp: App {
             queue: .main
         ) { [self] _ in
             Task { @MainActor in
-                await self.stopRecordingAndTranscribe(skipPaste: false, forceSubmit: true)
+                self.stopRecordingAndTranscribe(skipPaste: false, forceSubmit: true)
             }
         }
         recordingControlObservers.append(submitObserver)
@@ -2310,7 +2314,7 @@ struct HarkApp: App {
                     Self.logger.warning("[hark] imeSubmit ignored: not recording")
                     return
                 }
-                await self.stopRecordingAndTranscribe(skipPaste: false, forceSubmit: true)
+                self.stopRecordingAndTranscribe(skipPaste: false, forceSubmit: true)
             }
         }
         imeNotificationObservers.append(imeSubmitObserver)
