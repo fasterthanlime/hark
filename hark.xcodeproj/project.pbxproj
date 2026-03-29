@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B0519BA62F795D3000B63E1A /* InputMethodKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B0519BA52F795D3000B63E1A /* InputMethodKit.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -30,6 +31,8 @@
 		AD268BB72F3F09A700514254 /* hark.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = hark.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AD268BC92F3F09A700514254 /* harkTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = harkTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AD268BD32F3F09A700514254 /* harkUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = harkUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B0519B8D2F795C9900B63E1A /* harkInput.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = harkInput.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B0519BA52F795D3000B63E1A /* InputMethodKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = InputMethodKit.framework; path = System/Library/Frameworks/InputMethodKit.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -46,6 +49,11 @@
 		AD268BD62F3F09A700514254 /* harkUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = harkUITests;
+			sourceTree = "<group>";
+		};
+		B0519B8E2F795C9900B63E1A /* harkInput */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = harkInput;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -72,6 +80,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B0519B8A2F795C9900B63E1A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B0519BA62F795D3000B63E1A /* InputMethodKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -81,6 +97,8 @@
 				AD268BB92F3F09A700514254 /* hark */,
 				AD268BCC2F3F09A700514254 /* harkTests */,
 				AD268BD62F3F09A700514254 /* harkUITests */,
+				B0519B8E2F795C9900B63E1A /* harkInput */,
+				B0519BA42F795D3000B63E1A /* Frameworks */,
 				AD268BB82F3F09A700514254 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -91,8 +109,17 @@
 				AD268BB72F3F09A700514254 /* hark.app */,
 				AD268BC92F3F09A700514254 /* harkTests.xctest */,
 				AD268BD32F3F09A700514254 /* harkUITests.xctest */,
+				B0519B8D2F795C9900B63E1A /* harkInput.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		B0519BA42F795D3000B63E1A /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				B0519BA52F795D3000B63E1A /* InputMethodKit.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -166,6 +193,28 @@
 			productReference = AD268BD32F3F09A700514254 /* harkUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		B0519B8C2F795C9900B63E1A /* harkInput */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B0519B972F795C9A00B63E1A /* Build configuration list for PBXNativeTarget "harkInput" */;
+			buildPhases = (
+				B0519B892F795C9900B63E1A /* Sources */,
+				B0519B8A2F795C9900B63E1A /* Frameworks */,
+				B0519B8B2F795C9900B63E1A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				B0519B8E2F795C9900B63E1A /* harkInput */,
+			);
+			name = harkInput;
+			packageProductDependencies = (
+			);
+			productName = harkInput;
+			productReference = B0519B8D2F795C9900B63E1A /* harkInput.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -173,7 +222,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2620;
+				LastSwiftUpdateCheck = 2630;
 				LastUpgradeCheck = 2620;
 				TargetAttributes = {
 					AD268BB62F3F09A700514254 = {
@@ -186,6 +235,9 @@
 					AD268BD22F3F09A700514254 = {
 						CreatedOnToolsVersion = 26.2;
 						TestTargetID = AD268BB62F3F09A700514254;
+					};
+					B0519B8C2F795C9900B63E1A = {
+						CreatedOnToolsVersion = 26.3;
 					};
 				};
 			};
@@ -208,6 +260,7 @@
 				AD268BB62F3F09A700514254 /* hark */,
 				AD268BC82F3F09A700514254 /* harkTests */,
 				AD268BD22F3F09A700514254 /* harkUITests */,
+				B0519B8C2F795C9900B63E1A /* harkInput */,
 			);
 		};
 /* End PBXProject section */
@@ -234,6 +287,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B0519B8B2F795C9900B63E1A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -252,6 +312,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		AD268BCF2F3F09A700514254 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B0519B892F795C9900B63E1A /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -408,7 +475,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = /Users/amos/bearcove/qwen3-asr-rs/qwen3-asr-ffi/include;
+				HEADER_SEARCH_PATHS = "/Users/amos/bearcove/qwen3-asr-rs/qwen3-asr-ffi/include";
 				INFOPLIST_KEY_ATSApplicationFontsPath = Fonts;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -417,7 +484,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				LIBRARY_SEARCH_PATHS = /Users/amos/bearcove/qwen3-asr-rs/target/release;
+				LIBRARY_SEARCH_PATHS = "/Users/amos/bearcove/qwen3-asr-rs/target/release";
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = (
 					"-lqwen3_asr_ffi",
@@ -458,7 +525,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = /Users/amos/bearcove/qwen3-asr-rs/qwen3-asr-ffi/include;
+				HEADER_SEARCH_PATHS = "/Users/amos/bearcove/qwen3-asr-rs/qwen3-asr-ffi/include";
 				INFOPLIST_KEY_ATSApplicationFontsPath = Fonts;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -467,7 +534,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				LIBRARY_SEARCH_PATHS = /Users/amos/bearcove/qwen3-asr-rs/target/release;
+				LIBRARY_SEARCH_PATHS = "/Users/amos/bearcove/qwen3-asr-rs/target/release";
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = (
 					"-lqwen3_asr_ffi",
@@ -574,6 +641,78 @@
 			};
 			name = Release;
 		};
+		B0519B952F795C9A00B63E1A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = B2N6FSRTPV;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = harkInput/Info.plist;
+				INFOPLIST_KEY_LSBackgroundOnly = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSPrincipalClass = "$(PRODUCT_MODULE_NAME).HarkInputApplication";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = fasterthanlime.inputmethod.hark;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		B0519B962F795C9A00B63E1A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = B2N6FSRTPV;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = harkInput/Info.plist;
+				INFOPLIST_KEY_LSBackgroundOnly = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSPrincipalClass = "$(PRODUCT_MODULE_NAME).HarkInputApplication";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = fasterthanlime.inputmethod.hark;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -613,9 +752,16 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		B0519B972F795C9A00B63E1A /* Build configuration list for PBXNativeTarget "harkInput" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B0519B952F795C9A00B63E1A /* Debug */,
+				B0519B962F795C9A00B63E1A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
-
-/* No Swift Package dependencies */
 	};
 	rootObject = AD268BAF2F3F09A700514254 /* Project object */;
 }

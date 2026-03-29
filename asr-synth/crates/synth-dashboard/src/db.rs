@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS vocab (
     term TEXT UNIQUE NOT NULL COLLATE NOCASE,
     spoken_auto TEXT NOT NULL,
     spoken_override TEXT,
+    reviewed_ipa TEXT,
     reviewed INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -126,6 +127,7 @@ pub struct VocabRow {
     pub term: String,
     pub spoken_auto: String,
     pub spoken_override: Option<String>,
+    pub reviewed_ipa: Option<String>,
     pub reviewed: bool,
     pub description: Option<String>,
 }
@@ -196,6 +198,25 @@ pub struct AuthoredRecordingPhoneTraceRow {
     pub updated_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReviewedConfusionSurfaceRow {
+    pub id: i64,
+    pub term: String,
+    pub surface_form: String,
+    pub reviewed_ipa: Option<String>,
+    pub status: String,
+    pub source: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ScanConfusionSurfaceRow {
+    pub term: String,
+    pub surface_form: String,
+    pub qwen_count: i64,
+}
+
 // --- Stats ---
 
 #[derive(Debug, Serialize)]
@@ -256,6 +277,7 @@ impl Db {
         let _ = conn.execute_batch("ALTER TABLE sentences ADD COLUMN human_wav_path TEXT;");
         let _ = conn.execute_batch("ALTER TABLE vocab ADD COLUMN curated TEXT;"); // 'kept', 'removed', or NULL
         let _ = conn.execute_batch("ALTER TABLE vocab ADD COLUMN description TEXT;");
+        let _ = conn.execute_batch("ALTER TABLE vocab ADD COLUMN reviewed_ipa TEXT;");
         let _ = conn
             .execute_batch("ALTER TABLE authored_sentence_recordings ADD COLUMN qwen_clean TEXT;");
         let _ = conn.execute_batch(
@@ -353,6 +375,20 @@ impl Db {
                 alt_spelling TEXT NOT NULL COLLATE NOCASE,
                 created_at TEXT NOT NULL,
                 UNIQUE(term, alt_spelling)
+            )",
+        )
+        .ok();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS reviewed_confusion_surfaces (
+                id INTEGER PRIMARY KEY,
+                term TEXT NOT NULL COLLATE NOCASE,
+                surface_form TEXT NOT NULL COLLATE NOCASE,
+                reviewed_ipa TEXT,
+                status TEXT NOT NULL DEFAULT 'accepted',
+                source TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(term, surface_form)
             )",
         )
         .ok();
@@ -481,7 +517,7 @@ impl Db {
     pub fn pick_term_for_authoring(&self) -> Result<Option<(VocabRow, i64)>> {
         // Count authored sentences per term, pick the one with fewest
         let mut stmt = self.conn.prepare(
-            "SELECT v.id, v.term, v.spoken_auto, v.spoken_override, v.reviewed, v.description,
+            "SELECT v.id, v.term, v.spoken_auto, v.spoken_override, v.reviewed_ipa, v.reviewed, v.description,
                     COALESCE(c.cnt, 0) as sentence_count
              FROM vocab v
              LEFT JOIN (SELECT term, COUNT(*) as cnt FROM authored_sentences GROUP BY term) c
@@ -499,10 +535,11 @@ impl Db {
                     term: row.get(1)?,
                     spoken_auto: row.get(2)?,
                     spoken_override: row.get(3)?,
-                    reviewed: row.get::<_, i64>(4)? != 0,
-                    description: row.get(5)?,
+                    reviewed_ipa: row.get(4)?,
+                    reviewed: row.get::<_, i64>(5)? != 0,
+                    description: row.get(6)?,
                 },
-                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
             ))
         })?;
         match rows.next() {
@@ -1163,7 +1200,7 @@ impl Db {
         };
 
         let sql = format!(
-            "SELECT id, term, spoken_auto, spoken_override, reviewed, description FROM vocab {where_clause} ORDER BY {} LIMIT ?{idx} OFFSET ?{}",
+            "SELECT id, term, spoken_auto, spoken_override, reviewed_ipa, reviewed, description FROM vocab {where_clause} ORDER BY {} LIMIT ?{idx} OFFSET ?{}",
             if sort_recent { "updated_at DESC" } else { "term COLLATE NOCASE" }, idx + 1
         );
         param_values.push(Box::new(limit));
@@ -1178,8 +1215,9 @@ impl Db {
                 term: row.get(1)?,
                 spoken_auto: row.get(2)?,
                 spoken_override: row.get(3)?,
-                reviewed: row.get::<_, i64>(4)? != 0,
-                description: row.get(5)?,
+                reviewed_ipa: row.get(4)?,
+                reviewed: row.get::<_, i64>(5)? != 0,
+                description: row.get(6)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -1205,6 +1243,14 @@ impl Db {
         self.conn.execute(
             "UPDATE vocab SET spoken_override = ?1, updated_at = ?2 WHERE id = ?3",
             params![spoken_override, now_str(), id],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_vocab_reviewed_ipa(&self, id: i64, reviewed_ipa: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE vocab SET reviewed_ipa = ?1, updated_at = ?2 WHERE id = ?3",
+            params![reviewed_ipa, now_str(), id],
         )?;
         Ok(())
     }
@@ -1424,7 +1470,7 @@ impl Db {
 
     pub fn find_vocab_by_term(&self, term: &str) -> Result<Option<VocabRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, term, spoken_auto, spoken_override, reviewed, description FROM vocab WHERE LOWER(term) = LOWER(?1)"
+            "SELECT id, term, spoken_auto, spoken_override, reviewed_ipa, reviewed, description FROM vocab WHERE LOWER(term) = LOWER(?1)"
         )?;
         let mut rows = stmt.query_map(params![term], |row| {
             Ok(VocabRow {
@@ -1432,8 +1478,9 @@ impl Db {
                 term: row.get(1)?,
                 spoken_auto: row.get(2)?,
                 spoken_override: row.get(3)?,
-                reviewed: row.get::<_, i64>(4)? != 0,
-                description: row.get(5).ok().flatten(),
+                reviewed_ipa: row.get(4)?,
+                reviewed: row.get::<_, i64>(5)? != 0,
+                description: row.get(6).ok().flatten(),
             })
         })?;
         match rows.next() {
@@ -2190,6 +2237,86 @@ impl Db {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    pub fn list_scan_confusion_surfaces(&self) -> Result<Vec<ScanConfusionSurfaceRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT term,
+                    TRIM(TRIM(qwen_heard), '.,!?;:()[]{}\"''`“”‘’') AS surface_form,
+                    COUNT(*) AS qwen_count
+             FROM vocab_confusions
+             WHERE qwen_match = 0
+               AND qwen_heard IS NOT NULL
+               AND TRIM(qwen_heard) != ''
+             GROUP BY term, surface_form
+             HAVING TRIM(surface_form) != ''
+             ORDER BY qwen_count DESC, term, surface_form",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ScanConfusionSurfaceRow {
+                term: row.get(0)?,
+                surface_form: row.get(1)?,
+                qwen_count: row.get(2)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn list_reviewed_confusion_surfaces(&self) -> Result<Vec<ReviewedConfusionSurfaceRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, term, surface_form, reviewed_ipa, status, source, created_at, updated_at
+             FROM reviewed_confusion_surfaces
+             ORDER BY updated_at DESC, term COLLATE NOCASE, surface_form COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ReviewedConfusionSurfaceRow {
+                id: row.get(0)?,
+                term: row.get(1)?,
+                surface_form: row.get(2)?,
+                reviewed_ipa: row.get(3)?,
+                status: row.get(4)?,
+                source: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn upsert_reviewed_confusion_surface(
+        &self,
+        term: &str,
+        surface_form: &str,
+        reviewed_ipa: Option<&str>,
+        status: &str,
+        source: Option<&str>,
+    ) -> Result<()> {
+        let now = now_str();
+        self.conn.execute(
+            "INSERT INTO reviewed_confusion_surfaces (
+                term, surface_form, reviewed_ipa, status, source, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+             ON CONFLICT(term, surface_form) DO UPDATE SET
+                reviewed_ipa = excluded.reviewed_ipa,
+                status = excluded.status,
+                source = COALESCE(excluded.source, reviewed_confusion_surfaces.source),
+                updated_at = excluded.updated_at",
+            params![term, surface_form, reviewed_ipa, status, source, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_all_reviewed_confusion_surfaces(
+        &self,
+    ) -> Result<HashMap<String, Vec<ReviewedConfusionSurfaceRow>>> {
+        let mut map: HashMap<String, Vec<ReviewedConfusionSurfaceRow>> = HashMap::new();
+        for row in self.list_reviewed_confusion_surfaces()? {
+            if row.status != "accepted" {
+                continue;
+            }
+            map.entry(row.term.to_ascii_lowercase()).or_default().push(row);
+        }
+        Ok(map)
+    }
+
     /// Terms that haven't been curated yet (curated IS NULL)
     pub fn uncurated_vocab_terms(&self) -> Result<Vec<(String, Option<String>)>> {
         let mut stmt = self.conn.prepare("SELECT term, spoken_override FROM vocab WHERE curated IS NULL ORDER BY term COLLATE NOCASE")?;
@@ -2212,7 +2339,7 @@ impl Db {
 
     pub fn get_vocab(&self, id: i64) -> Result<Option<VocabRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, term, spoken_auto, spoken_override, reviewed, description FROM vocab WHERE id = ?1"
+            "SELECT id, term, spoken_auto, spoken_override, reviewed_ipa, reviewed, description FROM vocab WHERE id = ?1"
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
             Ok(VocabRow {
@@ -2220,8 +2347,9 @@ impl Db {
                 term: row.get(1)?,
                 spoken_auto: row.get(2)?,
                 spoken_override: row.get(3)?,
-                reviewed: row.get::<_, i64>(4)? != 0,
-                description: row.get(5).ok().flatten(),
+                reviewed_ipa: row.get(4)?,
+                reviewed: row.get::<_, i64>(5)? != 0,
+                description: row.get(6).ok().flatten(),
             })
         })?;
         match rows.next() {
@@ -2235,7 +2363,7 @@ impl Db {
         // Only use terms that have been reviewed AND have a pronunciation override.
         // Skip hyphenated terms — they're compound names where each part is a normal word.
         let mut stmt = self.conn.prepare(
-            "SELECT id, term, spoken_auto, spoken_override, reviewed, description FROM vocab WHERE reviewed = 1 AND spoken_override IS NOT NULL AND (curated IS NULL OR curated = 'kept') AND term NOT LIKE '%-%'"
+            "SELECT id, term, spoken_auto, spoken_override, reviewed_ipa, reviewed, description FROM vocab WHERE reviewed = 1 AND spoken_override IS NOT NULL AND (curated IS NULL OR curated = 'kept') AND term NOT LIKE '%-%'"
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(VocabRow {
@@ -2243,8 +2371,9 @@ impl Db {
                 term: row.get(1)?,
                 spoken_auto: row.get(2)?,
                 spoken_override: row.get(3)?,
-                reviewed: row.get::<_, i64>(4)? != 0,
-                description: row.get(5).ok().flatten(),
+                reviewed_ipa: row.get(4)?,
+                reviewed: row.get::<_, i64>(5)? != 0,
+                description: row.get(6).ok().flatten(),
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)

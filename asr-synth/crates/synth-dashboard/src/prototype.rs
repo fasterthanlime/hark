@@ -1,14 +1,8 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Mutex, OnceLock};
-
 use serde::Serialize;
-use synth_corrupt::{
-    cmudict::CmuDict,
-    corrupt::phoneme_edit_distance,
-    g2p::{ipa_to_arpabet, G2p},
-};
+use synth_corrupt::corrupt::phoneme_edit_distance;
 
-use crate::db::VocabRow;
+use crate::db::{ReviewedConfusionSurfaceRow, VocabRow};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PrototypeCandidate {
@@ -109,6 +103,12 @@ struct SpanToken {
 }
 
 #[derive(Debug, Clone)]
+enum PhonemeKind {
+    Ipa,
+    Arpabet,
+}
+
+#[derive(Debug, Clone)]
 struct LexiconTerm {
     term: String,
     term_compact: String,
@@ -125,6 +125,7 @@ struct FormEntry {
     compact: String,
     via: &'static str,
     phonemes: Vec<String>,
+    phoneme_kind: PhonemeKind,
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +151,12 @@ struct ScoredCandidate {
 }
 
 #[derive(Debug, Clone)]
+struct ObservedPhonemes {
+    phones: Vec<String>,
+    kind: PhonemeKind,
+}
+
+#[derive(Debug, Clone)]
 pub struct AcousticSegment {
     pub phone: String,
     pub start_sec: f64,
@@ -162,22 +169,16 @@ pub struct AcousticContext<'a> {
     pub zipa_by_qwen: &'a [Vec<String>],
 }
 
-struct PhoneticResources {
-    g2p: G2p,
-    dict: CmuDict,
-}
-
-static PHONETIC_RESOURCES: OnceLock<Option<Mutex<PhoneticResources>>> = OnceLock::new();
-
 pub fn phonetic_preview(text: &str) -> Option<String> {
-    phoneme_string(&phonemize_phrase(text))
+    let phones = parse_reviewed_ipa(text);
+    phoneme_string(&phones)
 }
 
 pub fn prototype_correct(
     input: &str,
     vocab: &[VocabRow],
     alt_spellings: &HashMap<String, Vec<String>>,
-    confusion_forms: &HashMap<String, Vec<String>>,
+    confusion_forms: &HashMap<String, Vec<ReviewedConfusionSurfaceRow>>,
     config: PrototypeConfig,
 ) -> PrototypeCorrectionResult {
     prototype_correct_with_acoustics(input, vocab, alt_spellings, confusion_forms, config, None)
@@ -187,7 +188,7 @@ pub fn prototype_correct_with_acoustics(
     input: &str,
     vocab: &[VocabRow],
     alt_spellings: &HashMap<String, Vec<String>>,
-    confusion_forms: &HashMap<String, Vec<String>>,
+    confusion_forms: &HashMap<String, Vec<ReviewedConfusionSurfaceRow>>,
     config: PrototypeConfig,
     acoustic: Option<&AcousticContext<'_>>,
 ) -> PrototypeCorrectionResult {
@@ -219,14 +220,14 @@ pub fn prototype_correct_with_acoustics(
 fn build_lexicon(
     vocab: &[VocabRow],
     alt_spellings: &HashMap<String, Vec<String>>,
-    confusion_forms: &HashMap<String, Vec<String>>,
+    confusion_forms: &HashMap<String, Vec<ReviewedConfusionSurfaceRow>>,
 ) -> Vec<LexiconTerm> {
     let mut out = Vec::new();
     for row in vocab {
         let term_compact = compact_key(&normalize_words(&row.term));
         let mut seen = HashSet::new();
         let mut forms = Vec::new();
-        let mut add_form = |raw: &str, via: &'static str| {
+        let mut add_form = |raw: &str, via: &'static str, reviewed_ipa: Option<&str>| {
             let words = normalize_words(raw);
             if words.is_empty() {
                 return;
@@ -241,36 +242,52 @@ fn build_lexicon(
             if compact.is_empty() || !seen.insert((compact.clone(), via)) {
                 return;
             }
+            let (phonemes, phoneme_kind) = reviewed_ipa
+                .map(parse_reviewed_ipa)
+                .filter(|phones| !phones.is_empty())
+                .map(|phones| (phones, PhonemeKind::Ipa))
+                .unwrap_or_else(|| (Vec::new(), PhonemeKind::Ipa));
             forms.push(FormEntry {
                 raw: raw.trim().to_string(),
                 words,
                 word_count,
                 compact,
                 via,
-                phonemes: phonemize_phrase(raw),
+                phonemes,
+                phoneme_kind,
             });
         };
 
-        add_form(&row.term, "canonical");
-        add_form(row.spoken(), "spoken");
+        add_form(&row.term, "canonical", row.reviewed_ipa.as_deref());
+        add_form(row.spoken(), "spoken", row.reviewed_ipa.as_deref());
         if let Some(alts) = alt_spellings.get(&row.term.to_ascii_lowercase()) {
             for alt in alts {
-                add_form(alt, "alt");
+                add_form(alt, "alt", row.reviewed_ipa.as_deref());
             }
         }
         if let Some(confusions) = confusion_forms.get(&row.term.to_ascii_lowercase()) {
             for heard in confusions {
-                add_form(heard, "confusion");
+                add_form(
+                    &heard.surface_form,
+                    "confusion",
+                    heard.reviewed_ipa.as_deref(),
+                );
             }
         }
         if forms.is_empty() {
             continue;
         }
+        let term_preview_phonemes = row
+            .reviewed_ipa
+            .as_deref()
+            .map(parse_reviewed_ipa)
+            .filter(|phones| !phones.is_empty())
+            .unwrap_or_default();
         out.push(LexiconTerm {
             term: row.term.clone(),
             term_compact,
             term_preview: row.spoken().trim().to_string(),
-            term_preview_phonemes: phonemize_phrase(row.spoken()),
+            term_preview_phonemes,
             forms,
         });
     }
@@ -336,24 +353,31 @@ fn enumerate_span_proposals(
                 .collect::<Vec<_>>()
                 .join(" ");
             let span_compact = compact_key(&normalized);
-            let span_phonemes = phonemize_phrase(&raw_text);
             if span_compact.len() < 2 {
                 continue;
             }
             let acoustic_window = acoustic.and_then(|ctx| acoustic_window_for_span(ctx, start, end));
             let acoustic_phones = acoustic.and_then(|ctx| acoustic_phones_for_span(ctx, start, end));
-            let observed_acoustic_score =
-                acoustic_phones.as_deref().and_then(|phones| phoneme_similarity(phones, &span_phonemes));
-            let acoustic_trustworthy = observed_acoustic_score
-                .map(|score| score >= 0.45)
-                .unwrap_or(false);
+            let span_observed = observed_phonemes_for_span(&raw_text, acoustic_phones.clone());
+            let observed_acoustic_score = match span_observed.kind {
+                PhonemeKind::Ipa => acoustic_phones.as_ref().map(|_| 1.0),
+                PhonemeKind::Arpabet => acoustic_phones
+                    .as_deref()
+                    .and_then(|phones| phoneme_similarity(phones, &span_observed.phones)),
+            };
+            let acoustic_trustworthy = match span_observed.kind {
+                PhonemeKind::Ipa => acoustic_phones.is_some(),
+                PhonemeKind::Arpabet => observed_acoustic_score
+                    .map(|score| score >= 0.45)
+                    .unwrap_or(false),
+            };
             let mut candidates = lexicon
                 .iter()
                 .filter_map(|term| {
                     score_term(
                         &normalized,
                         &span_compact,
-                        &span_phonemes,
+                        &span_observed,
                         acoustic_phones.as_deref(),
                         term,
                     )
@@ -371,7 +395,7 @@ fn enumerate_span_proposals(
                 char_end,
                 raw_text,
                 normalized,
-                phonemes: phoneme_string(&span_phonemes),
+                phonemes: phoneme_string(&span_observed.phones),
                 acoustic_phonemes: acoustic_phones.as_ref().and_then(|phones| phoneme_string(phones)),
                 observed_acoustic_score,
                 acoustic_trustworthy,
@@ -417,7 +441,7 @@ fn enumerate_span_proposals(
 fn score_term(
     span_words: &str,
     span_compact: &str,
-    span_phonemes: &[String],
+    span_observed: &ObservedPhonemes,
     acoustic_phones: Option<&[String]>,
     term: &LexiconTerm,
 ) -> Option<ScoredCandidate> {
@@ -427,14 +451,31 @@ fn score_term(
     for form in &term.forms {
         let exact_words = span_words == form.words;
         let exact_compact = span_compact == form.compact;
-        let phonetic_score = phoneme_similarity(span_phonemes, &form.phonemes);
-        let observed_acoustic_score =
-            acoustic_phones.and_then(|phones| phoneme_similarity(phones, span_phonemes));
+        let phonetic_score = phoneme_similarity_if_compatible(
+            &span_observed.phones,
+            &span_observed.kind,
+            &form.phonemes,
+            &form.phoneme_kind,
+        );
+        let observed_acoustic_score = acoustic_phones.and_then(|phones| {
+            phoneme_similarity_if_compatible(
+                phones,
+                &PhonemeKind::Ipa,
+                &span_observed.phones,
+                &span_observed.kind,
+            )
+        });
         let acoustic_is_trustworthy = observed_acoustic_score
             .map(|score| score >= 0.45)
             .unwrap_or(false);
-        let raw_acoustic_score =
-            acoustic_phones.and_then(|phones| phoneme_similarity(phones, &form.phonemes));
+        let raw_acoustic_score = acoustic_phones.and_then(|phones| {
+            phoneme_similarity_if_compatible(
+                phones,
+                &PhonemeKind::Ipa,
+                &form.phonemes,
+                &form.phoneme_kind,
+            )
+        });
         let acoustic_score = acoustic_is_trustworthy.then_some(raw_acoustic_score).flatten();
         let acoustic_delta = if acoustic_is_trustworthy {
             acoustic_delta(raw_acoustic_score, observed_acoustic_score)
@@ -783,7 +824,7 @@ fn acoustic_phones_for_span(
         .zipa_segments
         .iter()
         .filter(|seg| seg.end_sec > start && seg.start_sec < end)
-        .flat_map(|seg| zipa_phone_to_arpabet(seg.phone.as_str()))
+        .flat_map(|seg| zipa_phone_to_ipa(seg.phone.as_str()))
         .collect::<Vec<_>>();
     (!raw_window.is_empty()).then_some(raw_window)
 }
@@ -851,18 +892,18 @@ pub fn zipa_grouped_arpabet_by_alignment(
             zipa_segments
                 .iter()
                 .filter(|seg| seg.end_sec > item.start_time && seg.start_sec < item.end_time)
-                .flat_map(|seg| zipa_phone_to_arpabet(seg.phone.as_str()))
+                .flat_map(|seg| zipa_phone_to_ipa(seg.phone.as_str()))
                 .collect::<Vec<_>>()
         })
         .collect()
 }
 
-fn zipa_phone_to_arpabet(phone: &str) -> Vec<String> {
+fn zipa_phone_to_ipa(phone: &str) -> Vec<String> {
     let trimmed = phone.trim();
-    if trimmed.is_empty() || trimmed == "▁" {
+    if trimmed.is_empty() || trimmed == "▁" || trimmed == "_" {
         return Vec::new();
     }
-    ipa_to_arpabet(trimmed)
+    vec![trimmed.to_string()]
 }
 
 fn combo_bonus(edits: &[AcceptedProposal]) -> f32 {
@@ -1227,29 +1268,34 @@ fn via_bonus(via: &str) -> f32 {
     }
 }
 
-fn phonetic_resources() -> Option<&'static Mutex<PhoneticResources>> {
-    PHONETIC_RESOURCES
-        .get_or_init(|| {
-            let dict = synth_corrupt::cmudict::load("data/cmudict.txt").ok()?;
-            let g2p = G2p::load("models/g2p.fst", None).ok()?;
-            Some(Mutex::new(PhoneticResources { g2p, dict }))
-        })
-        .as_ref()
+fn observed_phonemes_for_span(raw_text: &str, acoustic_phones: Option<Vec<String>>) -> ObservedPhonemes {
+    if let Some(phones) = acoustic_phones.filter(|phones| !phones.is_empty()) {
+        return ObservedPhonemes {
+            phones,
+            kind: PhonemeKind::Ipa,
+        };
+    }
+    let reviewed_like = parse_reviewed_ipa(raw_text);
+    ObservedPhonemes {
+        phones: reviewed_like,
+        kind: PhonemeKind::Ipa,
+    }
 }
 
-fn phonemize_phrase(text: &str) -> Vec<String> {
-    let normalized = normalize_words(text);
-    if normalized.is_empty() {
-        return Vec::new();
-    }
-    let Some(resources) = phonetic_resources() else {
-        return Vec::new();
-    };
-    let guard = resources.lock().unwrap();
-    normalized
+fn parse_reviewed_ipa(text: &str) -> Vec<String> {
+    let phones = text
         .split_whitespace()
-        .flat_map(|word| guard.g2p.phonemize(word, &guard.dict))
-        .collect()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .filter(|token| looks_like_ipa_token(token))
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let input_tokens = text.split_whitespace().filter(|token| !token.trim().is_empty()).count();
+    if phones.len() == input_tokens {
+        phones
+    } else {
+        Vec::new()
+    }
 }
 
 fn phoneme_similarity(a: &[String], b: &[String]) -> Option<f32> {
@@ -1261,8 +1307,74 @@ fn phoneme_similarity(a: &[String], b: &[String]) -> Option<f32> {
     Some((1.0 - dist / max_len).clamp(0.0, 1.0))
 }
 
+fn phoneme_similarity_if_compatible(
+    a: &[String],
+    a_kind: &PhonemeKind,
+    b: &[String],
+    b_kind: &PhonemeKind,
+) -> Option<f32> {
+    if std::mem::discriminant(a_kind) != std::mem::discriminant(b_kind) {
+        return None;
+    }
+    phoneme_similarity(a, b)
+}
+
 fn phoneme_string(phonemes: &[String]) -> Option<String> {
     (!phonemes.is_empty()).then(|| phonemes.join(" "))
+}
+
+fn looks_like_ipa_token(token: &str) -> bool {
+    let count = token.chars().count();
+    if count == 0 || count > 3 {
+        return false;
+    }
+    token.chars().all(|ch| {
+        ch.is_ascii_lowercase()
+            || matches!(
+                ch,
+                'ɑ'
+                    | 'æ'
+                    | 'ɐ'
+                    | 'ɒ'
+                    | 'ə'
+                    | 'ɛ'
+                    | 'ɜ'
+                    | 'ɞ'
+                    | 'ɘ'
+                    | 'ɤ'
+                    | 'ɨ'
+                    | 'ɪ'
+                    | 'ɯ'
+                    | 'ɶ'
+                    | 'ø'
+                    | 'œ'
+                    | 'ʉ'
+                    | 'ʊ'
+                    | 'ʌ'
+                    | 'ɔ'
+                    | 'θ'
+                    | 'ð'
+                    | 'ŋ'
+                    | 'ɲ'
+                    | 'ɹ'
+                    | 'ɾ'
+                    | 'ɫ'
+                    | 'ʃ'
+                    | 'ʒ'
+                    | 'ʔ'
+                    | 'ʁ'
+                    | 'ç'
+                    | 'ʒ'
+                    | 'ː'
+                    | '˞'
+                    | 'ʰ'
+                    | 'ʲ'
+                    | 'ʷ'
+                    | '̃'
+                    | '̩'
+                    | '̯'
+            )
+    })
 }
 
 fn prefix_ratio(a: &str, b: &str) -> f32 {
@@ -1313,8 +1425,22 @@ mod tests {
             term: term.to_string(),
             spoken_auto: spoken.to_string(),
             spoken_override: Some(spoken.to_string()),
+            reviewed_ipa: None,
             reviewed: true,
             description: None,
+        }
+    }
+
+    fn confusion(surface_form: &str) -> ReviewedConfusionSurfaceRow {
+        ReviewedConfusionSurfaceRow {
+            id: 1,
+            term: String::new(),
+            surface_form: surface_form.to_string(),
+            reviewed_ipa: None,
+            status: "accepted".to_string(),
+            source: None,
+            created_at: String::new(),
+            updated_at: String::new(),
         }
     }
 
@@ -1439,7 +1565,7 @@ mod tests {
     fn confusion_forms_drive_candidate_retrieval() {
         let vocab = vec![row("serde", "sir day")];
         let mut confusions = HashMap::new();
-        confusions.insert("serde".to_string(), vec!["certification".to_string()]);
+        confusions.insert("serde".to_string(), vec![confusion("certification")]);
         let result = prototype_correct(
             "Certification should be fine for this payload.",
             &vocab,
@@ -1465,7 +1591,7 @@ mod tests {
     fn fuzzy_confusion_aliases_do_not_dominate_irrelevant_spans() {
         let vocab = vec![row("rustc", "rust sea")];
         let mut confusions = HashMap::new();
-        confusions.insert("rustc".to_string(), vec!["rusty".to_string()]);
+        confusions.insert("rustc".to_string(), vec![confusion("rusty")]);
         let result = prototype_correct(
             "it is just a config blob",
             &vocab,
@@ -1493,10 +1619,10 @@ mod tests {
         confusions.insert(
             "tokio".to_string(),
             vec![
-                "we".to_string(),
-                "and".to_string(),
-                "but".to_string(),
-                "Tokyo".to_string(),
+                confusion("we"),
+                confusion("and"),
+                confusion("but"),
+                confusion("Tokyo"),
             ],
         );
         let result = prototype_correct(

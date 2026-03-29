@@ -19,6 +19,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
+use tower_http::services::ServeDir;
 
 pub type AppError = (StatusCode, String);
 
@@ -47,6 +48,10 @@ pub struct AppState {
     prototype_reranker_sidecar: std::sync::Mutex<Option<jobs::PrototypeRerankerSidecar>>,
     /// Shared experimental official Qwen3 reranker sidecar.
     official_qwen3_reranker_server: std::sync::Mutex<Option<jobs::Qwen3RerankerSidecar>>,
+    /// Shared warm ZIPA sidecar for phone decoding.
+    zipa_sidecar: std::sync::Mutex<Option<jobs::ZipaSidecar>>,
+    /// Shared warm Allophant sidecar for IPA decoding in corpus workflows.
+    allophant_sidecar: std::sync::Mutex<Option<jobs::AllophantSidecar>>,
 }
 
 struct LazyTtsManager {
@@ -263,6 +268,12 @@ impl AppState {
         if let Some(mut server) = self.official_qwen3_reranker_server.lock().unwrap().take() {
             server.kill();
         }
+        if let Some(mut server) = self.zipa_sidecar.lock().unwrap().take() {
+            server.kill();
+        }
+        if let Some(mut server) = self.allophant_sidecar.lock().unwrap().take() {
+            server.kill();
+        }
     }
 
     fn training_exclusive(&self) -> bool {
@@ -294,6 +305,7 @@ struct VocabListParams {
 #[derive(Deserialize)]
 struct VocabUpdateBody {
     spoken_override: Option<String>,
+    reviewed_ipa: Option<String>,
     reviewed: Option<bool>,
     description: Option<String>,
 }
@@ -302,6 +314,7 @@ struct VocabUpdateBody {
 struct VocabAddBody {
     term: String,
     spoken_override: Option<String>,
+    reviewed_ipa: Option<String>,
     description: Option<String>,
 }
 
@@ -315,6 +328,15 @@ struct SettingsUpdateBody {
 struct AltSpellingBody {
     term: String,
     alt_spelling: String,
+}
+
+#[derive(Deserialize)]
+struct ReviewedConfusionSurfaceBody {
+    term: String,
+    surface_form: String,
+    reviewed_ipa: Option<String>,
+    status: Option<String>,
+    source: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -336,6 +358,12 @@ struct TtsPreviewBody {
     /// When set, also run forced alignment on the generated audio with this text
     /// and return JSON instead of raw WAV.
     align_text: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct TtsPhonemePreviewBody {
+    phonemes: String,
+    backend: Option<String>,
 }
 
 pub fn err(e: impl std::fmt::Display) -> AppError {
@@ -503,6 +531,14 @@ async fn api_vocab_update(
         };
         db.update_vocab_description(id, val).map_err(err)?;
     }
+    if let Some(ref reviewed_ipa) = body.reviewed_ipa {
+        let val = if reviewed_ipa.is_empty() {
+            None
+        } else {
+            Some(reviewed_ipa.as_str())
+        };
+        db.update_vocab_reviewed_ipa(id, val).map_err(err)?;
+    }
     drop(db);
     state.background_work_notify.notify_one();
     Ok(Json(serde_json::json!({ "ok": true })).into_response())
@@ -589,9 +625,62 @@ async fn api_vocab_add(
                     .map_err(err)?;
             }
         }
+        if let Some(ref reviewed_ipa) = body.reviewed_ipa {
+            if !reviewed_ipa.is_empty() {
+                db.update_vocab_reviewed_ipa(row.id, Some(reviewed_ipa))
+                    .map_err(err)?;
+            }
+        }
     }
     drop(db);
     state.background_work_notify.notify_one();
+    Ok(Json(serde_json::json!({"ok": true})).into_response())
+}
+
+async fn api_corpus_confusion_surfaces(
+    State(state): State<Arc<AppState>>,
+) -> Result<Response, AppError> {
+    let db = state.db.lock().unwrap();
+    let reviewed = db.list_reviewed_confusion_surfaces().map_err(err)?;
+    let scan_candidates = db.list_scan_confusion_surfaces().map_err(err)?;
+    Ok(Json(serde_json::json!({
+        "reviewed": reviewed,
+        "scan_candidates": scan_candidates,
+    }))
+    .into_response())
+}
+
+async fn api_corpus_confusion_surface_upsert(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<ReviewedConfusionSurfaceBody>,
+) -> Result<Response, AppError> {
+    let term = body.term.trim();
+    let surface_form = body.surface_form.trim();
+    if term.is_empty() || surface_form.is_empty() {
+        return Ok(
+            Json(serde_json::json!({"error": "term and surface_form are required"}))
+                .into_response(),
+        );
+    }
+    let reviewed_ipa = body
+        .reviewed_ipa
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let status = body
+        .status
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("accepted");
+    let source = body
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let db = state.db.lock().unwrap();
+    db.upsert_reviewed_confusion_surface(term, surface_form, reviewed_ipa, status, source)
+        .map_err(err)?;
     Ok(Json(serde_json::json!({"ok": true})).into_response())
 }
 
@@ -951,6 +1040,39 @@ async fn api_tts_preview(
     }
 
     Ok(([(axum::http::header::CONTENT_TYPE, "audio/wav")], wav_bytes).into_response())
+}
+
+async fn api_tts_preview_phonemes(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<TtsPhonemePreviewBody>,
+) -> Result<Response, AppError> {
+    let phonemes = body.phonemes.trim().to_string();
+    let backend = body.backend.unwrap_or_else(|| "kokoro".to_string());
+    if phonemes.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "phonemes must not be empty".to_string()));
+    }
+
+    eprintln!(
+        "TTS phoneme preview: backend={backend} phonemes={:?}",
+        &phonemes[..phonemes.len().min(80)]
+    );
+    let mut audio = state
+        .tts
+        .get_or_load()
+        .map_err(err)?
+        .generate_phonemes(&backend, &phonemes)
+        .await
+        .map_err(|e| {
+            eprintln!("TTS phoneme error: {e}");
+            err(e)
+        })?;
+    audio.normalize();
+    let wav_bytes = audio.to_wav().map_err(err)?;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "audio/wav")],
+        wav_bytes,
+    )
+        .into_response())
 }
 
 // ==================== G2P SCAN ====================
@@ -1390,6 +1512,8 @@ async fn main() -> anyhow::Result<()> {
         prototype_reranker_server: std::sync::Mutex::new(None),
         prototype_reranker_sidecar: std::sync::Mutex::new(None),
         official_qwen3_reranker_server: std::sync::Mutex::new(None),
+        zipa_sidecar: std::sync::Mutex::new(None),
+        allophant_sidecar: std::sync::Mutex::new(None),
     });
 
     // Start background pre-computation loop
@@ -2258,6 +2382,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/vocab/{id}", post(api_vocab_update))
         .route("/api/vocab/{id}/delete", post(api_vocab_delete))
         .route(
+            "/api/corpus/confusion-surfaces",
+            get(api_corpus_confusion_surfaces).post(api_corpus_confusion_surface_upsert),
+        )
+        .route(
             "/api/settings",
             get(api_settings_get).post(api_settings_update),
         )
@@ -2269,6 +2397,9 @@ async fn main() -> anyhow::Result<()> {
         // TTS + G2P
         .route("/api/tts/backends", get(api_tts_backends))
         .route("/api/tts/preview", post(api_tts_preview))
+        .route("/api/tts/preview-phonemes", post(api_tts_preview_phonemes))
+        .route("/api/ipa/decode", post(jobs::api_ipa_decode))
+        .route("/api/ipa/suggest-tts", post(jobs::api_ipa_suggest_tts))
         .route("/api/g2p/scan", post(api_g2p_scan))
         // ASR
         .route("/api/asr/transcribe", post(api_asr_transcribe))
@@ -2456,6 +2587,11 @@ async fn main() -> anyhow::Result<()> {
             "/api/author/suggest-sentences",
             post(api_author_suggest_sentences),
         )
+        .nest_service(
+            "/fonts",
+            ServeDir::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("static/fonts")),
+        )
+        .fallback(get(index))
         .with_state(state);
 
     let addr = format!("{}:{}", cli.host, cli.port);

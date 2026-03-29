@@ -41,3 +41,6 @@ asr-synth/training/adapters/
 .envrc
 *.db*
 .analysis/
+.claude/settings.local.json
+asr-synth/scripts/__pycache__/
+build-release/

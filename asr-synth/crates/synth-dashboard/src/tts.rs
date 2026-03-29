@@ -326,6 +326,9 @@ trait LocalTtsBackend: Send + Sync + 'static {
     fn name(&self) -> &'static str;
     /// Generate audio. Takes &self — implementations handle their own concurrency.
     fn generate(&self, text: &str) -> Result<TtsAudio>;
+    fn generate_phonemes(&self, _phonemes: &str) -> Result<TtsAudio> {
+        anyhow::bail!("{} does not support direct phoneme synthesis", self.name());
+    }
 }
 
 struct PocketTtsBackend {
@@ -433,8 +436,16 @@ impl LocalTtsBackend for KokoroBackend {
         let phonemes = phoneme_parts.join(" ");
         eprintln!("kokoro espeak: {text:?} → {phonemes:?}");
 
+        self.generate_phonemes(&phonemes)
+    }
+
+    fn generate_phonemes(&self, phonemes: &str) -> Result<TtsAudio> {
+        let phonemes = phonemes.trim();
+        if phonemes.is_empty() {
+            anyhow::bail!("cannot synthesize empty phoneme string");
+        }
         let audio =
-            voice_tts::generate(&mut self.model.lock().unwrap(), &phonemes, &self.voice, 1.0)
+            voice_tts::generate(&mut self.model.lock().unwrap(), phonemes, &self.voice, 1.0)
                 .map_err(|e| anyhow::anyhow!("kokoro: {e}"))?;
         audio.eval().map_err(|e| anyhow::anyhow!("mlx eval: {e}"))?;
         let samples: Vec<f32> = audio.as_slice().to_vec();
@@ -737,10 +748,28 @@ impl TtsManager {
 
         anyhow::bail!("TTS backend '{backend_name}' not available")
     }
+
+    pub async fn generate_phonemes(
+        &self,
+        backend_name: &str,
+        phonemes: &str,
+    ) -> Result<TtsAudio> {
+        for local in &self.local {
+            if local.name() == backend_name {
+                let local = local.clone();
+                let phonemes = phonemes.to_string();
+                return tokio::task::spawn_blocking(move || local.generate_phonemes(&phonemes))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("spawn_blocking: {e}"))?;
+            }
+        }
+
+        anyhow::bail!("TTS backend '{backend_name}' not available for phoneme synthesis")
+    }
 }
 
 /// Build a TtsManager with all available backends
-pub fn init(voice_path: &str, _kokoro_voice: &str, tts_workers: usize) -> TtsManager {
+pub fn init(voice_path: &str, kokoro_voice: &str, tts_workers: usize) -> TtsManager {
     let mut local: Vec<std::sync::Arc<dyn LocalTtsBackend>> = Vec::new();
     let mut remote: Vec<Box<dyn RemoteTtsBackend>> = Vec::new();
 
@@ -754,6 +783,13 @@ pub fn init(voice_path: &str, _kokoro_voice: &str, tts_workers: usize) -> TtsMan
             local.push(std::sync::Arc::new(pool));
         }
         Err(e) => eprintln!("pocket-tts-hq not available: {e}"),
+    }
+
+    match KokoroBackend::load(kokoro_voice) {
+        Ok(backend) => {
+            local.push(std::sync::Arc::new(backend));
+        }
+        Err(e) => eprintln!("kokoro not available: {e}"),
     }
 
     // OpenAI

@@ -6,6 +6,8 @@ REMOTE_ROOT=~/bearcove/hark/asr-synth
 TMUX_SESSION=synth-dashboard
 TTS_HOST=127.0.0.1
 TTS_PORT=3456
+LOG_DIR="$REMOTE_ROOT/logs"
+LOG_PATH="$LOG_DIR/synth-dashboard.log"
 
 echo "=== Syncing to souffle ==="
 printf 'y\n' | bash ./sync-to-souffle.sh
@@ -16,8 +18,9 @@ ssh "$REMOTE" "cd $REMOTE_ROOT && direnv exec .. cargo build --release -p synth-
 echo "=== Restarting dashboard in tmux ==="
 ssh "$REMOTE" "pkill -f './target/release/synth-dashboard --voice voices/amos2_short.wav --host $TTS_HOST' 2>/dev/null || true"
 ssh "$REMOTE" "tmux kill-session -t $TMUX_SESSION 2>/dev/null || true"
-ssh "$REMOTE" "tmux new-session -d -s $TMUX_SESSION 'cd $REMOTE_ROOT && exec direnv exec .. ./target/release/synth-dashboard --voice voices/amos2_short.wav --host $TTS_HOST'"
-ssh "$REMOTE" "for i in {1..20}; do if lsof -nP -iTCP:$TTS_PORT -sTCP:LISTEN >/dev/null 2>&1 && curl -fsS http://$TTS_HOST:$TTS_PORT/ >/dev/null 2>&1; then exit 0; fi; sleep 1; done; tmux capture-pane -pt $TMUX_SESSION | tail -40; exit 1"
+ssh "$REMOTE" "mkdir -p $LOG_DIR && printf '\n===== %s =====\n' \"\$(date -u '+%Y-%m-%dT%H:%M:%SZ')\" >> $LOG_PATH"
+ssh "$REMOTE" "tmux new-session -d -s $TMUX_SESSION 'cd $REMOTE_ROOT && exec direnv exec .. ./target/release/synth-dashboard --voice voices/amos2_short.wav --host $TTS_HOST >> $LOG_PATH 2>&1'"
+ssh "$REMOTE" "for i in {1..20}; do if lsof -nP -iTCP:$TTS_PORT -sTCP:LISTEN >/dev/null 2>&1 && curl -fsS http://$TTS_HOST:$TTS_PORT/ >/dev/null 2>&1; then exit 0; fi; sleep 1; done; tail -40 $LOG_PATH; exit 1"
 
 echo "=== Ensuring HTTPS proxy ==="
 ssh "$REMOTE" "/Applications/Tailscale.app/Contents/MacOS/Tailscale serve --bg --yes --https=443 http://$TTS_HOST:$TTS_PORT"
@@ -26,3 +29,4 @@ ssh "$REMOTE" "/Applications/Tailscale.app/Contents/MacOS/Tailscale serve status
 echo
 echo "Dashboard is live at: https://souffle.dropbear-piranha.ts.net/#/author"
 echo "Attach logs with: ssh souffle tmux attach -t $TMUX_SESSION"
+echo "Tail file logs with: ssh souffle tail -f $LOG_PATH"

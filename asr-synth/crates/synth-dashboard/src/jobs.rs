@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::State,
+    http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
@@ -1469,14 +1470,19 @@ fn decode_powsm_trace_from_16k(samples_16k: &[f32]) -> anyhow::Result<serde_json
 
 fn decode_zipa_trace_from_16k(samples_16k: &[f32]) -> anyhow::Result<serde_json::Value> {
     let temp_wav = write_temp_wav_16k(samples_16k, "zipa")?;
+    let result = decode_zipa_trace_from_wav_cold(&temp_wav);
+    let _ = std::fs::remove_file(&temp_wav);
+    result
+}
+
+fn decode_zipa_trace_from_wav_cold(path: &std::path::Path) -> anyhow::Result<serde_json::Value> {
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../scripts/phone_decode_zipa.sh");
     let output = Command::new("bash")
         .arg(script)
         .arg("--json")
-        .arg(&temp_wav)
+        .arg(path)
         .output()?;
-    let _ = std::fs::remove_file(&temp_wav);
     if !output.status.success() {
         return Err(anyhow::anyhow!(
             "phone_decode_zipa failed: {}",
@@ -1492,16 +1498,112 @@ fn decode_zipa_trace_from_16k(samples_16k: &[f32]) -> anyhow::Result<serde_json:
     Ok(serde_json::from_str(line)?)
 }
 
+pub struct ZipaSidecar {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl ZipaSidecar {
+    pub fn start() -> anyhow::Result<Self> {
+        let mut child = Command::new("bash")
+            .arg("scripts/phone_decode_zipa_sidecar.sh")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("zipa sidecar missing stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("zipa sidecar missing stdout"))?;
+        let mut sidecar = Self {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+        };
+        let ready = sidecar.read_json_line()?;
+        if ready.get("ready").and_then(|v| v.as_bool()) != Some(true) {
+            anyhow::bail!("zipa sidecar failed to start: {ready}");
+        }
+        Ok(sidecar)
+    }
+
+    fn read_json_line(&mut self) -> anyhow::Result<serde_json::Value> {
+        let mut line = String::new();
+        let read = self.stdout.read_line(&mut line)?;
+        if read == 0 {
+            anyhow::bail!("zipa sidecar closed stdout");
+        }
+        Ok(serde_json::from_str(line.trim())?)
+    }
+
+    pub fn decode_wav_path(
+        &mut self,
+        path: &std::path::Path,
+    ) -> anyhow::Result<serde_json::Value> {
+        let req = serde_json::json!({ "audio": path });
+        serde_json::to_writer(&mut self.stdin, &req)?;
+        self.stdin.write_all(b"\n")?;
+        self.stdin.flush()?;
+        let value = self.read_json_line()?;
+        if let Some(error) = value.get("error").and_then(|v| v.as_str()) {
+            anyhow::bail!("zipa sidecar error: {error}");
+        }
+        Ok(value)
+    }
+
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn decode_zipa_trace_from_16k_warm(
+    state: &AppState,
+    samples_16k: &[f32],
+) -> anyhow::Result<serde_json::Value> {
+    let temp_wav = write_temp_wav_16k(samples_16k, "zipa")?;
+    let result = (|| -> anyhow::Result<serde_json::Value> {
+        let mut guard = state.zipa_sidecar.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(ZipaSidecar::start()?);
+        }
+        let sidecar = guard.as_mut().unwrap();
+        match sidecar.decode_wav_path(&temp_wav) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                if let Some(mut server) = guard.take() {
+                    server.kill();
+                }
+                Err(error)
+            }
+        }
+    })();
+    let _ = std::fs::remove_file(&temp_wav);
+    result.or_else(|_| decode_zipa_trace_from_16k(samples_16k))
+}
+
 fn decode_allophant_trace_from_16k(samples_16k: &[f32]) -> anyhow::Result<serde_json::Value> {
     let temp_wav = write_temp_wav_16k(samples_16k, "allophant")?;
+    let result = decode_allophant_trace_from_wav_cold(&temp_wav);
+    let _ = std::fs::remove_file(&temp_wav);
+    result
+}
+
+fn decode_allophant_trace_from_wav_cold(
+    path: &std::path::Path,
+) -> anyhow::Result<serde_json::Value> {
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../scripts/phone_decode_allophant.sh");
     let output = Command::new("bash")
         .arg(script)
         .arg("--json")
-        .arg(&temp_wav)
+        .arg(path)
         .output()?;
-    let _ = std::fs::remove_file(&temp_wav);
     if !output.status.success() {
         return Err(anyhow::anyhow!(
             "phone_decode_allophant failed: {}",
@@ -1517,7 +1619,243 @@ fn decode_allophant_trace_from_16k(samples_16k: &[f32]) -> anyhow::Result<serde_
     Ok(serde_json::from_str(line)?)
 }
 
-const AUTHORED_PHONE_GROUPING_VERSION: i64 = 2;
+pub struct AllophantSidecar {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl AllophantSidecar {
+    pub fn start() -> anyhow::Result<Self> {
+        let mut child = Command::new("bash")
+            .arg("scripts/phone_decode_allophant_sidecar.sh")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("allophant sidecar missing stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("allophant sidecar missing stdout"))?;
+        let mut sidecar = Self {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+        };
+        let ready = sidecar.read_json_line()?;
+        if ready.get("ready").and_then(|v| v.as_bool()) != Some(true) {
+            anyhow::bail!("allophant sidecar failed to start: {ready}");
+        }
+        Ok(sidecar)
+    }
+
+    fn read_json_line(&mut self) -> anyhow::Result<serde_json::Value> {
+        let mut line = String::new();
+        let read = self.stdout.read_line(&mut line)?;
+        if read == 0 {
+            anyhow::bail!("allophant sidecar closed stdout");
+        }
+        Ok(serde_json::from_str(line.trim())?)
+    }
+
+    pub fn decode_wav_path(
+        &mut self,
+        path: &std::path::Path,
+    ) -> anyhow::Result<serde_json::Value> {
+        let req = serde_json::json!({ "audio": path });
+        serde_json::to_writer(&mut self.stdin, &req)?;
+        self.stdin.write_all(b"\n")?;
+        self.stdin.flush()?;
+        let value = self.read_json_line()?;
+        if let Some(error) = value.get("error").and_then(|v| v.as_str()) {
+            anyhow::bail!("allophant sidecar error: {error}");
+        }
+        Ok(value)
+    }
+
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn decode_allophant_trace_from_16k_warm(
+    state: &AppState,
+    samples_16k: &[f32],
+) -> anyhow::Result<serde_json::Value> {
+    let temp_wav = write_temp_wav_16k(samples_16k, "allophant")?;
+    let result = (|| -> anyhow::Result<serde_json::Value> {
+        let mut guard = state.allophant_sidecar.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(AllophantSidecar::start()?);
+        }
+        let sidecar = guard.as_mut().unwrap();
+        match sidecar.decode_wav_path(&temp_wav) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                if let Some(mut server) = guard.take() {
+                    server.kill();
+                }
+                Err(error)
+            }
+        }
+    })();
+    let _ = std::fs::remove_file(&temp_wav);
+    result.or_else(|_| decode_allophant_trace_from_16k(samples_16k))
+}
+
+fn clean_zipa_phone_string(text: &str) -> String {
+    text.replace('▁', " ")
+        .split_whitespace()
+        .filter(|token| *token != "_" && *token != "▁")
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub async fn api_ipa_decode(
+    State(state): State<Arc<AppState>>,
+    body: axum::body::Bytes,
+) -> Result<Response, AppError> {
+    let (mono, sample_rate) = decode_wav_mono(&body).map_err(err)?;
+    let samples_16k = tts::resample_to_16k(&mono, sample_rate).map_err(err)?;
+    let allophant_started = std::time::Instant::now();
+    let allophant_trace = decode_allophant_trace_from_16k_warm(&state, &samples_16k).map_err(err)?;
+    let allophant_elapsed_ms = allophant_started.elapsed().as_millis() as u64;
+    let allophant_phones = allophant_trace
+        .get("phones")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let zipa_started = std::time::Instant::now();
+    let zipa_trace = decode_zipa_trace_from_16k_warm(&state, &samples_16k).ok();
+    let zipa_elapsed_ms = zipa_started.elapsed().as_millis() as u64;
+    let zipa_phones = zipa_trace
+        .as_ref()
+        .and_then(|trace| trace.get("phones"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let zipa_phones = clean_zipa_phone_string(&zipa_phones);
+    Ok(Json(serde_json::json!({
+        "phones": allophant_phones,
+        "trace": allophant_trace,
+        "allophant": {
+            "phones": allophant_phones,
+            "trace": allophant_trace,
+            "elapsed_ms": allophant_elapsed_ms,
+        },
+        "zipa": zipa_trace.as_ref().map(|trace| serde_json::json!({
+            "phones": zipa_phones,
+            "trace": trace,
+            "elapsed_ms": zipa_elapsed_ms,
+        })),
+    }))
+    .into_response())
+}
+
+#[derive(serde::Deserialize)]
+pub struct IpaSuggestTtsBody {
+    pub text: String,
+    pub backend: Option<String>,
+}
+
+pub async fn api_ipa_suggest_tts(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<IpaSuggestTtsBody>,
+) -> Result<Response, AppError> {
+    use base64::Engine as _;
+    let text = body.text.trim().to_string();
+    if text.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "text must not be empty".to_string()));
+    }
+    let backend = body.backend.unwrap_or_else(|| "openai".to_string());
+    let tts_started = std::time::Instant::now();
+    let mut audio = state.tts.generate(&backend, &text).await.map_err(err)?;
+    audio.normalize();
+    let tts_elapsed_ms = tts_started.elapsed().as_millis() as u64;
+    let tts_audio_b64 = base64::engine::general_purpose::STANDARD
+        .encode(audio.to_wav().map_err(err)?);
+    let samples_16k = tts::resample_to_16k(&audio.samples, audio.sample_rate).map_err(err)?;
+    let zipa_started = std::time::Instant::now();
+    let zipa_trace = decode_zipa_trace_from_16k_warm(&state, &samples_16k).map_err(err)?;
+    let zipa_elapsed_ms = zipa_started.elapsed().as_millis() as u64;
+    let zipa_phones = zipa_trace
+        .get("phones")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let zipa_phones = clean_zipa_phone_string(&zipa_phones);
+    Ok(Json(serde_json::json!({
+        "text": text,
+        "backend": backend,
+        "tts_elapsed_ms": tts_elapsed_ms,
+        "tts_audio_b64": tts_audio_b64,
+        "zipa": {
+            "phones": zipa_phones,
+            "trace": zipa_trace,
+            "elapsed_ms": zipa_elapsed_ms,
+        },
+    }))
+    .into_response())
+}
+
+fn decode_allophant_traces_from_16k_batch(
+    clips_16k: &[Vec<f32>],
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    if clips_16k.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut temp_wavs = Vec::with_capacity(clips_16k.len());
+    for (idx, clip) in clips_16k.iter().enumerate() {
+        temp_wavs.push(write_temp_wav_16k(clip, &format!("allophant_word_{idx}"))?);
+    }
+
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/phone_decode_allophant.sh");
+    let mut command = Command::new("bash");
+    command.arg(script).arg("--json");
+    for wav in &temp_wavs {
+        command.arg(wav);
+    }
+    let output = command.output();
+    for wav in &temp_wavs {
+        let _ = std::fs::remove_file(wav);
+    }
+    let output = output?;
+    if !output.status.success() {
+        return Err(anyhow::anyhow!(
+            "phone_decode_allophant batch failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    let traces = stdout
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            line.starts_with('{')
+                .then(|| serde_json::from_str::<serde_json::Value>(line))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if traces.len() != clips_16k.len() {
+        return Err(anyhow::anyhow!(
+            "phone_decode_allophant batch produced {} JSON payloads for {} clips",
+            traces.len(),
+            clips_16k.len()
+        ));
+    }
+    Ok(traces)
+}
+
+const AUTHORED_PHONE_GROUPING_VERSION: i64 = 4;
 
 fn phone_segments_to_alignment(phone_trace: &serde_json::Value) -> serde_json::Value {
     let segments = phone_trace
@@ -1566,6 +1904,55 @@ fn alignment_group_ownership_ranges(
 
 fn interval_overlap_sec(a_start: f64, a_end: f64, b_start: f64, b_end: f64) -> f64 {
     (a_end.min(b_end) - a_start.max(b_start)).max(0.0)
+}
+
+fn slice_samples_16k(samples_16k: &[f32], start_sec: f64, end_sec: f64) -> Vec<f32> {
+    if end_sec <= start_sec || samples_16k.is_empty() {
+        return Vec::new();
+    }
+    let sample_rate = 16_000.0;
+    let total_len = samples_16k.len();
+    let start = (start_sec.max(0.0) * sample_rate).floor() as usize;
+    let end = (end_sec.max(0.0) * sample_rate).ceil() as usize;
+    let start = start.min(total_len);
+    let end = end.min(total_len);
+    if end <= start {
+        return Vec::new();
+    }
+    samples_16k[start..end].to_vec()
+}
+
+fn offset_trace_segments(
+    trace: &serde_json::Value,
+    absolute_start_sec: f64,
+) -> anyhow::Result<Vec<crate::prototype::AcousticSegment>> {
+    let segments = trace
+        .get("segments")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow::anyhow!("allophant trace missing segments"))?;
+    let mut out = Vec::with_capacity(segments.len());
+    for seg in segments {
+        let phone = seg
+            .get("phone")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if phone.is_empty() {
+            continue;
+        }
+        let local_start = seg.get("start_sec").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let local_end = seg.get("end_sec").and_then(|v| v.as_f64()).unwrap_or(local_start);
+        if local_end <= local_start {
+            continue;
+        }
+        out.push(crate::prototype::AcousticSegment {
+            phone,
+            start_sec: absolute_start_sec + local_start,
+            end_sec: absolute_start_sec + local_end,
+        });
+    }
+    Ok(out)
 }
 
 fn group_phone_segments_by_alignment_json(
@@ -1662,6 +2049,135 @@ fn group_phone_segments_by_alignment_json(
     )
 }
 
+fn decode_grouped_phone_segments_by_alignment_json(
+    samples_16k: &[f32],
+    alignment: &[qwen3_asr::ForcedAlignItem],
+    fallback_segments: &[crate::prototype::AcousticSegment],
+) -> anyhow::Result<serde_json::Value> {
+    let ownership = alignment_group_ownership_ranges(alignment);
+    if ownership.is_empty() {
+        return Ok(serde_json::Value::Array(Vec::new()));
+    }
+
+    let clips = ownership
+        .iter()
+        .map(|(own_start, own_end)| slice_samples_16k(samples_16k, *own_start, *own_end))
+        .collect::<Vec<_>>();
+    let traces = decode_allophant_traces_from_16k_batch(&clips)?;
+    if traces.len() != alignment.len() {
+        return Err(anyhow::anyhow!(
+            "decoded {} traces for {} alignment items",
+            traces.len(),
+            alignment.len()
+        ));
+    }
+    let fallback_rows = group_phone_segments_by_alignment_json(alignment, fallback_segments)
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(serde_json::Value::Array(
+        alignment
+            .iter()
+            .enumerate()
+            .map(|(idx, item)| {
+                let (own_start, own_end) = ownership
+                    .get(idx)
+                    .copied()
+                    .unwrap_or((item.start_time, item.end_time));
+                let trace = traces.get(idx).cloned().unwrap_or(serde_json::json!({}));
+                let absolute_segments =
+                    offset_trace_segments(&trace, own_start).unwrap_or_else(|_| Vec::new());
+                let phones = absolute_segments
+                    .iter()
+                    .map(|seg| seg.phone.as_str())
+                    .filter(|phone| !phone.trim().is_empty())
+                    .collect::<Vec<_>>();
+                if phones.is_empty() {
+                    let mut fallback = fallback_rows.get(idx).cloned().unwrap_or_else(|| {
+                        serde_json::json!({
+                            "word": item.word,
+                            "w": "∅",
+                            "s": item.start_time,
+                            "e": item.end_time,
+                            "own_s": own_start,
+                            "own_e": own_end,
+                            "n": 0,
+                            "phones": [],
+                            "t": format!(
+                                "{}: ∅ | align {:.3}s–{:.3}s | own {:.3}s–{:.3}s | utterance-fallback",
+                                item.word, item.start_time, item.end_time, own_start, own_end
+                            ),
+                        })
+                    });
+                    if let Some(obj) = fallback.as_object_mut() {
+                        obj.insert(
+                            "trace_source".to_string(),
+                            serde_json::Value::String("utterance_fallback".to_string()),
+                        );
+                        obj.insert("slice_trace".to_string(), trace);
+                        obj.insert(
+                            "own_s".to_string(),
+                            serde_json::Value::from(own_start),
+                        );
+                        obj.insert(
+                            "own_e".to_string(),
+                            serde_json::Value::from(own_end),
+                        );
+                    }
+                    return fallback;
+                }
+                let ipa = if phones.is_empty() {
+                    "∅".to_string()
+                } else {
+                    phones.join(" ")
+                };
+                let phone_items = absolute_segments
+                    .iter()
+                    .enumerate()
+                    .map(|(seg_idx, seg)| {
+                        let local = trace
+                            .get("segments")
+                            .and_then(|v| v.as_array())
+                            .and_then(|rows| rows.get(seg_idx))
+                            .cloned()
+                            .unwrap_or(serde_json::json!({}));
+                        serde_json::json!({
+                            "p": seg.phone,
+                            "s": seg.start_sec,
+                            "e": seg.end_sec,
+                            "local_s": local.get("start_sec").and_then(|v| v.as_f64()),
+                            "local_e": local.get("end_sec").and_then(|v| v.as_f64()),
+                            "avg_logprob": local.get("avg_logprob").and_then(|v| v.as_f64()),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                serde_json::json!({
+                    "word": item.word,
+                    "w": ipa,
+                    "s": item.start_time,
+                    "e": item.end_time,
+                    "own_s": own_start,
+                    "own_e": own_end,
+                    "n": phone_items.len(),
+                    "phones": phone_items,
+                    "trace_source": "per_word_allophant",
+                    "slice_trace": trace,
+                    "t": format!(
+                        "{}: {} | align {:.3}s–{:.3}s | own {:.3}s–{:.3}s | per-word",
+                        item.word,
+                        ipa,
+                        item.start_time,
+                        item.end_time,
+                        own_start,
+                        own_end
+                    ),
+                })
+            })
+            .collect(),
+    ))
+}
+
 fn persist_authored_recording_phone_trace(
     state: &Arc<AppState>,
     rec: &crate::db::AuthoredSentenceRecordingRow,
@@ -1673,16 +2189,28 @@ fn persist_authored_recording_phone_trace(
         .filter(|text| !text.is_empty())
         .ok_or_else(|| anyhow::anyhow!("recording {} has no qwen_clean", rec.id))?;
     let samples_16k = load_authored_recording_16k(&rec.wav_path)?;
-    let trace = decode_allophant_trace_from_16k(&samples_16k)?;
-    let segments = zipa_segments_from_trace(&trace);
+    let trace = decode_allophant_trace_from_16k_warm(state, &samples_16k)?;
     let qwen_alignment = state.aligner.align(&samples_16k, qwen_text)?;
     let sentence_alignment = state.aligner.align(&samples_16k, &rec.sentence)?;
     let qwen_alignment_json = fmt_alignment_json(&qwen_alignment).to_string();
     let sentence_alignment_json = fmt_alignment_json(&sentence_alignment).to_string();
-    let qwen_grouped_json =
-        group_phone_segments_by_alignment_json(&qwen_alignment, &segments).to_string();
-    let sentence_grouped_json =
-        group_phone_segments_by_alignment_json(&sentence_alignment, &segments).to_string();
+    let utterance_segments = zipa_segments_from_trace(&trace);
+    let qwen_grouped_json = decode_grouped_phone_segments_by_alignment_json(
+        &samples_16k,
+        &qwen_alignment,
+        &utterance_segments,
+    )
+    .unwrap_or_else(|_| group_phone_segments_by_alignment_json(&qwen_alignment, &utterance_segments))
+    .to_string();
+    let sentence_grouped_json = decode_grouped_phone_segments_by_alignment_json(
+        &samples_16k,
+        &sentence_alignment,
+        &utterance_segments,
+    )
+    .unwrap_or_else(|_| {
+        group_phone_segments_by_alignment_json(&sentence_alignment, &utterance_segments)
+    })
+    .to_string();
     let db = state.db.lock().unwrap();
     db.upsert_authored_recording_phone_trace(
         rec.id,
@@ -3807,7 +4335,7 @@ pub async fn api_start_prototype_reranker_prepare_job(
                 let db = state3.db.lock().unwrap();
                 let vocab = db.list_reviewed_vocab().unwrap_or_default();
                 let alt_spellings = db.get_all_alt_spellings().unwrap_or_default();
-                let confusion_forms = db.get_all_qwen_confusions().unwrap_or_default();
+                let confusion_forms = db.get_all_reviewed_confusion_surfaces().unwrap_or_default();
                 let build = build_applied_mistake_output(&db, &alt_spellings)?;
                 (build, vocab, alt_spellings, confusion_forms)
             };
@@ -5904,12 +6432,13 @@ type AcousticInput = (
 );
 
 fn build_acoustic_input_from_samples_16k(
+    state: &AppState,
     aligner: &crate::LazyAligner,
     samples_16k: &[f32],
     qwen_text: &str,
 ) -> Option<AcousticInput> {
     let qwen_alignment = aligner.align(samples_16k, qwen_text).ok()?;
-    let zipa_trace = decode_zipa_trace_from_16k(samples_16k).ok()?;
+    let zipa_trace = decode_zipa_trace_from_16k_warm(state, samples_16k).ok()?;
     let zipa_segments = zipa_segments_from_trace(&zipa_trace);
     let zipa_by_qwen =
         crate::prototype::zipa_grouped_arpabet_by_alignment(&qwen_alignment, &zipa_segments);
@@ -5985,7 +6514,7 @@ pub async fn api_correct_prototype(
         (
             db.list_reviewed_vocab().map_err(err)?,
             db.get_all_alt_spellings().map_err(err)?,
-            db.get_all_qwen_confusions().map_err(err)?,
+            db.get_all_reviewed_confusion_surfaces().map_err(err)?,
         )
     };
     let config = crate::prototype::PrototypeConfig {
@@ -6008,7 +6537,7 @@ pub async fn api_correct_prototype(
                 .ok()?;
             let (mono, sample_rate) = decode_wav_mono(&wav).ok()?;
             let samples_16k = tts::resample_to_16k(&mono, sample_rate).ok()?;
-            build_acoustic_input_from_samples_16k(&state2.aligner, &samples_16k, &qwen_text)
+            build_acoustic_input_from_samples_16k(&state2, &state2.aligner, &samples_16k, &qwen_text)
         })
         .await
         .map_err(err)?
@@ -6145,7 +6674,7 @@ pub async fn api_correct_prototype_bakeoff(
                     let db = state3.db.lock().unwrap();
                     let vocab = db.list_reviewed_vocab()?;
                     let alt_spellings = db.get_all_alt_spellings()?;
-                    let confusion_forms = db.get_all_qwen_confusions()?;
+                    let confusion_forms = db.get_all_reviewed_confusion_surfaces()?;
                     let mut items = load_applied_eval_rows("training/applied-eval.jsonl")?;
                     items.sort_by(|a, b| {
                         a.term
@@ -6334,7 +6863,7 @@ pub async fn api_correct_prototype_bakeoff(
             let db = state2.db.lock().unwrap();
             let vocab = db.list_reviewed_vocab()?;
             let alt_spellings = db.get_all_alt_spellings()?;
-            let confusion_forms = db.get_all_qwen_confusions()?;
+            let confusion_forms = db.get_all_reviewed_confusion_surfaces()?;
             let items = if source == "corpus" {
                 let mut items = db.corpus_eval_set()?;
                 items.retain(|item| item.is_mistake);
@@ -6457,6 +6986,7 @@ pub async fn api_correct_prototype_bakeoff(
                         let (mono, sample_rate) = decode_wav_mono(&wav).ok()?;
                         let samples_16k = tts::resample_to_16k(&mono, sample_rate).ok()?;
                         build_acoustic_input_from_samples_16k(
+                            &state2,
                             &state2.aligner,
                             &samples_16k,
                             &item.qwen,
@@ -6524,6 +7054,7 @@ pub async fn api_correct_prototype_bakeoff(
                         let (mono, sample_rate) = decode_wav_mono(&wav).ok()?;
                         let samples_16k = tts::resample_to_16k(&mono, sample_rate).ok()?;
                         build_acoustic_input_from_samples_16k(
+                            &state2,
                             &state2.aligner,
                             &samples_16k,
                             &item.qwen,
@@ -6710,7 +7241,7 @@ pub async fn api_correct_prototype_bakeoff_detail(
                 (
                     db.list_reviewed_vocab()?,
                     db.get_all_alt_spellings()?,
-                    db.get_all_qwen_confusions()?,
+                    db.get_all_reviewed_confusion_surfaces()?,
                 )
             };
             let mut prototype_result = crate::prototype::prototype_correct_with_acoustics(
@@ -6800,7 +7331,7 @@ pub async fn api_correct_prototype_bakeoff_detail(
                 .ok_or_else(|| anyhow::anyhow!("recording not found"))?;
             let vocab = db.list_reviewed_vocab()?;
             let alt_spellings = db.get_all_alt_spellings()?;
-            let confusion_forms = db.get_all_qwen_confusions()?;
+            let confusion_forms = db.get_all_reviewed_confusion_surfaces()?;
             (recording, vocab, alt_spellings, confusion_forms)
         };
         let samples_16k = load_authored_recording_16k(&recording.wav_path)?;
@@ -8562,6 +9093,33 @@ mod tests {
         assert_eq!(phones_for(0), vec!["iɪ".to_string()]);
         assert_eq!(phones_for(1), vec!["w".to_string(), "ʌ".to_string()]);
         assert!(phones_for(2).is_empty());
+    }
+
+    #[test]
+    fn slice_samples_16k_uses_absolute_second_bounds() {
+        let samples = (0..32_000).map(|n| n as f32).collect::<Vec<_>>();
+        let slice = slice_samples_16k(&samples, 0.25, 0.50);
+        assert_eq!(slice.len(), 4_000);
+        assert_eq!(slice.first().copied(), Some(4_000.0));
+        assert_eq!(slice.last().copied(), Some(7_999.0));
+    }
+
+    #[test]
+    fn offset_trace_segments_maps_local_times_back_to_original_audio() {
+        let trace = serde_json::json!({
+            "segments": [
+                {"phone": "m", "start_sec": 0.0, "end_sec": 0.05, "avg_logprob": -0.1},
+                {"phone": "ɪ", "start_sec": 0.05, "end_sec": 0.10, "avg_logprob": -0.2}
+            ]
+        });
+        let segments = offset_trace_segments(&trace, 1.25).expect("offset ok");
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].phone, "m");
+        assert!((segments[0].start_sec - 1.25).abs() < 1e-6);
+        assert!((segments[0].end_sec - 1.30).abs() < 1e-6);
+        assert_eq!(segments[1].phone, "ɪ");
+        assert!((segments[1].start_sec - 1.30).abs() < 1e-6);
+        assert!((segments[1].end_sec - 1.35).abs() < 1e-6);
     }
 
     #[test]

@@ -15,6 +15,14 @@
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <style>
+        @font-face {
+            font-family: 'Manuale IPA Web';
+            src: url('/fonts/ManualeIPA-Regular.woff2') format('woff2');
+            font-weight: 400;
+            font-style: normal;
+            font-display: swap;
+        }
+
         :root {
             --bg: #0d1117;
             --surface: #161b22;
@@ -1146,6 +1154,21 @@
             return audioBuf;
         }
 
+        async function fetchTtsPhonemeBuffer(phonemes, backend='kokoro') {
+            if (_ttsAbort) { _ttsAbort.abort(); }
+            const controller = new AbortController();
+            _ttsAbort = controller;
+            const res = await fetch('/api/tts/preview-phonemes', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({phonemes, backend}),
+                signal: controller.signal,
+            });
+            if (!res.ok) throw new Error(`TTS ${res.status}: ${await res.text()}`);
+            const arrayBuf = await res.arrayBuffer();
+            const audioBuf = await audioCtx.decodeAudioData(arrayBuf);
+            return audioBuf;
+        }
+
         // TTS + forced alignment in one shot. Returns { audioBuf, alignment }.
         // alignment is [{word, start, end}, ...] with times in seconds.
         async function fetchTtsAligned(spokenText, backend, alignText) {
@@ -1165,8 +1188,13 @@
         }
 
         let _currentSource = null;
+        let _remoteAudio = null;
         function stopPlayback() {
             if (_currentSource) { try { _currentSource.stop(); } catch {} _currentSource = null; }
+            if (_remoteAudio) {
+                try { _remoteAudio.pause(); } catch {}
+                _remoteAudio = null;
+            }
         }
         function playBuffer(audioBuf, onEnd) {
             stopPlayback();
@@ -1177,6 +1205,661 @@
             source.start();
             _currentSource = source;
             return source;
+        }
+
+        const IPA_LIBRARY = {
+            'i': {desc:'close front unrounded vowel; the ee sound from "fleece"', slug:'Close_front_unrounded_vowel'},
+            'y': {desc:'close front rounded vowel', slug:'Close_front_rounded_vowel'},
+            'ɨ': {desc:'close central unrounded vowel', slug:'Close_central_unrounded_vowel'},
+            'ʉ': {desc:'close central rounded vowel', slug:'Close_central_rounded_vowel'},
+            'ɯ': {desc:'close back unrounded vowel', slug:'Close_back_unrounded_vowel'},
+            'u': {desc:'close back rounded vowel; the oo sound from "goose"', slug:'Close_back_rounded_vowel'},
+            'ɪ': {desc:'near-close near-front unrounded vowel; the i sound from "kit"', slug:'Near-close_near-front_unrounded_vowel'},
+            'ʏ': {desc:'near-close near-front rounded vowel', slug:'Near-close_near-front_rounded_vowel'},
+            'ʊ': {desc:'near-close near-back rounded vowel; the u sound from "foot"', slug:'Near-close_near-back_rounded_vowel'},
+            'e': {desc:'close-mid front unrounded vowel; the vowel from many pronunciations of "bait"', slug:'Close-mid_front_unrounded_vowel'},
+            'ø': {desc:'close-mid front rounded vowel', slug:'Close-mid_front_rounded_vowel'},
+            'ɘ': {desc:'close-mid central unrounded vowel', slug:'Close-mid_central_unrounded_vowel'},
+            'ɵ': {desc:'close-mid central rounded vowel', slug:'Close-mid_central_rounded_vowel'},
+            'ɤ': {desc:'close-mid back unrounded vowel', slug:'Close-mid_back_unrounded_vowel'},
+            'o': {desc:'close-mid back rounded vowel; the vowel from many pronunciations of "goat"', slug:'Close-mid_back_rounded_vowel'},
+            'ə': {desc:'mid central vowel; the schwa from "about"', slug:'Mid-central_vowel'},
+            'ɛ': {desc:'open-mid front unrounded vowel; the e sound from "dress"', slug:'Open-mid_front_unrounded_vowel'},
+            'œ': {desc:'open-mid front rounded vowel', slug:'Open-mid_front_rounded_vowel'},
+            'ɜ': {desc:'open-mid central unrounded vowel', slug:'Open-mid_central_unrounded_vowel'},
+            'ɞ': {desc:'open-mid central rounded vowel', slug:'Open-mid_central_rounded_vowel'},
+            'ʌ': {desc:'open-mid back unrounded vowel; the u sound from "strut"', slug:'Open-mid_back_unrounded_vowel'},
+            'ɔ': {desc:'open-mid back rounded vowel; the aw sound from "thought"', slug:'Open-mid_back_rounded_vowel'},
+            'æ': {desc:'near-open front unrounded vowel; the a sound from "trap"', slug:'Near-open_front_unrounded_vowel'},
+            'ɐ': {desc:'near-open central unrounded vowel', slug:'Near-open_central_unrounded_vowel'},
+            'a': {desc:'open front unrounded vowel', slug:'Open_front_unrounded_vowel'},
+            'ɶ': {desc:'open front rounded vowel', slug:'Open_front_rounded_vowel'},
+            'ɑ': {desc:'open back unrounded vowel; the ah sound from "father"', slug:'Open_back_unrounded_vowel'},
+            'ɒ': {desc:'open back rounded vowel; the o sound from British "lot"', slug:'Open_back_rounded_vowel'},
+            'p': {desc:'voiceless bilabial plosive; the p sound from "spin"', slug:'Voiceless_bilabial_plosive'},
+            'b': {desc:'voiced bilabial plosive; the b sound from "bin"', slug:'Voiced_bilabial_plosive'},
+            't': {desc:'voiceless alveolar plosive; the t sound from "stop"', slug:'Voiceless_alveolar_plosive'},
+            'd': {desc:'voiced alveolar plosive; the d sound from "dog"', slug:'Voiced_alveolar_plosive'},
+            'ʈ': {desc:'voiceless retroflex plosive', slug:'Voiceless_retroflex_plosive'},
+            'ɖ': {desc:'voiced retroflex plosive', slug:'Voiced_retroflex_plosive'},
+            'c': {desc:'voiceless palatal plosive', slug:'Voiceless_palatal_plosive'},
+            'ɟ': {desc:'voiced palatal plosive', slug:'Voiced_palatal_plosive'},
+            'k': {desc:'voiceless velar plosive; the k sound from "skill"', slug:'Voiceless_velar_plosive'},
+            'g': {desc:'voiced velar plosive; the hard g sound from "go"', slug:'Voiced_velar_plosive'},
+            'q': {desc:'voiceless uvular plosive', slug:'Voiceless_uvular_plosive'},
+            'ɢ': {desc:'voiced uvular plosive', slug:'Voiced_uvular_plosive'},
+            'ʔ': {desc:'glottal stop', slug:'Glottal_stop'},
+            'm': {desc:'bilabial nasal; the m sound from "man"', slug:'Bilabial_nasal'},
+            'ɱ': {desc:'labiodental nasal', slug:'Labiodental_nasal'},
+            'n': {desc:'alveolar nasal; the n sound from "no"', slug:'Alveolar_nasal'},
+            'ɳ': {desc:'retroflex nasal', slug:'Retroflex_nasal'},
+            'ɲ': {desc:'palatal nasal', slug:'Palatal_nasal'},
+            'ŋ': {desc:'velar nasal; the ng sound from "sing"', slug:'Velar_nasal'},
+            'ɴ': {desc:'uvular nasal', slug:'Uvular_nasal'},
+            'ʙ': {desc:'bilabial trill', slug:'Bilabial_trill'},
+            'r': {desc:'alveolar trill', slug:'Alveolar_trill'},
+            'ʀ': {desc:'uvular trill', slug:'Uvular_trill'},
+            'ⱱ': {desc:'labiodental flap', slug:'Labiodental_flap'},
+            'ɾ': {desc:'alveolar tap or flap', slug:'Alveolar_tap'},
+            'ɽ': {desc:'retroflex flap', slug:'Retroflex_flap'},
+            'ɸ': {desc:'voiceless bilabial fricative', slug:'Voiceless_bilabial_fricative'},
+            'β': {desc:'voiced bilabial fricative', slug:'Voiced_bilabial_fricative'},
+            'f': {desc:'voiceless labiodental fricative; the f sound from "fine"', slug:'Voiceless_labiodental_fricative'},
+            'v': {desc:'voiced labiodental fricative; the v sound from "vine"', slug:'Voiced_labiodental_fricative'},
+            'θ': {desc:'voiceless dental fricative; the th sound from "thin"', slug:'Voiceless_dental_fricative'},
+            'ð': {desc:'voiced dental fricative; the th sound from "this"', slug:'Voiced_dental_fricative'},
+            's': {desc:'voiceless alveolar fricative; the s sound from "see"', slug:'Voiceless_alveolar_fricative'},
+            'z': {desc:'voiced alveolar fricative; the z sound from "zoo"', slug:'Voiced_alveolar_fricative'},
+            'ʃ': {desc:'voiceless postalveolar fricative; the sh sound from "shoe"', slug:'Voiceless_postalveolar_fricative'},
+            'ʒ': {desc:'voiced postalveolar fricative; the zh sound from "vision"', slug:'Voiced_postalveolar_fricative'},
+            'ʂ': {desc:'voiceless retroflex fricative', slug:'Voiceless_retroflex_fricative'},
+            'ʐ': {desc:'voiced retroflex fricative', slug:'Voiced_retroflex_fricative'},
+            'ç': {desc:'voiceless palatal fricative', slug:'Voiceless_palatal_fricative'},
+            'ʝ': {desc:'voiced palatal fricative', slug:'Voiced_palatal_fricative'},
+            'x': {desc:'voiceless velar fricative', slug:'Voiceless_velar_fricative'},
+            'ɣ': {desc:'voiced velar fricative', slug:'Voiced_velar_fricative'},
+            'χ': {desc:'voiceless uvular fricative', slug:'Voiceless_uvular_fricative'},
+            'ʁ': {desc:'voiced uvular fricative', slug:'Voiced_uvular_fricative'},
+            'ħ': {desc:'voiceless pharyngeal fricative', slug:'Voiceless_pharyngeal_fricative'},
+            'ʕ': {desc:'voiced pharyngeal fricative', slug:'Voiced_pharyngeal_fricative'},
+            'h': {desc:'voiceless glottal fricative; the h sound from "hat"', slug:'Voiceless_glottal_fricative'},
+            'ɦ': {desc:'voiced glottal fricative', slug:'Voiced_glottal_fricative'},
+            'ɬ': {desc:'voiceless alveolar lateral fricative', slug:'Voiceless_alveolar_lateral_fricative'},
+            'ɮ': {desc:'voiced alveolar lateral fricative', slug:'Voiced_alveolar_lateral_fricative'},
+            'ʋ': {desc:'labiodental approximant', slug:'Labiodental_approximant'},
+            'ɹ': {desc:'alveolar approximant; the English r sound from "red"', slug:'Alveolar_approximant'},
+            'ɻ': {desc:'retroflex approximant', slug:'Retroflex_approximant'},
+            'j': {desc:'palatal approximant; the y sound from "yes"', slug:'Palatal_approximant'},
+            'ɰ': {desc:'velar approximant', slug:'Velar_approximant'},
+            'l': {desc:'alveolar lateral approximant; the l sound from "light"', slug:'Alveolar_lateral_approximant'},
+            'ɭ': {desc:'retroflex lateral approximant', slug:'Retroflex_lateral_approximant'},
+            'ʎ': {desc:'palatal lateral approximant', slug:'Palatal_lateral_approximant'},
+            'ʟ': {desc:'velar lateral approximant', slug:'Velar_lateral_approximant'},
+            'tʃ': {desc:'the ch sound from "church"'},
+            'dʒ': {desc:'the j sound from "judge"'},
+            'aɪ': {desc:'the eye sound from "price"'},
+            'aʊ': {desc:'the ow sound from "mouth"'},
+            'eɪ': {desc:'the ay sound from "face"'},
+            'oʊ': {desc:'the oh sound from "goat"'},
+            'ɔɪ': {desc:'the oy sound from "choice"'},
+            'ɚ': {desc:'r-colored schwa; the weak er sound from American "butter"'},
+            'ɝ': {desc:'stressed r-colored vowel; the er sound from "nurse"'},
+            'ː': {desc:'length mark: hold the previous sound longer'},
+            'ˈ': {desc:'primary stress: this syllable is stressed'},
+            'ˌ': {desc:'secondary stress: a lighter stress mark'},
+        };
+
+        const IPA_KEYBOARD_ROWS = [
+            ['ˈ','ˌ','ː','ə','ɪ','ʊ','ɛ','æ','ʌ','ɔ','ɑ','ɒ'],
+            ['i','e','a','o','u','ɨ','ʉ','ɯ','ø','œ','ɜ','ɐ'],
+            ['p','b','t','d','k','g','f','v','θ','ð','s','z','ʃ','ʒ','h'],
+            ['m','n','ŋ','l','ɹ','r','j','w','tʃ','dʒ','ʔ','ɾ','x','ç','ʁ'],
+        ];
+
+        const IPA_FONT_STACK = "'Manuale IPA Web', 'Manuale IPA', 'Charis SIL', 'Gentium Plus', serif";
+
+        function ipaInfo(token) {
+            if (!token) return null;
+            if (IPA_LIBRARY[token]) return IPA_LIBRARY[token];
+            const stripped = token.replace(/[ˈˌː]/g, '');
+            if (IPA_LIBRARY[stripped]) return IPA_LIBRARY[stripped];
+            return null;
+        }
+
+        function ipaDescription(token) {
+            const info = ipaInfo(token);
+            return info ? info.desc : `No guide entry yet for ${token}`;
+        }
+
+        function ipaAudioUrl(token) {
+            const info = ipaInfo(token);
+            return info?.slug ? `https://www.ipachart.com/mp3/${info.slug}.mp3` : null;
+        }
+
+        async function playIpaReference(token) {
+            const url = ipaAudioUrl(token);
+            if (!url) return false;
+            stopPlayback();
+            const audio = new Audio(url);
+            _remoteAudio = audio;
+            await audio.play();
+            return true;
+        }
+
+        function tokenizeIpa(text) {
+            return String(text || '')
+                .replace(/▁/g, ' ')
+                .trim()
+                .split(/\s+/)
+                .filter(token => token && token !== '_' && token !== '▁');
+        }
+
+        async function decodeIpaFromWav(wavBytes) {
+            const res = await fetch('/api/ipa/decode', {
+                method: 'POST',
+                headers: {'Content-Type': 'audio/wav'},
+                body: wavBytes,
+            });
+            if (!res.ok) throw new Error(`IPA decode ${res.status}: ${await res.text()}`);
+            return res.json();
+        }
+
+        async function suggestIpaFromTts(text, backend='openai') {
+            const res = await fetch('/api/ipa/suggest-tts', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({text, backend}),
+            });
+            if (!res.ok) throw new Error(`IPA suggest ${res.status}: ${await res.text()}`);
+            return res.json();
+        }
+
+        async function decodeBase64WavToAudioBuffer(audioB64) {
+            const binaryStr = atob(audioB64);
+            const bytes = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+            return await audioCtx.decodeAudioData(bytes.buffer);
+        }
+
+        function IpaTokenGloss({text}) {
+            const tokens = useMemo(() => tokenizeIpa(text), [text]);
+            const [selected, setSelected] = useState(tokens[0] || null);
+            const [audioError, setAudioError] = useState(null);
+            useEffect(() => { setSelected(tokens[0] || null); }, [text]);
+            if (!tokens.length) {
+                return <div style={{fontSize:12,color:'var(--text-muted)'}}>No IPA yet.</div>;
+            }
+            return (
+                <div style={{display:'grid',gap:6}}>
+                    <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                        {tokens.map((token, idx) => (
+                            <button
+                                type="button"
+                                key={`${token}-${idx}`}
+                                className="btn btn-sm"
+                                title={ipaDescription(token)}
+                                onClick={async () => {
+                                    setSelected(token);
+                                    setAudioError(null);
+                                    if (!ipaAudioUrl(token)) return;
+                                    try {
+                                        await playIpaReference(token);
+                                    } catch (e) {
+                                        setAudioError(e.message || 'Failed to play IPA sample');
+                                    }
+                                }}
+                                style={{
+                                    fontFamily: IPA_FONT_STACK,
+                                    color:selected === token ? 'var(--bg)' : 'var(--accent)',
+                                    background:selected === token ? 'var(--accent)' : 'rgba(255,255,255,0.03)',
+                                    borderColor:'var(--border)',
+                                    fontSize: 20,
+                                    lineHeight: 1.05,
+                                }}
+                            >
+                                {token}
+                            </button>
+                        ))}
+                    </div>
+                    <div style={{fontSize:12,color:'var(--text-muted)'}}>
+                        {selected ? `${selected}: ${ipaDescription(selected)}` : 'Click a phoneme for help.'}
+                    </div>
+                    {audioError && <div className="pipeline-error">{audioError}</div>}
+                </div>
+            );
+        }
+
+        function IpaWorkbench({value, onChange, previewText, placeholder='reviewed IPA'}) {
+            const [recording, setRecording] = useState(false);
+            const [busy, setBusy] = useState(false);
+            const [playing, setPlaying] = useState(false);
+            const [inputFocused, setInputFocused] = useState(false);
+            const [decodedAllophant, setDecodedAllophant] = useState('');
+            const [decodedZipa, setDecodedZipa] = useState('');
+            const [decodedTtsZipa, setDecodedTtsZipa] = useState('');
+            const [allophantElapsedMs, setAllophantElapsedMs] = useState(null);
+            const [zipaElapsedMs, setZipaElapsedMs] = useState(null);
+            const [ttsElapsedMs, setTtsElapsedMs] = useState(null);
+            const [ttsZipaElapsedMs, setTtsZipaElapsedMs] = useState(null);
+            const [ttsSuggestedAudioB64, setTtsSuggestedAudioB64] = useState(null);
+            const [decodeError, setDecodeError] = useState(null);
+            const [allophantTrace, setAllophantTrace] = useState(null);
+            const [zipaTrace, setZipaTrace] = useState(null);
+            const [ttsZipaTrace, setTtsZipaTrace] = useState(null);
+            const [keyboardHover, setKeyboardHover] = useState(null);
+            const recorderRef = useRef(null);
+            const inputRef = useRef(null);
+            const workbenchRef = useRef(null);
+            const previewTimeoutRef = useRef(null);
+            const autoPreviewTickRef = useRef(0);
+            const [autoPreviewTick, setAutoPreviewTick] = useState(0);
+            const ipaInputStyle = {
+                padding:'8px 10px',
+                background:'var(--bg)',
+                border:'1px solid var(--border)',
+                borderRadius:8,
+                color:'var(--text)',
+                fontFamily: IPA_FONT_STACK,
+                fontSize:24,
+                lineHeight: 1.1,
+            };
+
+            const stopRecording = async (options = {}) => {
+                if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+                    const recorder = recorderRef.current;
+                    recorderRef.current = null;
+                    await recorder.stop(options);
+                }
+                setRecording(false);
+            };
+
+            const queueAutoPreview = () => {
+                autoPreviewTickRef.current += 1;
+                setAutoPreviewTick(autoPreviewTickRef.current);
+            };
+
+            const keepInputFocus = (e) => {
+                e.preventDefault();
+                if (inputRef.current) {
+                    inputRef.current.focus();
+                }
+                setInputFocused(true);
+            };
+
+            const startRecording = async () => {
+                try {
+                    setDecodeError(null);
+                    const recorder = await startMonoWavRecording(async ({wavBytes}) => {
+                        try {
+                            setBusy(true);
+                            const data = await decodeIpaFromWav(wavBytes);
+                            setDecodedAllophant(data.allophant?.phones || data.phones || '');
+                            setDecodedZipa(data.zipa?.phones || '');
+                            setAllophantElapsedMs(Number.isFinite(data.allophant?.elapsed_ms) ? data.allophant.elapsed_ms : null);
+                            setZipaElapsedMs(Number.isFinite(data.zipa?.elapsed_ms) ? data.zipa.elapsed_ms : null);
+                            setAllophantTrace(data.allophant?.trace || data.trace || null);
+                            setZipaTrace(data.zipa?.trace || null);
+                        } catch (e) {
+                            setDecodeError(e.message);
+                        } finally {
+                            setBusy(false);
+                            setRecording(false);
+                        }
+                    });
+                    recorderRef.current = recorder;
+                    setRecording(true);
+                } catch (e) {
+                    setDecodeError('Microphone access denied');
+                }
+            };
+
+            const suggestFromTts = async () => {
+                const text = String(previewText || '').trim();
+                if (!text) {
+                    setDecodeError('No spoken text available for OpenAI+ZIPA suggestion');
+                    return;
+                }
+                try {
+                    setBusy(true);
+                    setDecodeError(null);
+                    const data = await suggestIpaFromTts(text, 'openai');
+                    setDecodedTtsZipa(data.zipa?.phones || '');
+                    setTtsElapsedMs(Number.isFinite(data.tts_elapsed_ms) ? data.tts_elapsed_ms : null);
+                    setTtsZipaElapsedMs(Number.isFinite(data.zipa?.elapsed_ms) ? data.zipa.elapsed_ms : null);
+                    setTtsSuggestedAudioB64(data.tts_audio_b64 || null);
+                    setTtsZipaTrace(data.zipa?.trace || null);
+                } catch (e) {
+                    setDecodeError(e.message);
+                } finally {
+                    setBusy(false);
+                }
+            };
+
+            useEffect(() => () => {
+                if (previewTimeoutRef.current) clearTimeout(previewTimeoutRef.current);
+            }, []);
+
+            const previewKokoro = async (phonemeOverride = null) => {
+                const phonemes = String(phonemeOverride ?? value ?? '').trim();
+                if (!phonemes) return;
+                try {
+                    setPlaying(true);
+                    const buf = await fetchTtsPhonemeBuffer(phonemes, 'kokoro');
+                    if (!buf) {
+                        setPlaying(false);
+                        return;
+                    }
+                    playBuffer(buf, () => setPlaying(false));
+                } catch (e) {
+                    const message = String(e?.message || e || '');
+                    if (e?.name === 'AbortError' || message.includes('signal is aborted')) {
+                        setPlaying(false);
+                        return;
+                    }
+                    setDecodeError(e.message);
+                    setPlaying(false);
+                }
+            };
+
+            const previewSuggestedTts = async () => {
+                if (!ttsSuggestedAudioB64) return;
+                try {
+                    setPlaying(true);
+                    const buf = await decodeBase64WavToAudioBuffer(ttsSuggestedAudioB64);
+                    playBuffer(buf, () => setPlaying(false));
+                } catch (e) {
+                    setDecodeError(e.message || 'Failed to play OpenAI TTS preview');
+                    setPlaying(false);
+                }
+            };
+
+            const reviewedIpa = String(value || '').trim();
+
+            useEffect(() => {
+                if (!inputFocused) return;
+                if (!reviewedIpa) return;
+                if (!autoPreviewTick) return;
+                if (previewTimeoutRef.current) clearTimeout(previewTimeoutRef.current);
+                previewTimeoutRef.current = setTimeout(() => {
+                    previewKokoro(reviewedIpa);
+                }, 220);
+                return () => {
+                    if (previewTimeoutRef.current) clearTimeout(previewTimeoutRef.current);
+                };
+            }, [reviewedIpa, inputFocused, autoPreviewTick]);
+
+            const setCursor = (pos) => {
+                requestAnimationFrame(() => {
+                    const input = inputRef.current;
+                    if (!input) return;
+                    input.focus();
+                    input.setSelectionRange(pos, pos);
+                });
+            };
+
+            const insertTextAtCursor = (text) => {
+                const input = inputRef.current;
+                const current = String(value || '');
+                if (!input) {
+                    onChange(`${current}${text}`);
+                    return;
+                }
+                const start = input.selectionStart ?? current.length;
+                const end = input.selectionEnd ?? start;
+                const next = `${current.slice(0, start)}${text}${current.slice(end)}`;
+                onChange(next);
+                setCursor(start + text.length);
+                queueAutoPreview();
+            };
+
+            const insertToken = (token) => {
+                const input = inputRef.current;
+                const current = String(value || '');
+                const start = input?.selectionStart ?? current.length;
+                const end = input?.selectionEnd ?? start;
+                const before = current.slice(0, start);
+                const after = current.slice(end);
+                const prefix = before.length > 0 && !before.endsWith(' ') ? ' ' : '';
+                const suffix = after.length > 0 && !after.startsWith(' ') ? ' ' : '';
+                const next = `${before}${prefix}${token}${suffix}${after}`;
+                onChange(next);
+                setCursor(before.length + prefix.length + token.length);
+                queueAutoPreview();
+            };
+
+            const backspaceToken = () => {
+                const input = inputRef.current;
+                const current = String(value || '');
+                if (!input) {
+                    const tokens = tokenizeIpa(value);
+                    if (!tokens.length) return;
+                    onChange(tokens.slice(0, -1).join(' '));
+                    return;
+                }
+                const start = input.selectionStart ?? current.length;
+                const end = input.selectionEnd ?? start;
+                if (start !== end) {
+                    const next = `${current.slice(0, start)}${current.slice(end)}`;
+                    onChange(next);
+                    setCursor(start);
+                    queueAutoPreview();
+                    return;
+                }
+                if (start === 0) return;
+                let cutStart = start;
+                while (cutStart > 0 && current[cutStart - 1] === ' ') cutStart -= 1;
+                while (cutStart > 0 && current[cutStart - 1] !== ' ') cutStart -= 1;
+                const next = `${current.slice(0, cutStart)}${current.slice(start)}`;
+                onChange(next);
+                setCursor(cutStart);
+                queueAutoPreview();
+            };
+
+            return (
+                <div ref={workbenchRef} style={{display:'grid',gap:10}}>
+                    <div style={{display:'grid',gridTemplateColumns:'minmax(0,1fr) auto',gap:8,alignItems:'center'}}>
+                        <input
+                            ref={inputRef}
+                            value={value}
+                            onChange={e => {
+                                onChange(e.target.value);
+                                queueAutoPreview();
+                            }}
+                            onFocus={() => setInputFocused(true)}
+                            onBlur={e => {
+                                const next = e.relatedTarget;
+                                if (next && workbenchRef.current && workbenchRef.current.contains(next)) {
+                                    return;
+                                }
+                                setInputFocused(false);
+                            }}
+                            placeholder={placeholder}
+                            style={{...ipaInputStyle, minWidth:0}}
+                        />
+                        <button
+                            type="button"
+                            className="btn btn-sm"
+                            disabled={playing || !reviewedIpa}
+                            onClick={() => previewKokoro(reviewedIpa)}
+                            title="Play the current reviewed IPA through Kokoro"
+                        >
+                            {playing ? 'Playing...' : 'Play'}
+                        </button>
+                    </div>
+                    {inputFocused && (
+                        <div style={{display:'grid',gap:6}}>
+                            {IPA_KEYBOARD_ROWS.map((row, rowIdx) => (
+                                <div key={rowIdx} style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                                    {row.map(token => (
+                                        <button
+                                            key={token}
+                                            type="button"
+                                            className="btn btn-sm"
+                                            title={ipaDescription(token)}
+                                            aria-label={`${token}: ${ipaDescription(token)}`}
+                                            onMouseDown={keepInputFocus}
+                                            onClick={() => insertToken(token)}
+                                            onMouseEnter={() => setKeyboardHover(token)}
+                                            onMouseLeave={() => setKeyboardHover(current => current === token ? null : current)}
+                                            style={{fontFamily: IPA_FONT_STACK, color:'var(--accent)', fontSize: 18, lineHeight: 1.05}}
+                                        >
+                                            {token}
+                                        </button>
+                                    ))}
+                                </div>
+                            ))}
+                            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                                <button type="button" className="btn btn-sm" onMouseDown={keepInputFocus} onClick={() => insertTextAtCursor(' ')} title="Insert a token separator">
+                                    Space
+                                </button>
+                                <button type="button" className="btn btn-sm" onMouseDown={keepInputFocus} onClick={backspaceToken} title="Remove the token before the cursor">
+                                    Backspace
+                                </button>
+                                <button type="button" className="btn btn-sm" onMouseDown={keepInputFocus} onClick={() => { onChange(''); queueAutoPreview(); }} title="Clear the reviewed IPA field">
+                                    Clear
+                                </button>
+                            </div>
+                            {keyboardHover && (
+                                <div style={{fontSize:12,color:'var(--text-muted)'}}>
+                                    {keyboardHover}: {ipaDescription(keyboardHover)}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                        <button
+                            type="button"
+                            className={`btn btn-sm ${recording ? 'btn-primary' : ''}`}
+                            disabled={busy}
+                            onClick={recording ? stopRecording : startRecording}
+                            title="Record your pronunciation and decode it with both phone decoders"
+                        >
+                            {busy ? 'Decoding...' : recording ? 'Stop' : 'Record'}
+                        </button>
+                        <button
+                            type="button"
+                            className="btn btn-sm"
+                            disabled={busy || !String(previewText || '').trim()}
+                            onClick={suggestFromTts}
+                            title="Synthesize the spoken text with OpenAI TTS, run ZIPA on it, and offer that IPA when you cannot record"
+                        >
+                            Suggest via OpenAI+ZIPA
+                        </button>
+                    </div>
+                    {decodeError && <div className="pipeline-error">{decodeError}</div>}
+                    {(decodedAllophant || decodedZipa || decodedTtsZipa) && (
+                        <div style={{display:'grid',gap:10}}>
+                            {decodedAllophant && (
+                                <div style={{display:'grid',gap:6}}>
+                                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}>
+                                        <div style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                                            <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>Allophant</div>
+                                            {allophantElapsedMs != null && (
+                                                <div style={{fontSize:12,color:'var(--text-muted)'}}>{allophantElapsedMs}ms</div>
+                                            )}
+                                        </div>
+                                        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                                            <button
+                                                type="button"
+                                                className="btn btn-sm"
+                                                disabled={playing || !decodedAllophant}
+                                                onClick={() => previewKokoro(decodedAllophant)}
+                                                title="Play the Allophant IPA through Kokoro"
+                                            >
+                                                {playing ? 'Playing...' : 'Play'}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="btn btn-sm"
+                                                onClick={() => onChange(decodedAllophant)}
+                                                title="Copy the Allophant IPA into the reviewed field"
+                                            >
+                                                Use this version
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <IpaTokenGloss text={decodedAllophant} />
+                                </div>
+                            )}
+                            {decodedZipa && (
+                                <div style={{display:'grid',gap:6}}>
+                                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}>
+                                        <div style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                                            <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>ZIPA</div>
+                                            {zipaElapsedMs != null && (
+                                                <div style={{fontSize:12,color:'var(--text-muted)'}}>{zipaElapsedMs}ms</div>
+                                            )}
+                                        </div>
+                                        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                                            <button
+                                                type="button"
+                                                className="btn btn-sm"
+                                                disabled={playing || !decodedZipa}
+                                                onClick={() => previewKokoro(decodedZipa)}
+                                                title="Play the ZIPA IPA through Kokoro"
+                                            >
+                                                {playing ? 'Playing...' : 'Play'}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="btn btn-sm"
+                                                onClick={() => onChange(decodedZipa)}
+                                                title="Copy the ZIPA IPA into the reviewed field"
+                                            >
+                                                Use this version
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <IpaTokenGloss text={decodedZipa} />
+                                </div>
+                            )}
+                            {decodedTtsZipa && (
+                                <div style={{display:'grid',gap:6}}>
+                                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}>
+                                        <div style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                                            <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>OpenAI+ZIPA</div>
+                                            <div style={{fontSize:12,color:'var(--text-muted)'}}>
+                                                {ttsElapsedMs != null ? `${ttsElapsedMs}ms TTS` : null}
+                                                {ttsElapsedMs != null && ttsZipaElapsedMs != null ? ' + ' : null}
+                                                {ttsZipaElapsedMs != null ? `${ttsZipaElapsedMs}ms ZIPA` : null}
+                                            </div>
+                                        </div>
+                                        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                                            <button
+                                                type="button"
+                                                className="btn btn-sm"
+                                                disabled={playing || !ttsSuggestedAudioB64}
+                                                onClick={previewSuggestedTts}
+                                                title="Play the original OpenAI TTS audio that ZIPA decoded"
+                                            >
+                                                {playing ? 'Playing...' : 'Play TTS'}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="btn btn-sm"
+                                                disabled={playing || !decodedTtsZipa}
+                                                onClick={() => previewKokoro(decodedTtsZipa)}
+                                                title="Play the OpenAI+ZIPA phones through Kokoro"
+                                            >
+                                                {playing ? 'Playing...' : 'Play Kokoro'}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="btn btn-sm"
+                                                onClick={() => onChange(decodedTtsZipa)}
+                                                title="Copy the OpenAI+ZIPA IPA into the reviewed field"
+                                            >
+                                                Use this version
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <IpaTokenGloss text={decodedTtsZipa} />
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
         }
 
         function scrollToCorpusSection(id) {
@@ -4347,14 +5030,19 @@
             const [status, setStatus] = useState(null);
             const [vocabRows, setVocabRows] = useState([]);
             const [authoredRows, setAuthoredRows] = useState([]);
-            const [scanResults, setScanResults] = useState([]);
+            const [reviewedConfusions, setReviewedConfusions] = useState([]);
+            const [scanConfusionCandidates, setScanConfusionCandidates] = useState([]);
             const [loading, setLoading] = useState(true);
             const [error, setError] = useState(null);
             const [vocabDraft, setVocabDraft] = useState('');
             const [vocabSpokenDraft, setVocabSpokenDraft] = useState('');
+            const [vocabIpaDraft, setVocabIpaDraft] = useState('');
             const [vocabDescDraft, setVocabDescDraft] = useState('');
             const [vocabSaving, setVocabSaving] = useState(false);
             const [vocabPreviewing, setVocabPreviewing] = useState(false);
+            const [vocabSpokenQueueDrafts, setVocabSpokenQueueDrafts] = useState({});
+            const [vocabIpaDrafts, setVocabIpaDrafts] = useState({});
+            const [vocabIpaSaving, setVocabIpaSaving] = useState({});
             const [sentenceTermDraft, setSentenceTermDraft] = useState('');
             const [sentenceDraft, setSentenceDraft] = useState('');
             const [sentenceSaving, setSentenceSaving] = useState(false);
@@ -4364,7 +5052,12 @@
             const [counterSaving, setCounterSaving] = useState(false);
             const [confusionTermDraft, setConfusionTermDraft] = useState('');
             const [confusionSurfaceDraft, setConfusionSurfaceDraft] = useState('');
+            const [confusionIpaDraft, setConfusionIpaDraft] = useState('');
             const [confusionSaving, setConfusionSaving] = useState(false);
+            const [reviewedConfusionDrafts, setReviewedConfusionDrafts] = useState({});
+            const [reviewedConfusionSaving, setReviewedConfusionSaving] = useState({});
+            const [scanConfusionDrafts, setScanConfusionDrafts] = useState({});
+            const [scanConfusionSaving, setScanConfusionSaving] = useState({});
             const [recordingSentence, setRecordingSentence] = useState(null);
             const [recordings, setRecordings] = useState([]);
             const [recording, setRecording] = useState(false);
@@ -4380,16 +5073,20 @@
                 setLoading(true);
                 setError(null);
                 try {
-                    const [s, vocab, authored, scan] = await Promise.all([
+                    const [s, vocab, authored, confusionData] = await Promise.all([
                         api('/api/pipeline/status'),
                         api('/api/vocab?limit=5000&sort=alpha'),
                         api('/api/author/sentences'),
-                        api('/api/pipeline/scan-results'),
+                        api('/api/corpus/confusion-surfaces'),
                     ]);
                     setStatus(s);
                     setVocabRows(Array.isArray(vocab) ? vocab : []);
                     setAuthoredRows(Array.isArray(authored) ? authored : []);
-                    setScanResults(Array.isArray(scan) ? scan : []);
+                    setReviewedConfusions(Array.isArray(confusionData?.reviewed) ? confusionData.reviewed : []);
+                    setScanConfusionCandidates(Array.isArray(confusionData?.scan_candidates) ? confusionData.scan_candidates : []);
+                    setVocabSpokenQueueDrafts(Object.fromEntries((Array.isArray(vocab) ? vocab : []).map(row => [row.id, row.spoken_override || ''])));
+                    setVocabIpaDrafts(Object.fromEntries((Array.isArray(vocab) ? vocab : []).map(row => [row.id, row.reviewed_ipa || ''])));
+                    setReviewedConfusionDrafts(Object.fromEntries((Array.isArray(confusionData?.reviewed) ? confusionData.reviewed : []).map(row => [`${row.term}::${row.surface_form}`, row.reviewed_ipa || ''])));
                 } catch (e) {
                     setError(e.message);
                 } finally {
@@ -4411,14 +5108,14 @@
             const smallHelpStyle = {fontSize:12,color:'var(--text-muted)',lineHeight:1.45};
 
             const readyVocab = vocabRows.filter(row => row.reviewed && row.spoken_override);
+            const vocabNeedingIpa = readyVocab.filter(row => !row.reviewed_ipa);
             const vocabNeedingOverrides = vocabRows.filter(row => !row.spoken_override);
             const cleanRows = authoredRows.filter(row => row.kind !== 'counterexample');
             const counterexampleRows = authoredRows.filter(row => row.kind === 'counterexample');
             const cleanTerms = new Set(cleanRows.map(row => row.term.toLowerCase()));
-            const confusionResults = scanResults.filter(row =>
-                (row.qwen_heard && row.qwen_heard.length > 0) || (row.parakeet_heard && row.parakeet_heard.length > 0)
-            );
-            const confusionTerms = new Set(confusionResults.map(row => row.term.toLowerCase()));
+            const acceptedReviewedConfusions = reviewedConfusions.filter(row => row.status === 'accepted');
+            const reviewedConfusionsNeedingIpa = acceptedReviewedConfusions.filter(row => !row.reviewed_ipa);
+            const confusionTerms = new Set(acceptedReviewedConfusions.map(row => row.term.toLowerCase()));
             const missingCleanTerms = readyVocab.filter(row => !cleanTerms.has(row.term.toLowerCase()));
             const missingConfusionTerms = readyVocab.filter(row => !confusionTerms.has(row.term.toLowerCase()));
             const noCounterexampleTerms = readyVocab.filter(row =>
@@ -4430,14 +5127,29 @@
 
             const previewTerms = items => items.slice(0, 10);
             const previewSentences = items => items.slice(0, 8);
-            const previewConfusions = confusionResults
-                .map(row => {
-                    const qwenHeard = [...new Set(row.qwen_heard || [])].filter(h => h.toLowerCase() !== row.term.toLowerCase());
-                    const parakeetHeard = [...new Set(row.parakeet_heard || [])].filter(h => h.toLowerCase() !== row.term.toLowerCase());
-                    return {...row, qwenHeard, parakeetHeard, signalCount: qwenHeard.length + parakeetHeard.length};
-                })
-                .sort((a, b) => b.signalCount - a.signalCount)
-                .slice(0, 12);
+            const previewReviewedConfusions = acceptedReviewedConfusions
+                .slice()
+                .sort((a, b) => a.term.localeCompare(b.term) || a.surface_form.localeCompare(b.surface_form))
+                .slice(0, 20);
+            const reviewedConfusionKeySet = new Set(acceptedReviewedConfusions.map(row => `${row.term.toLowerCase()}::${row.surface_form.toLowerCase()}`));
+            const previewScanCandidates = scanConfusionCandidates
+                .filter(row => !reviewedConfusionKeySet.has(`${row.term.toLowerCase()}::${row.surface_form.toLowerCase()}`))
+                .slice(0, 20);
+            const ipaQueueCount = vocabNeedingIpa.length + reviewedConfusionsNeedingIpa.length + previewScanCandidates.length;
+            const vocabWorkQueue = readyVocab
+                .slice()
+                .sort((a, b) => {
+                    const aMissing = a.reviewed_ipa ? 1 : 0;
+                    const bMissing = b.reviewed_ipa ? 1 : 0;
+                    return aMissing - bMissing || a.term.localeCompare(b.term);
+                });
+            const reviewedConfusionWorkQueue = acceptedReviewedConfusions
+                .slice()
+                .sort((a, b) => {
+                    const aMissing = a.reviewed_ipa ? 1 : 0;
+                    const bMissing = b.reviewed_ipa ? 1 : 0;
+                    return aMissing - bMissing || a.term.localeCompare(b.term) || a.surface_form.localeCompare(b.surface_form);
+                });
 
             const readiness = [
                 {
@@ -4476,6 +5188,15 @@
                     body: 'Vocabulary terms without an explicit spoken form. These terms are not stable enough for the corpus contract yet.',
                     items: previewTerms(vocabNeedingOverrides).map(row => row.term),
                     empty: 'No override gaps.',
+                    sectionId: 'corpus-vocabulary',
+                    action: 'Fix below',
+                },
+                {
+                    title: 'Missing reviewed IPA',
+                    count: vocabNeedingIpa.length,
+                    body: 'Reviewed terms without corpus IPA truth. These still fall back to legacy pronunciation logic.',
+                    items: previewTerms(vocabNeedingIpa).map(row => row.term),
+                    empty: 'Every ready term has reviewed IPA.',
                     sectionId: 'corpus-vocabulary',
                     action: 'Fix below',
                 },
@@ -4527,12 +5248,14 @@
                         body: JSON.stringify({
                             term,
                             spoken_override: vocabSpokenDraft.trim() || undefined,
+                            reviewed_ipa: vocabIpaDraft.trim() || undefined,
                             description: vocabDescDraft.trim() || undefined,
                         }),
                     });
                     if (res?.error) throw new Error(res.error);
                     setVocabDraft('');
                     setVocabSpokenDraft('');
+                    setVocabIpaDraft('');
                     setVocabDescDraft('');
                     setVocabPreviewing(false);
                     await load();
@@ -4540,6 +5263,26 @@
                     setError(e.message);
                 } finally {
                     setVocabSaving(false);
+                }
+            };
+            const saveVocabIpa = async (row) => {
+                const spoken_override = (vocabSpokenQueueDrafts[row.id] ?? row.spoken_override ?? '').trim();
+                const reviewed_ipa = (vocabIpaDrafts[row.id] || '').trim();
+                setVocabIpaSaving(prev => ({...prev, [row.id]: true}));
+                setError(null);
+                try {
+                    const res = await api(`/api/vocab/${row.id}`, {
+                        method: 'POST',
+                        body: JSON.stringify({ spoken_override, reviewed_ipa }),
+                    });
+                    if (res?.error) throw new Error(res.error);
+                    setVocabRows(prev => prev.map(item => item.id === row.id ? {...item, spoken_override, reviewed_ipa} : item));
+                    setVocabSpokenQueueDrafts(prev => ({...prev, [row.id]: spoken_override}));
+                    setVocabIpaDrafts(prev => ({...prev, [row.id]: reviewed_ipa}));
+                } catch (e) {
+                    setError(e.message);
+                } finally {
+                    setVocabIpaSaving(prev => ({...prev, [row.id]: false}));
                 }
             };
             const previewVocab = async () => {
@@ -4554,6 +5297,25 @@
                     setError(e.message);
                     setVocabPreviewing(false);
                 }
+            };
+            const corpusQueueRowStyle = {
+                display:'grid',
+                gridTemplateColumns:'minmax(220px, 280px) minmax(0, 1fr)',
+                gap:16,
+                alignItems:'start',
+                padding:'12px 14px',
+                border:'1px solid rgba(255,255,255,0.06)',
+                borderRadius:8,
+            };
+            const corpusQueueMetaStyle = {
+                display:'grid',
+                gap:6,
+                minWidth:0,
+            };
+            const corpusQueueWorkStyle = {
+                display:'grid',
+                gap:10,
+                minWidth:0,
             };
             const saveSentence = async () => {
                 const term = sentenceTermDraft.trim();
@@ -4612,22 +5374,77 @@
             };
             const saveConfusion = async () => {
                 const term = confusionTermDraft.trim();
-                const alt_spelling = confusionSurfaceDraft.trim();
-                if (!term || !alt_spelling) return;
+                const surface_form = confusionSurfaceDraft.trim();
+                const reviewed_ipa = confusionIpaDraft.trim();
+                if (!term || !surface_form) return;
                 setConfusionSaving(true);
                 setError(null);
                 try {
-                    const res = await api('/api/vocab/alt-spellings', {
+                    const res = await api('/api/corpus/confusion-surfaces', {
                         method:'POST',
-                        body: JSON.stringify({term, alt_spelling}),
+                        body: JSON.stringify({term, surface_form, reviewed_ipa, status: 'accepted', source: 'manual'}),
                     });
                     if (res?.error) throw new Error(res.error);
                     setConfusionSurfaceDraft('');
+                    setConfusionIpaDraft('');
                     await load();
                 } catch (e) {
                     setError(e.message);
                 } finally {
                     setConfusionSaving(false);
+                }
+            };
+            const saveReviewedConfusion = async (row) => {
+                const key = `${row.term}::${row.surface_form}`;
+                const reviewed_ipa = (reviewedConfusionDrafts[key] || '').trim();
+                setReviewedConfusionSaving(prev => ({...prev, [key]: true}));
+                setError(null);
+                try {
+                    const res = await api('/api/corpus/confusion-surfaces', {
+                        method:'POST',
+                        body: JSON.stringify({
+                            term: row.term,
+                            surface_form: row.surface_form,
+                            reviewed_ipa,
+                            status: row.status || 'accepted',
+                            source: row.source || 'reviewed',
+                        }),
+                    });
+                    if (res?.error) throw new Error(res.error);
+                    setReviewedConfusions(prev => prev.map(item =>
+                        item.term === row.term && item.surface_form === row.surface_form
+                            ? {...item, reviewed_ipa}
+                            : item
+                    ));
+                    setReviewedConfusionDrafts(prev => ({...prev, [key]: reviewed_ipa}));
+                } catch (e) {
+                    setError(e.message);
+                } finally {
+                    setReviewedConfusionSaving(prev => ({...prev, [key]: false}));
+                }
+            };
+            const acceptScanCandidate = async (row) => {
+                const key = `${row.term}::${row.surface_form}`;
+                const reviewed_ipa = (scanConfusionDrafts[key] || '').trim();
+                setScanConfusionSaving(prev => ({...prev, [key]: true}));
+                setError(null);
+                try {
+                    const res = await api('/api/corpus/confusion-surfaces', {
+                        method:'POST',
+                        body: JSON.stringify({
+                            term: row.term,
+                            surface_form: row.surface_form,
+                            reviewed_ipa,
+                            status: 'accepted',
+                            source: 'scan',
+                        }),
+                    });
+                    if (res?.error) throw new Error(res.error);
+                    await load();
+                } catch (e) {
+                    setError(e.message);
+                } finally {
+                    setScanConfusionSaving(prev => ({...prev, [key]: false}));
                 }
             };
 
@@ -4735,17 +5552,134 @@
                     </div>
                     {error && <div className="pipeline-error" style={{marginBottom:16}}>{error}</div>}
 
+                    <div id="corpus-ipa-queue" className="card" style={{marginBottom:16,padding:'14px 16px'}}>
+                        <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',gap:12,marginBottom:12,flexWrap:'wrap'}}>
+                            <div>
+                                <h3 style={{margin:'0 0 4px 0'}}>IPA Queue</h3>
+                                <div style={{fontSize:13,color:'var(--text-muted)',lineHeight:1.45}}>
+                                    This is the corpus backfill loop now: save reviewed IPA for ready vocab terms, reviewed confusion surfaces, and accepted scan candidates.
+                                </div>
+                            </div>
+                            <div style={{fontSize:28,fontWeight:700,color:ipaQueueCount > 0 ? 'var(--warning)' : 'var(--success)'}}>
+                                {ipaQueueCount}
+                            </div>
+                        </div>
+                        <div className="stats-grid" style={{marginBottom:12}}>
+                            <div className="stat-card"><div className="value">{vocabNeedingIpa.length}</div><div className="label">Terms Missing IPA</div></div>
+                            <div className="stat-card"><div className="value">{reviewedConfusionsNeedingIpa.length}</div><div className="label">Reviewed Surfaces Missing IPA</div></div>
+                            <div className="stat-card"><div className="value">{previewScanCandidates.length}</div><div className="label">Pending Scan Candidates</div></div>
+                        </div>
+                        <div style={{display:'grid',gap:12}}>
+                            {vocabNeedingIpa.length > 0 && (
+                                <div className="card" style={{padding:'12px 14px',background:'rgba(255,255,255,0.03)'}}>
+                                    <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:8}}>
+                                        Terms missing reviewed IPA
+                                    </div>
+                                    <div style={{display:'grid',gap:8}}>
+                                        {vocabNeedingIpa.map(row => (
+                                            <div key={`queue-vocab-${row.id}`} style={corpusQueueRowStyle}>
+                                                <div style={corpusQueueMetaStyle}>
+                                                    <div style={{fontFamily:'monospace',fontWeight:700,color:'var(--text)'}}>{row.term}</div>
+                                                    {row.description && <div style={{fontSize:12,color:'var(--text-muted)',marginTop:2}}>{row.description}</div>}
+                                                </div>
+                                                <div style={corpusQueueWorkStyle}>
+                                                    <div style={{display:'grid',gap:6}}>
+                                                        <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>
+                                                            Pronunciation override
+                                                        </div>
+                                                        <input
+                                                            value={vocabSpokenQueueDrafts[row.id] ?? ''}
+                                                            onChange={e => setVocabSpokenQueueDrafts(prev => ({...prev, [row.id]: e.target.value}))}
+                                                            placeholder="spoken form"
+                                                            style={inputStyle}
+                                                        />
+                                                    </div>
+                                                    <IpaWorkbench
+                                                        value={vocabIpaDrafts[row.id] ?? ''}
+                                                        onChange={value => setVocabIpaDrafts(prev => ({...prev, [row.id]: value}))}
+                                                        previewText={(vocabSpokenQueueDrafts[row.id] ?? row.spoken_override) || row.term}
+                                                    />
+                                                    <div style={{display:'flex',justifyContent:'flex-end'}}>
+                                                        <button type="button" className="btn btn-sm" disabled={!!vocabIpaSaving[row.id]} onClick={(e) => { e.preventDefault(); e.stopPropagation(); saveVocabIpa(row); }}>
+                                                            {vocabIpaSaving[row.id] ? 'Saving...' : 'Save IPA'}
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                            {reviewedConfusionsNeedingIpa.length > 0 && (
+                                <div className="card" style={{padding:'12px 14px',background:'rgba(255,255,255,0.03)'}}>
+                                    <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:8}}>
+                                        Reviewed confusion surfaces missing IPA
+                                    </div>
+                                    <div style={{display:'grid',gap:8}}>
+                                        {reviewedConfusionsNeedingIpa.map(row => {
+                                            const key = `${row.term}::${row.surface_form}`;
+                                            return (
+                                                <div key={`queue-reviewed-${key}`} style={{display:'grid',gridTemplateColumns:'180px 220px minmax(420px, 1.8fr) auto',gap:10,alignItems:'start',padding:'10px 12px',border:'1px solid rgba(255,255,255,0.06)',borderRadius:8}}>
+                                                    <div style={{fontFamily:'monospace',fontWeight:700}}>{row.term}</div>
+                                                    <div style={{fontFamily:'monospace',color:'var(--accent)'}}>{row.surface_form}</div>
+                                                    <IpaWorkbench
+                                                        value={reviewedConfusionDrafts[key] ?? ''}
+                                                        onChange={value => setReviewedConfusionDrafts(prev => ({...prev, [key]: value}))}
+                                                        previewText={row.surface_form}
+                                                    />
+                                                    <button type="button" className="btn btn-sm" disabled={!!reviewedConfusionSaving[key]} onClick={(e) => { e.preventDefault(); e.stopPropagation(); saveReviewedConfusion(row); }}>
+                                                        {reviewedConfusionSaving[key] ? 'Saving...' : 'Save IPA'}
+                                                    </button>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            )}
+                            {previewScanCandidates.length > 0 && (
+                                <div className="card" style={{padding:'12px 14px',background:'rgba(255,255,255,0.03)'}}>
+                                    <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:8}}>
+                                        Pending scan candidates
+                                    </div>
+                                    <div style={{display:'grid',gap:8}}>
+                                        {previewScanCandidates.map(row => {
+                                            const key = `${row.term}::${row.surface_form}`;
+                                            return (
+                                                <div key={`queue-scan-${key}`} style={{display:'grid',gridTemplateColumns:'180px 220px 70px minmax(420px, 1.8fr) auto',gap:10,alignItems:'start',padding:'10px 12px',border:'1px solid rgba(255,255,255,0.06)',borderRadius:8}}>
+                                                    <div style={{fontFamily:'monospace',fontWeight:700}}>{row.term}</div>
+                                                    <div style={{fontFamily:'monospace',color:'var(--text)'}}>{row.surface_form}</div>
+                                                    <div style={{fontSize:12,color:'var(--text-muted)'}}>{row.qwen_count}x</div>
+                                                    <IpaWorkbench
+                                                        value={scanConfusionDrafts[key] ?? ''}
+                                                        onChange={value => setScanConfusionDrafts(prev => ({...prev, [key]: value}))}
+                                                        previewText={row.surface_form}
+                                                    />
+                                                    <button type="button" className="btn btn-sm" disabled={!!scanConfusionSaving[key]} onClick={() => acceptScanCandidate(row)}>
+                                                        {scanConfusionSaving[key] ? 'Adding...' : 'Accept'}
+                                                    </button>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            )}
+                            {ipaQueueCount === 0 && (
+                                <div style={{fontSize:13,color:'var(--text-muted)'}}>No immediate IPA backfill queue. Move on to sentences, recordings, or new confusion surfaces.</div>
+                            )}
+                        </div>
+                    </div>
+
                     <div id="corpus-readiness" className="card" style={{marginBottom:16,padding:'14px 16px'}}>
                         <div style={{fontSize:13,color:'var(--text-muted)',marginBottom:12}}>
                             The corpus pipeline is: reviewed vocabulary + clean authored sentences + counterexamples + mined confusion surfaces.
                         </div>
-                        <div className="stats-grid" style={{marginBottom:0}}>
-                            <div className="stat-card"><div className="value">{readyVocab.length}</div><div className="label">Ready Terms</div></div>
-                            <div className="stat-card"><div className="value">{cleanRows.length}</div><div className="label">Clean Sentences</div></div>
-                            <div className="stat-card"><div className="value">{counterexampleRows.length}</div><div className="label">Counterexamples</div></div>
-                            <div className="stat-card"><div className="value">{confusionResults.length}</div><div className="label">Terms With Confusions</div></div>
-                            <div className="stat-card"><div className="value">{phoneTraceCount}</div><div className="label">Timed Phone Traces</div></div>
-                        </div>
+                            <div className="stats-grid" style={{marginBottom:0}}>
+                                <div className="stat-card"><div className="value">{readyVocab.length}</div><div className="label">Ready Terms</div></div>
+                                <div className="stat-card"><div className="value">{cleanRows.length}</div><div className="label">Clean Sentences</div></div>
+                                <div className="stat-card"><div className="value">{counterexampleRows.length}</div><div className="label">Counterexamples</div></div>
+                                <div className="stat-card"><div className="value">{confusionTerms.size}</div><div className="label">Terms With Reviewed Confusions</div></div>
+                                <div className="stat-card"><div className="value">{phoneTraceCount}</div><div className="label">Timed Phone Traces</div></div>
+                            </div>
                     </div>
 
                     <div className="card" style={{marginBottom:16,padding:'14px 16px'}}>
@@ -4824,12 +5758,36 @@
                                 <div className="stat-card"><div className="value">{vocabNeedingOverrides.length}</div><div className="label">Need Override</div></div>
                                 <div className="stat-card"><div className="value">{vocabRows.length}</div><div className="label">All Visible Terms</div></div>
                             </div>
-                        <div style={{display:'grid',gap:8}}>
-                            {previewTerms(readyVocab).map(row => (
-                                    <div key={row.id} style={{display:'flex',gap:10,alignItems:'baseline',padding:'8px 10px',border:'1px solid rgba(255,255,255,0.06)',borderRadius:8}}>
-                                        <span style={{minWidth:140,fontFamily:'monospace',fontWeight:700,color:'var(--text)'}}>{row.term}</span>
-                                        <span style={{fontFamily:'monospace',color:'var(--accent)'}}>{row.spoken_override}</span>
-                                        {row.description && <span style={{fontSize:12,color:'var(--text-muted)'}}>{row.description}</span>}
+                            <div style={{display:'grid',gap:8}}>
+                            {vocabWorkQueue.slice(0, 20).map(row => (
+                                    <div key={row.id} style={corpusQueueRowStyle}>
+                                        <div style={corpusQueueMetaStyle}>
+                                            <div style={{fontFamily:'monospace',fontWeight:700,color:'var(--text)'}}>{row.term}</div>
+                                            {row.description && <div style={{fontSize:12,color:'var(--text-muted)',marginTop:2}}>{row.description}</div>}
+                                        </div>
+                                        <div style={corpusQueueWorkStyle}>
+                                            <div style={{display:'grid',gap:6}}>
+                                                <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>
+                                                    Pronunciation override
+                                                </div>
+                                                <input
+                                                    value={vocabSpokenQueueDrafts[row.id] ?? ''}
+                                                    onChange={e => setVocabSpokenQueueDrafts(prev => ({...prev, [row.id]: e.target.value}))}
+                                                    placeholder="spoken form"
+                                                    style={inputStyle}
+                                                />
+                                            </div>
+                                            <IpaWorkbench
+                                                value={vocabIpaDrafts[row.id] ?? ''}
+                                                onChange={value => setVocabIpaDrafts(prev => ({...prev, [row.id]: value}))}
+                                                previewText={(vocabSpokenQueueDrafts[row.id] ?? row.spoken_override) || row.term}
+                                            />
+                                            <div style={{display:'flex',justifyContent:'flex-end'}}>
+                                                <button type="button" className="btn btn-sm" disabled={!!vocabIpaSaving[row.id]} onClick={(e) => { e.preventDefault(); e.stopPropagation(); saveVocabIpa(row); }}>
+                                                    {vocabIpaSaving[row.id] ? 'Saving...' : 'Save IPA'}
+                                                </button>
+                                            </div>
+                                        </div>
                                     </div>
                                 ))}
                             </div>
@@ -4837,14 +5795,15 @@
                                 <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:8}}>
                                     Add vocabulary
                                 </div>
-                                <div style={{display:'grid',gridTemplateColumns:'1.2fr 1fr 1.5fr auto auto',gap:8,alignItems:'start'}}>
+                                <div style={{display:'grid',gridTemplateColumns:'1.1fr 1fr minmax(420px, 1.8fr) 1.3fr auto auto',gap:10,alignItems:'start'}}>
                                     <input value={vocabDraft} onChange={e => setVocabDraft(e.target.value)} placeholder="term" style={inputStyle} />
                                     <input value={vocabSpokenDraft} onChange={e => setVocabSpokenDraft(e.target.value)} placeholder="spoken form" style={inputStyle} />
+                                    <IpaWorkbench value={vocabIpaDraft} onChange={setVocabIpaDraft} previewText={vocabSpokenDraft || vocabDraft} />
                                     <input value={vocabDescDraft} onChange={e => setVocabDescDraft(e.target.value)} placeholder="description (optional)" style={inputStyle} />
-                                    <button className="btn btn-sm" disabled={vocabPreviewing || !(vocabSpokenDraft.trim() || vocabDraft.trim())} onClick={previewVocab}>
+                                    <button type="button" className="btn btn-sm" disabled={vocabPreviewing || !(vocabSpokenDraft.trim() || vocabDraft.trim())} onClick={previewVocab}>
                                         {vocabPreviewing ? 'Playing...' : 'Preview'}
                                     </button>
-                                    <button className="btn btn-primary btn-sm" disabled={vocabSaving || !vocabDraft.trim()} onClick={saveVocab}>
+                                    <button type="button" className="btn btn-primary btn-sm" disabled={vocabSaving || !vocabDraft.trim()} onClick={saveVocab}>
                                         {vocabSaving ? 'Saving...' : 'Add'}
                                     </button>
                                 </div>
@@ -4874,7 +5833,7 @@
                                     <div style={{display:'grid',gridTemplateColumns:'220px 1fr auto',gap:8,alignItems:'start'}}>
                                         <input list="corpus-vocab-terms" value={sentenceTermDraft} onChange={e => setSentenceTermDraft(e.target.value)} placeholder="term" style={inputStyle} />
                                         <input value={sentenceDraft} onChange={e => setSentenceDraft(e.target.value)} placeholder="Sentence containing the exact term" style={inputStyle} />
-                                        <button className="btn btn-primary btn-sm" disabled={sentenceSaving || !sentenceTermDraft.trim() || !sentenceDraft.trim()} onClick={saveSentence}>
+                                        <button type="button" className="btn btn-primary btn-sm" disabled={sentenceSaving || !sentenceTermDraft.trim() || !sentenceDraft.trim()} onClick={saveSentence}>
                                             {sentenceSaving ? 'Saving...' : 'Add'}
                                         </button>
                                     </div>
@@ -4890,7 +5849,7 @@
                                         </div>
                                         <div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:8,alignItems:'start'}}>
                                             <input value={counterSentenceDraft} onChange={e => setCounterSentenceDraft(e.target.value)} placeholder="Sentence containing the surface form but not the canonical term" style={inputStyle} />
-                                            <button className="btn btn-primary btn-sm" disabled={counterSaving || !counterTermsDraft.trim() || !counterSurfaceDraft.trim() || !counterSentenceDraft.trim()} onClick={saveCounterexample}>
+                                            <button type="button" className="btn btn-primary btn-sm" disabled={counterSaving || !counterTermsDraft.trim() || !counterSurfaceDraft.trim() || !counterSentenceDraft.trim()} onClick={saveCounterexample}>
                                                 {counterSaving ? 'Saving...' : 'Add'}
                                             </button>
                                         </div>
@@ -4966,55 +5925,82 @@
                                 <h3 style={{margin:0}}>Confusions</h3>
                             </div>
                             <div style={{fontSize:13,color:'var(--text-muted)',lineHeight:1.5,marginBottom:12}}>
-                                These are the ASR surfaces we actually observe. They are the raw material for applied corruptions.
+                                Reviewed confusion surfaces are corpus truth. Raw scan candidates stay suggestions until you accept them here and give them IPA.
                             </div>
                             <div className="stats-grid" style={{marginBottom:12}}>
-                                <div className="stat-card"><div className="value">{confusionResults.length}</div><div className="label">Terms With Signal</div></div>
-                                <div className="stat-card"><div className="value">{scanResults.length}</div><div className="label">Scanned Terms</div></div>
-                                <div className="stat-card"><div className="value">{previewConfusions.reduce((sum, row) => sum + row.signalCount, 0)}</div><div className="label">Preview Surfaces</div></div>
+                                <div className="stat-card"><div className="value">{acceptedReviewedConfusions.length}</div><div className="label">Reviewed Surfaces</div></div>
+                                <div className="stat-card"><div className="value">{scanConfusionCandidates.length}</div><div className="label">Scan Candidates</div></div>
+                                <div className="stat-card"><div className="value">{new Set(acceptedReviewedConfusions.map(row => row.term.toLowerCase())).size}</div><div className="label">Terms Covered</div></div>
                             </div>
                             <div style={{padding:'12px 12px',border:'1px solid rgba(255,255,255,0.06)',borderRadius:10,marginBottom:12}}>
                                 <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:8}}>
-                                    Add manual confusion / alias
+                                    Add reviewed confusion surface
                                 </div>
-                                <div style={{display:'grid',gridTemplateColumns:'220px 1fr auto',gap:8,alignItems:'start'}}>
+                                <div style={{display:'grid',gridTemplateColumns:'220px 1fr 1.2fr auto',gap:8,alignItems:'start'}}>
                                     <input list="corpus-vocab-terms" value={confusionTermDraft} onChange={e => setConfusionTermDraft(e.target.value)} placeholder="term" style={inputStyle} />
                                     <input value={confusionSurfaceDraft} onChange={e => setConfusionSurfaceDraft(e.target.value)} placeholder="heard surface or accepted alias" style={inputStyle} />
-                                    <button className="btn btn-primary btn-sm" disabled={confusionSaving || !confusionTermDraft.trim() || !confusionSurfaceDraft.trim()} onClick={saveConfusion}>
+                                    <IpaWorkbench value={confusionIpaDraft} onChange={setConfusionIpaDraft} previewText={confusionSurfaceDraft} />
+                                    <button type="button" className="btn btn-primary btn-sm" disabled={confusionSaving || !confusionTermDraft.trim() || !confusionSurfaceDraft.trim()} onClick={saveConfusion}>
                                         {confusionSaving ? 'Saving...' : 'Add'}
                                     </button>
                                 </div>
-                                <div style={{...smallHelpStyle,marginTop:8}}>
-                                    This currently writes an alt spelling / manual alias, because the mined confusion table does not yet have a first-class manual review model.
-                                </div>
                             </div>
-                            <div className="card" style={{padding:0,overflow:'hidden'}}>
-                                <table>
-                                    <thead>
-                                        <tr>
-                                            <th>Term</th>
-                                            <th style={{color:'#58a6ff'}}>Qwen heard</th>
-                                            <th style={{color:'#7ee787'}}>Parakeet heard</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {previewConfusions.map(row => (
-                                            <tr key={row.term}>
-                                                <td style={{fontWeight:600}}>{row.term}</td>
-                                                <td>
-                                                    {row.qwenHeard.length > 0
-                                                        ? row.qwenHeard.map(h => <span key={h} style={{color:'#58a6ff',marginRight:8}}>{h}</span>)
-                                                        : <span style={{color:'var(--text-muted)'}}>—</span>}
-                                                </td>
-                                                <td>
-                                                    {row.parakeetHeard.length > 0
-                                                        ? row.parakeetHeard.map(h => <span key={h} style={{color:'#7ee787',marginRight:8}}>{h}</span>)
-                                                        : <span style={{color:'var(--text-muted)'}}>—</span>}
-                                                </td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
+                            <div style={{display:'grid',gap:12}}>
+                                <div className="card" style={{padding:'12px 14px'}}>
+                                    <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:8}}>
+                                        Reviewed surfaces
+                                    </div>
+                                    <div style={{display:'grid',gap:8}}>
+                                        {reviewedConfusionWorkQueue.slice(0, 20).map(row => {
+                                            const key = `${row.term}::${row.surface_form}`;
+                                            return (
+                                                <div key={key} style={{display:'grid',gridTemplateColumns:'180px 220px minmax(420px, 1.8fr) auto',gap:10,alignItems:'start',padding:'10px 12px',border:'1px solid rgba(255,255,255,0.06)',borderRadius:8}}>
+                                                    <div style={{fontFamily:'monospace',fontWeight:700}}>{row.term}</div>
+                                                    <div style={{fontFamily:'monospace',color:'var(--accent)'}}>{row.surface_form}</div>
+                                                    <IpaWorkbench
+                                                        value={reviewedConfusionDrafts[key] ?? ''}
+                                                        onChange={value => setReviewedConfusionDrafts(prev => ({...prev, [key]: value}))}
+                                                        previewText={row.surface_form}
+                                                    />
+                                                    <button type="button" className="btn btn-sm" disabled={!!reviewedConfusionSaving[key]} onClick={(e) => { e.preventDefault(); e.stopPropagation(); saveReviewedConfusion(row); }}>
+                                                        {reviewedConfusionSaving[key] ? 'Saving...' : 'Save IPA'}
+                                                    </button>
+                                                </div>
+                                            );
+                                        })}
+                                        {previewReviewedConfusions.length === 0 && (
+                                            <div style={{fontSize:12,color:'var(--text-muted)'}}>No reviewed confusion surfaces yet.</div>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="card" style={{padding:'12px 14px'}}>
+                                    <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:8}}>
+                                        Scan candidates
+                                    </div>
+                                    <div style={{display:'grid',gap:8}}>
+                                        {previewScanCandidates.map(row => {
+                                            const key = `${row.term}::${row.surface_form}`;
+                                            return (
+                                                <div key={key} style={{display:'grid',gridTemplateColumns:'180px 220px 70px minmax(420px, 1.8fr) auto',gap:10,alignItems:'start',padding:'10px 12px',border:'1px solid rgba(255,255,255,0.06)',borderRadius:8}}>
+                                                    <div style={{fontFamily:'monospace',fontWeight:700}}>{row.term}</div>
+                                                    <div style={{fontFamily:'monospace',color:'var(--text)'}}>{row.surface_form}</div>
+                                                    <div style={{fontSize:12,color:'var(--text-muted)'}}>{row.qwen_count}x</div>
+                                                    <IpaWorkbench
+                                                        value={scanConfusionDrafts[key] ?? ''}
+                                                        onChange={value => setScanConfusionDrafts(prev => ({...prev, [key]: value}))}
+                                                        previewText={row.surface_form}
+                                                    />
+                                                    <button type="button" className="btn btn-sm" disabled={!!scanConfusionSaving[key]} onClick={() => acceptScanCandidate(row)}>
+                                                        {scanConfusionSaving[key] ? 'Adding...' : 'Accept'}
+                                                    </button>
+                                                </div>
+                                            );
+                                        })}
+                                        {previewScanCandidates.length === 0 && (
+                                            <div style={{fontSize:12,color:'var(--text-muted)'}}>No pending scan candidates in the preview set.</div>
+                                        )}
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
