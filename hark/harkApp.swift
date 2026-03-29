@@ -584,7 +584,7 @@ struct HarkApp: App {
     private static let minimumSpeechDurationSeconds = 0.2
     private static let accidentalDoublePressRecordingThresholdSeconds: TimeInterval = 0.5
     private static let accidentalDoublePressIgnoreWindowSeconds: TimeInterval = 0.5
-    private static let streamingChunkSizeSec: Float = 0.75
+    private static let streamingChunkSizeSec: Float = 0.4
     private static let transcriptionSampleRate = 16_000.0
     // Pad enough silence so the finalize chunk is at least one full streaming
     // chunk (2s = 32000 samples). This ensures feedFinalizing drains a chunk
