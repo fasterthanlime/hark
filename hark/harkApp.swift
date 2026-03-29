@@ -1420,9 +1420,8 @@ struct HarkApp: App {
                 pasteTargetBundleID = nil
                 directInputElement = nil
                 directInputOriginalText = nil
-                if activeInsertionStrategy == .ime {
-                    HarkInputClient.deactivateIME()
-                }
+                // Don't deactivate IME between recordings — it passes through
+                // normal keystrokes and re-activation causes timing issues.
                 activeInsertionStrategy = .paste
                 appState.overlayLockedBundleID = nil
                 appState.overlayLockedAppName = nil
