@@ -23,14 +23,32 @@ class HarkInputAppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        Self.logger.warning("Starting IMKServer name=\(connectionName, privacy: .public) bundle=\(bundleID, privacy: .public)")
         server = IMKServer(name: connectionName, bundleIdentifier: bundleID)
-        Self.logger.info("IMKServer started: \(connectionName, privacy: .public)")
+        Self.logger.warning("IMKServer init completed")
 
-        // Start XPC listener for communication with the main Hark app.
-        let listener = NSXPCListener(machServiceName: "fasterthanlime.hark.input-method.xpc")
-        listener.delegate = HarkXPCDelegate.shared
-        listener.resume()
-        xpcListener = listener
-        Self.logger.info("XPC listener started")
+        // Listen for commands from the main Hark app via distributed notifications.
+        let dnc = DistributedNotificationCenter.default()
+        dnc.addObserver(
+            forName: NSNotification.Name("fasterthanlime.hark.setMarkedText"),
+            object: nil, queue: .main
+        ) { notification in
+            guard let text = notification.userInfo?["text"] as? String else { return }
+            HarkXPCService.shared.setMarkedText(text)
+        }
+        dnc.addObserver(
+            forName: NSNotification.Name("fasterthanlime.hark.commitText"),
+            object: nil, queue: .main
+        ) { notification in
+            guard let text = notification.userInfo?["text"] as? String else { return }
+            HarkXPCService.shared.commitText(text)
+        }
+        dnc.addObserver(
+            forName: NSNotification.Name("fasterthanlime.hark.cancelInput"),
+            object: nil, queue: .main
+        ) { _ in
+            HarkXPCService.shared.cancelInput()
+        }
+        Self.logger.warning("Distributed notification listeners registered")
     }
 }
