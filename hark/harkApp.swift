@@ -1263,7 +1263,8 @@ struct HarkApp: App {
                                     trimmed,
                                     previousText: directInputLastText,
                                     on: element,
-                                    replaceFrom: directInputOrigin
+                                    replaceFrom: directInputOrigin,
+                                    originalText: directInputOriginalText ?? ""
                                 )
                                 directInputLastText = trimmed
                             }
@@ -1334,7 +1335,7 @@ struct HarkApp: App {
                     _ = appState.transition(to: .pasting)
                     if let element = directInputElement {
                         // Direct input: text is already in the field, just finalize + submit
-                        PasteController.setDirectText(result.text, previousText: directInputLastText, on: element, replaceFrom: directInputOrigin)
+                        PasteController.setDirectText(result.text, previousText: directInputLastText, on: element, replaceFrom: directInputOrigin, originalText: directInputOriginalText ?? "")
                         let returnKeyCode: CGKeyCode = 36
                         if let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: true),
                            let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: false) {
@@ -1990,7 +1991,7 @@ struct HarkApp: App {
                 "submit": String(shouldSubmit),
             ])
             _ = appState.transition(to: .pasting)
-            PasteController.setDirectText(text, previousText: directInputLastText, on: element, replaceFrom: directInputOrigin)
+            PasteController.setDirectText(text, previousText: directInputLastText, on: element, replaceFrom: directInputOrigin, originalText: directInputOriginalText ?? "")
             if shouldSubmit {
                 try? await Task.sleep(for: .milliseconds(50))
                 // Simulate Enter after the direct write

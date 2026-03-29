@@ -151,37 +151,22 @@ struct PasteController {
 
     /// Write text directly into an AX text element by rewriting kAXValueAttribute.
     /// Splices dictated text at `replaceFrom`, preserving text before and after.
-    /// Cursor is placed at the end of the inserted text.
+    /// `originalText` is the real text content captured at recording start
+    /// (with placeholder already stripped). Cursor is placed at the end of
+    /// the inserted text.
     @discardableResult
     static func setDirectText(
         _ text: String,
         previousText: String,
         on element: AXUIElement,
-        replaceFrom: Int
+        replaceFrom: Int,
+        originalText: String
     ) -> Bool {
-        // Read current value
-        var valueRef: AnyObject?
-        let currentText: String
-        if AXUIElementCopyAttributeValue(
-            element,
-            kAXValueAttribute as CFString,
-            &valueRef
-        ) == .success, let existing = valueRef as? String {
-            currentText = existing
-        } else {
-            currentText = ""
-        }
-
-        let ns = currentText as NSString
+        let ns = originalText as NSString
         let clampedFrom = min(max(0, replaceFrom), ns.length)
 
-        // The previous dictated text starts at clampedFrom and extends
-        // for previousText.utf16.count characters. Everything after that is suffix.
-        let previousUTF16Len = (previousText as NSString).length
-        let replaceEnd = min(clampedFrom + previousUTF16Len, ns.length)
-
         let prefix = ns.substring(to: clampedFrom)
-        let suffix = ns.substring(from: replaceEnd)
+        let suffix = ns.substring(from: clampedFrom)
         let newValue = prefix + text + suffix
 
         let setResult = AXUIElementSetAttributeValue(
