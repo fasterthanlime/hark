@@ -52,13 +52,22 @@ struct LanguageDetector {
         collectText(from: window, into: &texts, visited: &visited, totalChars: &totalChars)
 
         let combined = texts.joined(separator: " ")
+        // Log a preview of what we collected
+        let preview = String(combined.prefix(200))
+        logger.warning("Collected \(combined.count) chars from \(visited) elements: \(preview, privacy: .public)")
+
         guard combined.count >= 20 else {
-            logger.warning("Not enough text for detection: \(combined.count) chars from \(visited) elements")
+            logger.warning("Not enough text for detection")
             return nil
         }
 
         let recognizer = NLLanguageRecognizer()
         recognizer.processString(combined)
+
+        // Log top hypotheses
+        let hypotheses = recognizer.languageHypotheses(withMaximum: 3)
+        let hypoStr = hypotheses.sorted(by: { $0.value > $1.value }).map { "\($0.key.rawValue)=\(String(format: "%.2f", $0.value))" }.joined(separator: " ")
+        logger.warning("Hypotheses: \(hypoStr, privacy: .public)")
 
         guard let dominant = recognizer.dominantLanguage else {
             logger.warning("No dominant language from \(combined.count) chars")
