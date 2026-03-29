@@ -195,51 +195,53 @@ struct PasteController {
         return true
     }
 
-    /// Delete `text` backward from the cursor using Option+Delete (word-level)
-    /// and plain Delete (character-level) for any remaining partial word at the start.
+    /// Delete `text` backward from the cursor. Uses Option+Delete for word
+    /// chunks and plain Delete for individual characters. Simulates macOS
+    /// word boundary behavior: Option+Delete deletes back through whitespace
+    /// and then through the preceding word/punctuation.
     private static func deleteBackward(text: String) {
         guard !text.isEmpty else { return }
-
-        // Count word boundaries in the text to know how many Option+Deletes we need.
-        // We work backward: each Option+Delete removes one word (including trailing whitespace).
-        // After the word deletes, mop up any remaining characters with plain Delete.
         let deleteKeyCode = CGKeyCode(kVK_Delete)
 
-        // Use NSString word enumeration to count words — this matches macOS word boundaries.
-        let ns = text as NSString
-        var wordCount = 0
-        var coveredUTF16 = 0
-        ns.enumerateSubstrings(
-            in: NSRange(location: 0, length: ns.length),
-            options: [.byWords, .reverse]
-        ) { _, substringRange, enclosingRange, _ in
-            wordCount += 1
-            // enclosingRange includes surrounding whitespace
-            coveredUTF16 = ns.length - enclosingRange.location
+        // Walk backward through the text, simulating what Option+Delete would
+        // consume each time. Each Option+Delete eats: any trailing whitespace,
+        // then the preceding word or punctuation run.
+        var remaining = text[text.startIndex..<text.endIndex]
+        var optionDeleteCount = 0
+
+        while !remaining.isEmpty {
+            // Strip trailing whitespace
+            while let last = remaining.last, last.isWhitespace {
+                remaining = remaining[remaining.startIndex..<remaining.index(before: remaining.endIndex)]
+            }
+            if remaining.isEmpty {
+                // Only whitespace was left — one more Option+Delete
+                optionDeleteCount += 1
+                break
+            }
+
+            // Now strip the preceding "word" — either alphanumerics or a
+            // punctuation/symbol run (Option+Delete treats these as separate units)
+            let lastChar = remaining.last!
+            if lastChar.isLetter || lastChar.isNumber {
+                while let last = remaining.last, last.isLetter || last.isNumber {
+                    remaining = remaining[remaining.startIndex..<remaining.index(before: remaining.endIndex)]
+                }
+            } else {
+                // Punctuation/symbol — Option+Delete eats the run
+                while let last = remaining.last, !last.isLetter && !last.isNumber && !last.isWhitespace {
+                    remaining = remaining[remaining.startIndex..<remaining.index(before: remaining.endIndex)]
+                }
+            }
+            optionDeleteCount += 1
         }
 
-        // Characters before the first word boundary (e.g. leading punctuation/spaces
-        // that aren't part of a word) — delete these character by character
-        let remainingChars = ns.length - coveredUTF16
-
-        // Option+Delete for each word
-        for _ in 0..<wordCount {
+        for _ in 0..<optionDeleteCount {
             guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: deleteKeyCode, keyDown: true),
                   let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: deleteKeyCode, keyDown: false)
             else { continue }
             keyDown.flags = .maskAlternate
             keyUp.flags = .maskAlternate
-            keyDown.post(tap: .cghidEventTap)
-            keyUp.post(tap: .cghidEventTap)
-        }
-
-        // Plain Delete for any remaining characters
-        for _ in 0..<remainingChars {
-            guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: deleteKeyCode, keyDown: true),
-                  let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: deleteKeyCode, keyDown: false)
-            else { continue }
-            keyDown.flags = []
-            keyUp.flags = []
             keyDown.post(tap: .cghidEventTap)
             keyUp.post(tap: .cghidEventTap)
         }
