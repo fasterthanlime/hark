@@ -577,6 +577,7 @@ struct HarkApp: App {
     @State private var recordingControlInterceptor = RecordingControlInterceptor()
     @State private var recordingControlObservers: [NSObjectProtocol] = []
     @State private var shiftMonitor: Any?
+    @State private var imeNotificationObservers: [NSObjectProtocol] = []
 
     private static let maxRecordingDurationSeconds = AudioRecorder.defaultMaximumDuration
     private static let toggleModeThresholdSeconds: TimeInterval = 0.3
@@ -2182,6 +2183,29 @@ struct HarkApp: App {
             }
         }
         recordingControlObservers.append(submitObserver)
+
+        // Listen for Enter/Escape from the IME during dictation.
+        let imeCancelObserver = DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("fasterthanlime.hark.imeCancel"),
+            object: nil, queue: .main
+        ) { [self] _ in
+            Task { @MainActor in
+                guard self.appState.phase == .recording else { return }
+                await self.stopRecordingAndTranscribe(skipPaste: true, forceSubmit: false)
+            }
+        }
+        imeNotificationObservers.append(imeCancelObserver)
+
+        let imeSubmitObserver = DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("fasterthanlime.hark.imeSubmit"),
+            object: nil, queue: .main
+        ) { [self] _ in
+            Task { @MainActor in
+                guard self.appState.phase == .recording else { return }
+                await self.stopRecordingAndTranscribe(skipPaste: false, forceSubmit: true)
+            }
+        }
+        imeNotificationObservers.append(imeSubmitObserver)
     }
 
     @MainActor
@@ -2199,6 +2223,11 @@ struct HarkApp: App {
             NSEvent.removeMonitor(monitor)
             shiftMonitor = nil
         }
+
+        for observer in imeNotificationObservers {
+            DistributedNotificationCenter.default().removeObserver(observer)
+        }
+        imeNotificationObservers.removeAll()
     }
 
     // MARK: - Model Management

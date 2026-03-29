@@ -44,9 +44,38 @@ class HarkInputController: IMKInputController {
         return false
     }
 
-    /// Handle events — pass everything through.
+    /// Handle key events — intercept Enter/Escape during active dictation.
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
-        return false
+        guard let event, event.type == .keyDown, !currentMarkedText.isEmpty else {
+            return false
+        }
+
+        switch Int(event.keyCode) {
+        case kVK_Return, kVK_ANSI_KeypadEnter:
+            // Tell Hark to finalize + submit
+            Self.logger.warning("Enter pressed during dictation — requesting submit")
+            DistributedNotificationCenter.default().postNotificationName(
+                NSNotification.Name("fasterthanlime.hark.imeSubmit"),
+                object: nil,
+                userInfo: nil,
+                deliverImmediately: true
+            )
+            return true
+
+        case kVK_Escape:
+            // Tell Hark to cancel
+            Self.logger.warning("Escape pressed during dictation — requesting cancel")
+            DistributedNotificationCenter.default().postNotificationName(
+                NSNotification.Name("fasterthanlime.hark.imeCancel"),
+                object: nil,
+                userInfo: nil,
+                deliverImmediately: true
+            )
+            return true
+
+        default:
+            return false
+        }
     }
 
     // MARK: - Commands from Hark via XPC
