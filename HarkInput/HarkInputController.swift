@@ -20,7 +20,7 @@ class HarkInputController: IMKInputController {
     override func activateServer(_ sender: Any!) {
         super.activateServer(sender)
         HarkXPCService.shared.activeController = self
-        Self.logger.info("Server activated")
+        Self.logger.warning("Server activated")
     }
 
     override func deactivateServer(_ sender: Any!) {
@@ -32,7 +32,7 @@ class HarkInputController: IMKInputController {
             HarkXPCService.shared.activeController = nil
         }
         super.deactivateServer(sender)
-        Self.logger.info("Server deactivated")
+        Self.logger.warning("Server deactivated")
     }
 
     // MARK: - Input handling

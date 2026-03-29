@@ -17,7 +17,7 @@ class HarkXPCDelegate: NSObject, NSXPCListenerDelegate {
         newConnection.exportedInterface = NSXPCInterface(with: HarkInputProtocol.self)
         newConnection.exportedObject = HarkXPCService.shared
         newConnection.resume()
-        Self.logger.info("Accepted XPC connection")
+        Self.logger.warning("Accepted XPC connection")
         return true
     }
 }
@@ -36,21 +36,21 @@ class HarkXPCService: NSObject, HarkInputProtocol {
     weak var activeController: HarkInputController?
 
     func setMarkedText(_ text: String) {
-        Self.logger.info("setMarkedText: \(text.prefix(40), privacy: .public)")
+        Self.logger.warning("setMarkedText: '\(text.prefix(40), privacy: .public)' activeController=\(self.activeController != nil)")
         DispatchQueue.main.async {
             self.activeController?.handleSetMarkedText(text)
         }
     }
 
     func commitText(_ text: String) {
-        Self.logger.info("commitText: \(text.prefix(40), privacy: .public)")
+        Self.logger.warning("commitText: \(text.prefix(40), privacy: .public)")
         DispatchQueue.main.async {
             self.activeController?.handleCommitText(text)
         }
     }
 
     func cancelInput() {
-        Self.logger.info("cancelInput")
+        Self.logger.warning("cancelInput")
         DispatchQueue.main.async {
             self.activeController?.handleCancelInput()
         }
