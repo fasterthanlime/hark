@@ -586,10 +586,10 @@ struct HarkApp: App {
     private static let accidentalDoublePressIgnoreWindowSeconds: TimeInterval = 0.5
     private static let streamingChunkSizeSec: Float = 0.4
     private static let transcriptionSampleRate = 16_000.0
-    // Pad enough silence so the finalize chunk reaches at least one full
-    // streaming chunk, ensuring feedFinalizing triggers inference.
-    private static let finalizationSilencePaddingSeconds = 0.5
-    private static let finalizationMinimumSilencePaddingSeconds = 0.3
+    // Silence padding after remaining audio. With the race condition fixed,
+    // finalization reliably processes all samples, so minimal padding is needed.
+    private static let finalizationSilencePaddingSeconds = 0.05
+    private static let finalizationMinimumSilencePaddingSeconds = 0.05
     private static let tailDebugDumpEnabled = true
 
     var body: some Scene {
