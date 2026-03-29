@@ -586,12 +586,10 @@ struct HarkApp: App {
     private static let accidentalDoublePressIgnoreWindowSeconds: TimeInterval = 0.5
     private static let streamingChunkSizeSec: Float = 0.4
     private static let transcriptionSampleRate = 16_000.0
-    // Pad enough silence so the finalize chunk is at least one full streaming
-    // chunk (2s = 32000 samples). This ensures feedFinalizing drains a chunk
-    // and runs inference, capturing tail words that would otherwise be lost
-    // in a partial buffer that only gets flushed by finish().
-    private static let finalizationSilencePaddingSeconds = 2.0
-    private static let finalizationMinimumSilencePaddingSeconds = 1.5
+    // Pad enough silence so the finalize chunk reaches at least one full
+    // streaming chunk, ensuring feedFinalizing triggers inference.
+    private static let finalizationSilencePaddingSeconds = 0.5
+    private static let finalizationMinimumSilencePaddingSeconds = 0.3
     private static let tailDebugDumpEnabled = true
 
     var body: some Scene {
