@@ -1667,6 +1667,90 @@ struct HarkApp: App {
             "force_submit": String(forceSubmit),
         ])
 
+        // IME mode: commit the current partial transcript immediately,
+        // finalize in background. No main thread blocking.
+        if activeInsertionStrategy == .ime && !skipPaste {
+            let text = appState.partialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                // If tethered out of app, bring it back
+                if let lockedBundle = pasteTargetBundleID,
+                   NSWorkspace.shared.frontmostApplication?.bundleIdentifier != lockedBundle {
+                    if let app = NSRunningApplication.runningApplications(withBundleIdentifier: lockedBundle).first {
+                        app.activate(options: [.activateIgnoringOtherApps])
+                        try? await Task.sleep(for: .milliseconds(Self.appReactivationDelayMs))
+                    }
+                }
+                HarkInputClient.sendCommitText(text)
+                try? await Task.sleep(for: .milliseconds(Self.imeCommitDelayMs))
+                HarkInputClient.deactivateIME()
+                if forceSubmit {
+                    try? await Task.sleep(for: .milliseconds(Self.imeDeactivateDelayMs))
+                    simulateReturn()
+                }
+                appState.addToHistory(text)
+            } else {
+                HarkInputClient.sendCancelInput()
+                HarkInputClient.deactivateIME()
+            }
+
+            // Clean up UI immediately
+            if cancelTimeoutTask { cancelRecordingTimeout() }
+            removeEscapeMonitor()
+            appState.isLockedMode = false
+            keyDownTime = nil
+            hotkeyMonitor.allowExtraModifiers = false
+            overlayManager.hideWithResult(text.isEmpty ? .cancelled : .success)
+            if text.isEmpty { playCancelSound() } else { playPastedSound() }
+
+            // Finalize in background
+            let stask = streamingTask
+            streamingTask = nil
+            stask?.cancel()
+            let session = streamingSession
+            streamingSession = nil
+            let recorder = self.audioRecorder
+            let shouldKeepWarm = appState.activeInputDeviceKeepWarm
+            let trace = forensicsSession
+            forensicsSession = nil
+
+            _ = appState.transition(to: .idle)
+            appState.isFinishing = false
+            recordingStartedAt = nil
+            activeInsertionStrategy = .paste
+            pasteTargetBundleID = nil
+            directInputElement = nil
+            directInputOriginalText = nil
+            appState.overlayLockedBundleID = nil
+            appState.overlayLockedAppName = nil
+            appState.overlayTetherOutOfApp = false
+
+            Task.detached(priority: .utility) { [transcriptionService] in
+                let allSamples: [Float]
+                if recorder.isWarmedUp {
+                    allSamples = recorder.stopCapture()
+                } else {
+                    allSamples = recorder.stop()
+                }
+                if !shouldKeepWarm, recorder.isWarmedUp {
+                    recorder.coolDown()
+                }
+                let result = await stask?.value
+                if let session {
+                    let processedCount = result?.processedSampleCount ?? 0
+                    let remaining = processedCount < allSamples.count ? Array(allSamples[processedCount...]) : []
+                    if !remaining.isEmpty {
+                        _ = transcriptionService.feedFinalizing(session: session, samples: remaining)
+                    }
+                    _ = transcriptionService.finish(session: session)
+                }
+                if let trace {
+                    trace.event("session_end")
+                    trace.writeHTMLDump()
+                }
+            }
+            return
+        }
+
         _ = appState.transition(to: .transcribing)
         appState.isFinishing = true
 
