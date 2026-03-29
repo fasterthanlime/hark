@@ -590,6 +590,13 @@ struct HarkApp: App {
     // finalization reliably processes all samples, so minimal padding is needed.
     private static let finalizationSilencePaddingSeconds = 0.05
     private static let finalizationMinimumSilencePaddingSeconds = 0.05
+
+    // Delays in the commit/submit path (all in milliseconds).
+    // Set to 0 to test without delays — increase if things break.
+    private static let appReactivationDelayMs = 500  // wait after bringing locked app to front
+    private static let imeCommitDelayMs = 0          // wait after sendCommitText before deactivating IME
+    private static let imeDeactivateDelayMs = 0      // wait after deactivating IME before simulating Enter
+    private static let axSubmitDelayMs = 0            // wait before simulating Enter in AX mode
     private static let tailDebugDumpEnabled = true
 
     var body: some Scene {
@@ -1366,15 +1373,7 @@ struct HarkApp: App {
                     if let element = directInputElement {
                         // Direct input: text is already in the field, just finalize + submit
                         PasteController.setDirectText(result.text, previousText: directInputLastText, on: element, replaceFrom: directInputOrigin, originalText: directInputOriginalText ?? "")
-                        let returnKeyCode: CGKeyCode = 36
-                        if let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: true),
-                           let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: false) {
-                            keyDown.flags = []
-                            keyDown.post(tap: .cghidEventTap)
-                            try? await Task.sleep(for: .milliseconds(10))
-                            keyUp.flags = []
-                            keyUp.post(tap: .cghidEventTap)
-                        }
+                        simulateReturn()
                         traceEvent("over_direct_input_done", ["text_len": String(result.text.count)])
                     } else {
                         do {
@@ -1932,6 +1931,17 @@ struct HarkApp: App {
     }
 
     /// Restore/cancel direct input — AX restores original text, IME clears marked text.
+    private func simulateReturn() {
+        let returnKeyCode: CGKeyCode = 36
+        if let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: true),
+           let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: false) {
+            keyDown.flags = []
+            keyDown.post(tap: .cghidEventTap)
+            keyUp.flags = []
+            keyUp.post(tap: .cghidEventTap)
+        }
+    }
+
     @MainActor
     private func restoreDirectInputOriginalText() {
         switch activeInsertionStrategy {
@@ -2047,8 +2057,7 @@ struct HarkApp: App {
                 if let app = apps.first {
                     let ok = app.activate(options: [.activateIgnoringOtherApps])
                     Self.logger.warning("[hark] activate result=\(ok) pid=\(app.processIdentifier)")
-                    // Give the app a moment to come to front and re-activate the IME
-                    try? await Task.sleep(for: .milliseconds(500))
+                    try? await Task.sleep(for: .milliseconds(Self.appReactivationDelayMs))
                 }
             }
 
@@ -2059,38 +2068,19 @@ struct HarkApp: App {
                 }
             case .ime:
                 HarkInputClient.sendCommitText(text)
-                // Wait for the commit to land before switching input source
-                try? await Task.sleep(for: .milliseconds(200))
-                // Restore previous input source after commit
+                try? await Task.sleep(for: .milliseconds(Self.imeCommitDelayMs))
                 HarkInputClient.deactivateIME()
                 if shouldSubmit {
-                    // Wait for input source switch, then simulate Enter
-                    try? await Task.sleep(for: .milliseconds(150))
-                    let returnKeyCode: CGKeyCode = 36
-                    if let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: true),
-                       let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: false) {
-                        keyDown.flags = []
-                        keyDown.post(tap: .cghidEventTap)
-                        try? await Task.sleep(for: .milliseconds(10))
-                        keyUp.flags = []
-                        keyUp.post(tap: .cghidEventTap)
-                    }
+                    try? await Task.sleep(for: .milliseconds(Self.imeDeactivateDelayMs))
+                    simulateReturn()
                 }
             case .paste:
                 break
             }
 
             if activeInsertionStrategy != .ime && shouldSubmit {
-                try? await Task.sleep(for: .milliseconds(50))
-                let returnKeyCode: CGKeyCode = 36
-                if let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: true),
-                   let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: false) {
-                    keyDown.flags = []
-                    keyDown.post(tap: .cghidEventTap)
-                    try? await Task.sleep(for: .milliseconds(10))
-                    keyUp.flags = []
-                    keyUp.post(tap: .cghidEventTap)
-                }
+                try? await Task.sleep(for: .milliseconds(Self.axSubmitDelayMs))
+                simulateReturn()
             }
             overlayManager.hideWithResult(.success)
             playPastedSound()
