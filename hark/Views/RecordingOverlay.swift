@@ -195,19 +195,23 @@ struct RecordingOverlayView: View {
             let key = appState.hotkeyBinding.displayLabel
             HStack(spacing: 4) {
                 keyCap(key)
-                hintLabel("to submit ·")
-                keyCap(key)
-                hintLabel("+")
+                hintLabel(appState.submitArmed ? "to submit ·" : "to paste ·")
+                keyCap("⇧")
+                hintLabel(appState.submitArmed ? "armed" : "to arm submit")
+                hintLabel("·")
                 keyCap("Esc")
-                hintLabel("to cancel")
+                hintLabel("cancel")
             }
         } else {
             HStack(spacing: 4) {
-                hintLabel("Release to submit ·")
+                hintLabel(appState.submitArmed ? "Release to submit ·" : "Release to paste ·")
+                keyCap("⇧")
+                hintLabel(appState.submitArmed ? "armed" : "to arm submit")
+                hintLabel("·")
                 keyCap("⌘")
-                hintLabel("to lock ·")
+                hintLabel("lock ·")
                 keyCap("Esc")
-                hintLabel("to cancel")
+                hintLabel("cancel")
             }
         }
     }

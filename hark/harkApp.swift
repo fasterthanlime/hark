@@ -560,14 +560,19 @@ struct HarkApp: App {
     @State private var directInputElement: AXUIElement?
     /// UTF-16 offset in the AX text field where our dictated text begins.
     @State private var directInputOrigin: Int = 0
+    /// UTF-16 offset where the last dictated text ends (for replacing on updates).
+    @State private var directInputEnd: Int = 0
     @State private var forensicsSession: ForensicsSession?
     @State private var tinkSound: NSSound?
     @State private var popSound: NSSound?
     @State private var didWarmUpSoundPlayback = false
     /// Skip the next keyUp after locking (so releasing the hotkey after ⌘-lock doesn't submit).
     @State private var skipNextKeyUp = false
+    /// Toggled by pressing Shift during recording — determines whether to submit on stop.
+    @State private var shiftSubmitArmed = false
     @State private var recordingControlInterceptor = RecordingControlInterceptor()
     @State private var recordingControlObservers: [NSObjectProtocol] = []
+    @State private var shiftMonitor: Any?
 
     private static let maxRecordingDurationSeconds = AudioRecorder.defaultMaximumDuration
     private static let toggleModeThresholdSeconds: TimeInterval = 0.3
@@ -874,9 +879,10 @@ struct HarkApp: App {
         }
         hotkeyMonitor.onModifierWhileHeld = { keyCode in
             Task { @MainActor in
+                guard appState.phase == .recording else { return }
                 // Command pressed while hotkey is held → lock into toggle mode
                 if keyCode == 55 || keyCode == 54 { // left/right Command
-                    guard appState.phase == .recording, !appState.isLockedMode else { return }
+                    guard !appState.isLockedMode else { return }
                     appState.isLockedMode = true
                     skipNextKeyUp = true
                 }
@@ -1084,16 +1090,20 @@ struct HarkApp: App {
                 var range = CFRange(location: 0, length: 0)
                 if AXValueGetValue(rangeValue, .cfRange, &range) {
                     directInputOrigin = range.location
+                    directInputEnd = range.location
                 }
             }
         } else {
             directInputElement = nil
             directInputOrigin = 0
+            directInputEnd = 0
         }
         appState.overlayLockedBundleID = pasteTargetBundleID
         appState.overlayLockedAppName = frontApp?.localizedName
         appState.overlayTetherOutOfApp = false
         appState.isLockedMode = false
+        shiftSubmitArmed = false
+        appState.submitArmed = false
         hotkeyMonitor.allowExtraModifiers = true
 
         Task { @MainActor in
@@ -1257,8 +1267,10 @@ struct HarkApp: App {
                                 PasteController.setDirectText(
                                     trimmed,
                                     on: element,
-                                    replaceFrom: directInputOrigin
+                                    replaceFrom: directInputOrigin,
+                                    replaceTo: directInputEnd
                                 )
+                                directInputEnd = directInputOrigin + (trimmed as NSString).length
                             }
                         }
 
@@ -1325,13 +1337,28 @@ struct HarkApp: App {
                 _ = appState.transition(to: .transcribing)
                 if self.canPasteIntoLockedTarget() {
                     _ = appState.transition(to: .pasting)
-                    do {
-                        traceEvent("over_paste_begin", ["text_len": String(result.text.count)])
-                        try await PasteController.paste(result.text, submit: true)
-                        traceEvent("over_paste_done", ["submit": "true"])
-                    } catch {
-                        traceEvent("over_paste_error", ["error": error.localizedDescription])
-                        print("[hark] paste error: \(error)")
+                    if let element = directInputElement {
+                        // Direct input: text is already in the field, just finalize + submit
+                        PasteController.setDirectText(result.text, on: element, replaceFrom: directInputOrigin, replaceTo: directInputEnd)
+                        let returnKeyCode: CGKeyCode = 36
+                        if let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: true),
+                           let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: false) {
+                            keyDown.flags = []
+                            keyDown.post(tap: .cghidEventTap)
+                            try? await Task.sleep(for: .milliseconds(10))
+                            keyUp.flags = []
+                            keyUp.post(tap: .cghidEventTap)
+                        }
+                        traceEvent("over_direct_input_done", ["text_len": String(result.text.count)])
+                    } else {
+                        do {
+                            traceEvent("over_paste_begin", ["text_len": String(result.text.count)])
+                            try await PasteController.paste(result.text, submit: true)
+                            traceEvent("over_paste_done", ["submit": "true"])
+                        } catch {
+                            traceEvent("over_paste_error", ["error": error.localizedDescription])
+                            print("[hark] paste error: \(error)")
+                        }
                     }
                     appState.addToHistory(result.text)
                 } else {
@@ -1464,7 +1491,10 @@ struct HarkApp: App {
 
         // In locked mode, this keyUp is the "stop and submit" action.
         if appState.isLockedMode {
-            await stopRecordingAndTranscribe()
+            let submit = shiftSubmitArmed
+            shiftSubmitArmed = false
+        appState.submitArmed = false
+            await stopRecordingAndTranscribe(forceSubmit: submit)
             return
         }
 
@@ -1482,7 +1512,11 @@ struct HarkApp: App {
             return
         }
 
-        await stopRecordingAndTranscribe()
+        // Push-to-talk release: submit if Shift was toggled during recording.
+        let submit = shiftSubmitArmed
+        shiftSubmitArmed = false
+        appState.submitArmed = false
+        await stopRecordingAndTranscribe(forceSubmit: submit)
     }
 
     @MainActor
@@ -1926,6 +1960,35 @@ struct HarkApp: App {
         }
 
         let shouldSubmit = forceSubmit || PasteController.isReturnKeyPressed() || appState.currentAutoSubmit
+
+        // Direct input mode: text is already in the field via AX — just do a
+        // final write with the completed text and skip the clipboard paste.
+        if let element = directInputElement {
+            traceEvent("direct_input_finalize", [
+                "text_len": String(text.count),
+                "submit": String(shouldSubmit),
+            ])
+            _ = appState.transition(to: .pasting)
+            PasteController.setDirectText(text, on: element, replaceFrom: directInputOrigin, replaceTo: directInputEnd)
+            if shouldSubmit {
+                try? await Task.sleep(for: .milliseconds(50))
+                // Simulate Enter after the direct write
+                let returnKeyCode: CGKeyCode = 36
+                if let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: true),
+                   let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: false) {
+                    keyDown.flags = []
+                    keyDown.post(tap: .cghidEventTap)
+                    try? await Task.sleep(for: .milliseconds(10))
+                    keyUp.flags = []
+                    keyUp.post(tap: .cghidEventTap)
+                }
+            }
+            overlayManager.hideWithResult(.success)
+            playPastedSound()
+            _ = appState.transition(to: .idle)
+            return
+        }
+
         traceEvent("paste_begin", [
             "submit": String(shouldSubmit),
             "text_len": String(text.count),
@@ -1991,6 +2054,20 @@ struct HarkApp: App {
         }
         recordingControlInterceptor.start()
 
+        // Monitor Shift key to toggle submit intent during recording.
+        shiftMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [self] event in
+            let keyCode = event.keyCode
+            guard keyCode == UInt16(kVK_Shift) || keyCode == UInt16(kVK_RightShift) else { return }
+            // Only toggle on key-down (shift pressed), not key-up (shift released)
+            let isShiftDown = event.modifierFlags.contains(.shift)
+            if isShiftDown {
+                Task { @MainActor in
+                    self.shiftSubmitArmed.toggle()
+                    self.appState.submitArmed = self.shiftSubmitArmed
+                }
+            }
+        }
+
         let cancelObserver = NotificationCenter.default.addObserver(
             forName: .cancelRecording,
             object: nil,
@@ -2024,6 +2101,11 @@ struct HarkApp: App {
             NotificationCenter.default.removeObserver(observer)
         }
         recordingControlObservers.removeAll()
+
+        if let monitor = shiftMonitor {
+            NSEvent.removeMonitor(monitor)
+            shiftMonitor = nil
+        }
     }
 
     // MARK: - Model Management

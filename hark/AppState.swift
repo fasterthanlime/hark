@@ -261,6 +261,9 @@ final class AppState {
     /// Whether recording is in toggle/locked mode (hands-free).
     var isLockedMode = false
 
+    /// Whether Shift was toggled during recording to arm submit-on-stop.
+    var submitArmed = false
+
     /// Whether final inference is running (spinner in overlay).
     var isFinishing = false
 

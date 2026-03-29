@@ -113,16 +113,18 @@ struct PasteController {
         return element
     }
 
-    /// Write text directly into an AX text element, replacing whatever is there
-    /// from position `replaceFrom` onward. Returns the UTF-16 length written
-    /// (for tracking on the next update), or nil on failure.
+    /// Write text directly into an AX text element, splicing dictated text
+    /// between `replaceFrom` and `replaceTo` (UTF-16 offsets). Text before
+    /// `replaceFrom` and after `replaceTo` is preserved. The cursor is placed
+    /// at the end of the inserted text.
     @discardableResult
     static func setDirectText(
         _ text: String,
         on element: AXUIElement,
-        replaceFrom: Int = 0
+        replaceFrom: Int,
+        replaceTo: Int
     ) -> Bool {
-        // Read current value to splice our text after replaceFrom
+        // Read current value to splice
         var valueRef: AnyObject?
         let currentText: String
         if AXUIElementCopyAttributeValue(
@@ -135,11 +137,12 @@ struct PasteController {
             currentText = ""
         }
 
-        // Build new value: preserve everything before replaceFrom, append new text
         let ns = currentText as NSString
         let clampedFrom = min(max(0, replaceFrom), ns.length)
+        let clampedTo = min(max(clampedFrom, replaceTo), ns.length)
         let prefix = ns.substring(to: clampedFrom)
-        let newValue = prefix + text
+        let suffix = ns.substring(from: clampedTo)
+        let newValue = prefix + text + suffix
 
         // Set the value
         let setResult = AXUIElementSetAttributeValue(
@@ -149,9 +152,9 @@ struct PasteController {
         )
         guard setResult == .success else { return false }
 
-        // Move cursor to end
-        let endPos = (newValue as NSString).length
-        var range = CFRange(location: endPos, length: 0)
+        // Place cursor right after the inserted text
+        let cursorPos = (prefix as NSString).length + (text as NSString).length
+        var range = CFRange(location: cursorPos, length: 0)
         if let rangeValue = AXValueCreate(.cfRange, &range) {
             AXUIElementSetAttributeValue(
                 element,
