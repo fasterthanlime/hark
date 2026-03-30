@@ -673,6 +673,7 @@ fn load_human_prototype_items(
                 return None;
             }
             Some(PrototypeBakeoffItem {
+                case_id: format!("hum-{}", rec.id),
                 term: rec.term,
                 qwen,
                 expected: rec.sentence,
@@ -687,6 +688,40 @@ fn load_human_prototype_items(
         .collect::<Vec<_>>();
     items.truncate(limit);
     Ok(items)
+}
+
+fn prototype_bakeoff_case_id(
+    source: &str,
+    recording_id: Option<i64>,
+    term: &str,
+    qwen: &str,
+    expected: &str,
+) -> String {
+    if source == "human" {
+        if let Some(id) = recording_id {
+            return format!("hum-{id}");
+        }
+    }
+    let prefix = match source {
+        "human" => "hum",
+        "applied" => "app",
+        "corpus" => "cor",
+        other => other,
+    };
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source.hash(&mut hasher);
+    term.hash(&mut hasher);
+    qwen.hash(&mut hasher);
+    expected.hash(&mut hasher);
+    format!("{prefix}-{:016x}", hasher.finish())
+}
+
+fn shuffle_human_bakeoff_items(items: &mut [PrototypeBakeoffItem], seed: u64) {
+    use rand::seq::SliceRandom;
+    use rand::SeedableRng;
+
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    items.shuffle(&mut rng);
 }
 
 fn latest_eval_failure_term_weights(state: &AppState) -> HashMap<String, usize> {
@@ -6739,6 +6774,8 @@ pub struct PrototypeCorrectionBody {
 pub struct PrototypeBakeoffBody {
     pub source: Option<String>,
     pub limit: Option<usize>,
+    pub randomize: Option<bool>,
+    pub sample_seed: Option<u64>,
     pub use_model_reranker: Option<bool>,
     pub use_current_adapters: Option<bool>,
     pub use_prototype_adapters: Option<bool>,
@@ -6762,6 +6799,7 @@ pub struct PrototypeBakeoffDetailBody {
 
 #[derive(Clone)]
 struct PrototypeBakeoffItem {
+    case_id: String,
     term: String,
     qwen: String,
     expected: String,
@@ -7515,6 +7553,8 @@ pub async fn api_correct_prototype_bakeoff(
         .unwrap_or("human")
         .trim()
         .to_ascii_lowercase();
+    let randomize = body.randomize.unwrap_or(source == "human");
+    let sample_seed = body.sample_seed.unwrap_or_else(rand::random::<u64>);
     let use_model_reranker = body.use_model_reranker.unwrap_or(true);
     let use_current_adapters = body.use_current_adapters.unwrap_or(true);
     let use_prototype_adapters = body.use_prototype_adapters.unwrap_or(false);
@@ -7535,6 +7575,8 @@ pub async fn api_correct_prototype_bakeoff(
                     &serde_json::json!({
                         "source": source,
                         "limit": limit,
+                        "randomize": randomize,
+                        "sample_seed": sample_seed,
                         "reranker_mode": body.reranker_mode,
                     })
                     .to_string(),
@@ -7560,6 +7602,13 @@ pub async fn api_correct_prototype_bakeoff(
                     let items = items
                         .into_iter()
                         .map(|item| PrototypeBakeoffItem {
+                            case_id: prototype_bakeoff_case_id(
+                                "applied",
+                                None,
+                                &item.term,
+                                &item.corrupted_sentence,
+                                &item.clean_sentence,
+                            ),
                             term: item.term.clone(),
                             qwen: item.corrupted_sentence,
                             expected: item.clean_sentence,
@@ -7654,6 +7703,7 @@ pub async fn api_correct_prototype_bakeoff(
                         .unwrap_or(("", None));
                     entries.push(serde_json::json!({
                         "term": item.term,
+                        "case_id": item.case_id,
                         "source": "applied",
                         "expected": item.expected,
                         "qwen": item.qwen,
@@ -7695,6 +7745,8 @@ pub async fn api_correct_prototype_bakeoff(
                     let snapshot = serde_json::json!({
                         "source": "applied",
                         "limit": limit,
+                        "randomize": false,
+                        "sample_seed": sample_seed,
                         "prototype_only_eval": true,
                         "processed": idx + 1,
                         "summary": {
@@ -7722,6 +7774,8 @@ pub async fn api_correct_prototype_bakeoff(
                 Ok(serde_json::json!({
                     "source": "applied",
                     "limit": limit,
+                    "randomize": false,
+                    "sample_seed": sample_seed,
                     "prototype_only_eval": true,
                     "processed": entries.len(),
                     "summary": {
@@ -7760,7 +7814,7 @@ pub async fn api_correct_prototype_bakeoff(
             let vocab = db.list_reviewed_vocab()?;
             let alt_spellings = db.get_all_alt_spellings()?;
             let confusion_forms = db.get_all_reviewed_confusion_surfaces()?;
-            let items = if source == "corpus" {
+            let mut items = if source == "corpus" {
                 let mut items = db.corpus_eval_set()?;
                 items.retain(|item| item.is_mistake);
                 items.sort_by(|a, b| {
@@ -7771,10 +7825,17 @@ pub async fn api_correct_prototype_bakeoff(
                 });
                 items
                     .into_iter()
-                    .map(|item| PrototypeBakeoffItem {
-                        term: item.term.clone(),
-                        qwen: splice_fragment(&item.sentence, &item.term, &item.qwen),
-                        expected: splice_fragment(&item.sentence, &item.term, &item.original),
+                        .map(|item| PrototypeBakeoffItem {
+                            case_id: prototype_bakeoff_case_id(
+                                "corpus",
+                                None,
+                                &item.term,
+                                &splice_fragment(&item.sentence, &item.term, &item.qwen),
+                                &splice_fragment(&item.sentence, &item.term, &item.original),
+                            ),
+                            term: item.term.clone(),
+                            qwen: splice_fragment(&item.sentence, &item.term, &item.qwen),
+                            expected: splice_fragment(&item.sentence, &item.term, &item.original),
                         hit_count: item.hit_count,
                         recording_id: None,
                         wav_path: None,
@@ -7792,10 +7853,17 @@ pub async fn api_correct_prototype_bakeoff(
                 });
                 items
                     .into_iter()
-                    .map(|item| PrototypeBakeoffItem {
-                        term: item.term.clone(),
-                        qwen: item.corrupted_sentence,
-                        expected: item.clean_sentence,
+                        .map(|item| PrototypeBakeoffItem {
+                            case_id: prototype_bakeoff_case_id(
+                                "applied",
+                                None,
+                                &item.term,
+                                &item.corrupted_sentence,
+                                &item.clean_sentence,
+                            ),
+                            term: item.term.clone(),
+                            qwen: item.corrupted_sentence,
+                            expected: item.clean_sentence,
                         hit_count: 1,
                         recording_id: None,
                         wav_path: None,
@@ -7827,6 +7895,13 @@ pub async fn api_correct_prototype_bakeoff(
                             return None;
                         }
                         Some(PrototypeBakeoffItem {
+                            case_id: prototype_bakeoff_case_id(
+                                "human",
+                                Some(rec.id),
+                                &rec.term,
+                                &qwen,
+                                &rec.sentence,
+                            ),
                             term: rec.term,
                             qwen,
                             expected: rec.sentence,
@@ -7840,6 +7915,9 @@ pub async fn api_correct_prototype_bakeoff(
                     })
                     .collect::<Vec<_>>()
             };
+            if source == "human" && randomize {
+                shuffle_human_bakeoff_items(&mut items, sample_seed);
+            }
             (items, vocab, alt_spellings, confusion_forms)
         };
         items.truncate(limit);
@@ -8037,6 +8115,7 @@ pub async fn api_correct_prototype_bakeoff(
                 .unwrap_or(("", None));
             entries.push(serde_json::json!({
                 "term": item.term,
+                "case_id": item.case_id,
                 "source": source,
                 "expected": item.expected,
                 "qwen": item.qwen,
@@ -8081,6 +8160,8 @@ pub async fn api_correct_prototype_bakeoff(
         Ok(serde_json::json!({
             "source": source,
             "limit": limit,
+            "randomize": source == "human" && randomize,
+            "sample_seed": sample_seed,
             "prototype_only_eval": prototype_only_eval,
             "summary": {
                 "n": entries.len(),
@@ -10043,6 +10124,21 @@ mod tests {
         }
     }
 
+    fn bakeoff_item(case_id: &str, term: &str) -> PrototypeBakeoffItem {
+        PrototypeBakeoffItem {
+            case_id: case_id.to_string(),
+            term: term.to_string(),
+            qwen: format!("{term} qwen"),
+            expected: format!("{term} expected"),
+            hit_count: 1,
+            recording_id: None,
+            wav_path: None,
+            template_sentence: None,
+            qwen_fragment: None,
+            expected_fragment: Some(term.to_string()),
+        }
+    }
+
     #[test]
     fn ownership_ranges_handle_zero_width_alignment_items() {
         let alignment = vec![
@@ -10367,6 +10463,49 @@ mod tests {
         assert!(analysis.target_accepted_edit);
         assert!(analysis.target_ok);
         assert!(!analysis.exact_ok);
+    }
+
+    #[test]
+    fn human_case_id_prefers_recording_id() {
+        let case_id = prototype_bakeoff_case_id("human", Some(42), "MIR", "mere", "show MIR");
+        assert_eq!(case_id, "hum-42");
+    }
+
+    #[test]
+    fn nonhuman_case_id_is_stable() {
+        let left = prototype_bakeoff_case_id("applied", None, "ripgrep", "rip grip", "ripgrep");
+        let right = prototype_bakeoff_case_id("applied", None, "ripgrep", "rip grip", "ripgrep");
+        assert_eq!(left, right);
+        assert!(left.starts_with("app-"));
+    }
+
+    #[test]
+    fn human_shuffle_is_seeded_and_repeatable() {
+        let original = vec![
+            bakeoff_item("a", "alpha"),
+            bakeoff_item("b", "beta"),
+            bakeoff_item("c", "gamma"),
+            bakeoff_item("d", "delta"),
+        ];
+
+        let mut left = original.clone();
+        let mut right = original.clone();
+        shuffle_human_bakeoff_items(&mut left, 7);
+        shuffle_human_bakeoff_items(&mut right, 7);
+
+        let left_ids = left.iter().map(|item| item.case_id.clone()).collect::<Vec<_>>();
+        let right_ids = right
+            .iter()
+            .map(|item| item.case_id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(left_ids, right_ids);
+        assert_ne!(
+            left_ids,
+            original
+                .iter()
+                .map(|item| item.case_id.clone())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
