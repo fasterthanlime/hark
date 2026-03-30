@@ -2,10 +2,6 @@ import Cocoa
 import InputMethodKit
 import Carbon.HIToolbox.Events
 
-// h[impl ime.marked-text]
-// h[impl ime.focus-loss-autocommit]
-// h[impl ime.prefix-dedup]
-// h[impl ime.key-intercept]
 @objc(BeeInputController)
 class BeeInputController: IMKInputController {
     private var currentMarkedText: String = ""
@@ -20,7 +16,6 @@ class BeeInputController: IMKInputController {
     override func deactivateServer(_ sender: Any!) {
         let hadMarkedText = !currentMarkedText.isEmpty
 
-        // h[impl ime.focus-loss-autocommit]
         if hadMarkedText && BeeXPCService.shared.isDictating {
             autoCommittedPrefix = currentMarkedText
         }
@@ -34,7 +29,6 @@ class BeeInputController: IMKInputController {
         super.deactivateServer(sender)
     }
 
-    // h[impl ime.key-intercept]
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         guard let event, event.type == .keyDown, BeeXPCService.shared.isDictating else {
             return false
@@ -65,7 +59,6 @@ class BeeInputController: IMKInputController {
     func handleSetMarkedText(_ text: String) {
         guard let client = self.client() else { return }
 
-        // h[impl ime.prefix-dedup]
         var displayText = text
         if !autoCommittedPrefix.isEmpty {
             if text.hasPrefix(autoCommittedPrefix) {

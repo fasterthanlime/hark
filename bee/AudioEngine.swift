@@ -3,9 +3,6 @@ import Foundation
 
 // MARK: - Audio Engine
 
-// h[impl audio.cold]
-// h[impl audio.warm]
-// h[impl audio.internal-format]
 /// Shared audio infrastructure. Runs continuously when warm, capturing audio
 /// into a circular pre-buffer that sessions tap into.
 ///
@@ -26,7 +23,6 @@ final class AudioEngine: @unchecked Sendable {
     private let targetSampleRate: Double = 16_000
     private let targetChannelCount: AVAudioChannelCount = 1
 
-    // h[impl audio.warm]
     // Circular pre-buffer (~200ms at 16kHz)
     private let preBufferCapacity = 3200 // 200ms * 16kHz
     private var preBuffer: [Float] = []
@@ -35,8 +31,6 @@ final class AudioEngine: @unchecked Sendable {
     // Per-session capture state
     private var activeCaptures: [UUID: CaptureState] = [:]
 
-    // h[impl audio.device.warm-policy]
-    // h[impl audio.device.active-selection]
     var selectedDeviceUID: String?
     var deviceWarmPolicy: [String: Bool] = [:] // UID → warm
 
@@ -54,7 +48,6 @@ final class AudioEngine: @unchecked Sendable {
         let inputNode = engine.inputNode
         let nativeFormat = inputNode.outputFormat(forBus: 0)
 
-        // h[impl audio.resample-on-device-change]
         let targetFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: targetSampleRate,
@@ -88,8 +81,6 @@ final class AudioEngine: @unchecked Sendable {
 
     // MARK: - Capture API (called by Session)
 
-    // h[impl audio.warm-to-recording]
-    // h[impl capture.start]
     func startCapture(for session: Session) {
         lock.lock()
         defer { lock.unlock() }
@@ -115,8 +106,6 @@ final class AudioEngine: @unchecked Sendable {
         return activeCaptures[session.id]?.samples ?? []
     }
 
-    // h[impl capture.drain]
-    // h[impl capture.drain-delivers]
     func stopCapture(for session: Session) -> [Float] {
         lock.lock()
         defer { lock.unlock() }
@@ -124,8 +113,6 @@ final class AudioEngine: @unchecked Sendable {
         return samples
     }
 
-    // h[impl capture.abort-discard]
-    // h[impl audio.cancel-no-drain]
     func cancelCapture(for session: Session) {
         lock.lock()
         defer { lock.unlock() }
@@ -134,7 +121,6 @@ final class AudioEngine: @unchecked Sendable {
 
     // MARK: - Audio Callback
 
-    // h[impl capture.buffering]
     private func handleAudioBuffer(_ buffer: AVAudioPCMBuffer, nativeFormat: AVAudioFormat) {
         // TODO: resample to 16kHz mono if needed
         guard let channelData = buffer.floatChannelData else { return }
@@ -181,14 +167,12 @@ extension AudioEngine {
         let isDefault: Bool
     }
 
-    // h[impl audio.device.hotplug]
     func setupDeviceMonitoring() {
         // TODO: install Core Audio property listeners for
         // kAudioHardwarePropertyDefaultInputDevice and
         // kAudioHardwarePropertyDevices
     }
 
-    // h[impl audio.device.active-selection]
     func selectDevice(uid: String) {
         selectedDeviceUID = uid
         // TODO: if warm, restart engine on new device

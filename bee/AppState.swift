@@ -3,7 +3,6 @@ import SwiftUI
 
 // MARK: - UI Layer State Machine
 
-// h[impl ui.swallow-policy]
 /// The UI layer handles keyboard events and manages the status indicator.
 /// It creates sessions and tells them how to end.
 ///
@@ -64,7 +63,6 @@ final class AppState {
 
     // MARK: - Event Handlers
 
-    // h[impl ui.idle-to-pending]
     func handleROptDown() -> Bool {
         switch uiState {
         case .idle:
@@ -74,7 +72,6 @@ final class AppState {
             Task { await session.start(language: detectLanguage()) }
             return false // not swallowed
 
-        // h[impl ui.locked-option-down]
         case .locked(let session):
             uiState = .lockedOptionHeld(session)
             return true // swallowed
@@ -91,21 +88,17 @@ final class AppState {
         }
 
         switch uiState {
-        // h[impl ui.pending-to-locked]
         case .pending(let session):
             pendingTimer?.cancel()
             uiState = .locked(session)
-            // h[impl sounds.recording-started]
             playRecordingStartedSound()
             return false
 
-        // h[impl ui.ptt-commit]
         case .pushToTalk(let session):
             uiState = .idle
             Task { await session.commit(submit: false) }
             return true // swallowed
 
-        // h[impl ui.locked-option-held-commit]
         case .lockedOptionHeld(let session):
             uiState = .idle
             Task { await session.commit(submit: false) }
@@ -116,7 +109,6 @@ final class AppState {
         }
     }
 
-    // h[impl ui.ptt-to-locked]
     func handleRCmdDown() -> Bool {
         switch uiState {
         case .pushToTalk(let session):
@@ -131,17 +123,14 @@ final class AppState {
 
     func handleEscape() -> Bool {
         switch uiState {
-        // h[impl ui.ptt-cancel]
         case .pushToTalk(let session):
             uiState = .idle
             Task { await session.cancel() }
             return true // swallowed
 
-        // h[impl ui.locked-esc-passthrough]
         case .locked:
             return false // passthrough
 
-        // h[impl ui.locked-option-held-cancel]
         case .lockedOptionHeld(let session):
             uiState = .idle
             Task { await session.cancel() }
@@ -152,7 +141,6 @@ final class AppState {
         }
     }
 
-    // h[impl ui.locked-enter]
     func handleEnter() -> Bool {
         switch uiState {
         case .locked(let session):
@@ -165,8 +153,6 @@ final class AppState {
         }
     }
 
-    // h[impl ui.pending-abort]
-    // h[impl history.paste-last]
     func handleOtherKey(keyCode: UInt16) -> Bool {
         switch uiState {
         case .pending(let session):
@@ -181,7 +167,6 @@ final class AppState {
             }
 
             // Spurious activation — abort silently, let the key through
-            // h[impl ui.spurious-passthrough]
             Task { await session.abort() }
             return false
 
@@ -192,14 +177,12 @@ final class AppState {
 
     // MARK: - Pending Timer
 
-    // h[impl ui.pending-to-ptt]
     private func startPendingTimer(session: Session) {
         pendingTimer = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
             if case .pending(let s) = uiState, s.id == session.id {
                 uiState = .pushToTalk(s)
-                // h[impl sounds.recording-started]
                 playRecordingStartedSound()
             }
         }
@@ -207,7 +190,6 @@ final class AppState {
 
     // MARK: - Max Duration
 
-    // h[impl ui.max-duration]
     private func startMaxDurationTimer(session: Session) {
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(300))
@@ -234,7 +216,6 @@ final class AppState {
     // MARK: - Stubs
 
     private func detectLanguage() -> String? {
-        // h[impl lang.detect-from-ax]
         // TODO: walk AX tree, run NLLanguageRecognizer
         nil
     }

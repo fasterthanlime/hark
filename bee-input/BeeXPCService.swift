@@ -1,6 +1,5 @@
 import Foundation
 
-// h[impl ime.parking]
 class BeeXPCService: NSObject {
     static let shared = BeeXPCService()
 

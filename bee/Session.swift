@@ -2,9 +2,6 @@ import Foundation
 
 // MARK: - Session
 
-// h[impl session.abort]
-// h[impl session.cancel]
-// h[impl session.commit]
 /// A Session is a self-contained unit of work for a single dictation attempt.
 /// It owns three layers — Capture, ASR, and IME — each with its own state.
 /// Multiple sessions can coexist (e.g., the previous one finalizing while a
@@ -52,8 +49,6 @@ actor Session {
 
     // MARK: - Starting
 
-    // h[impl capture.start]
-    // h[impl ime.activate]
     func start(language: String?) async {
         // Copy pre-buffer from audio engine and begin accumulating
         capture = .buffering
@@ -80,14 +75,12 @@ actor Session {
         guard !isTerminal else { return }
 
         // Discard audio — no drain
-        // h[impl capture.abort-discard]
         audioEngine.cancelCapture(for: self)
         capture = .discarded
 
         // Drop ASR session
         asr = .done
 
-        // h[impl ime.abort-teardown]
         inputClient.deactivate()
         ime = .tornDown
 
@@ -99,18 +92,15 @@ actor Session {
     func cancel() async {
         guard !isTerminal else { return }
 
-        // h[impl capture.drain]
         capture = .draining
         let samples = await drainAudio()
         capture = .delivered
 
-        // h[impl ime.clear-on-cancel]
         inputClient.clearMarkedText()
         inputClient.deactivate()
         ime = .cleared
 
         // Finalize ASR in background
-        // h[impl asr.finalize-background]
         Task.detached { [self] in
             await self.finalize(samples: samples, insert: false, submit: false)
         }
@@ -120,13 +110,11 @@ actor Session {
     func commit(submit: Bool) async {
         guard !isTerminal else { return }
 
-        // h[impl capture.drain]
         capture = .draining
         let samples = await drainAudio()
         capture = .delivered
 
         // Finalize ASR in background, then commit IME
-        // h[impl asr.finalize-background]
         Task.detached { [self] in
             await self.finalize(samples: samples, insert: true, submit: submit)
         }
@@ -144,7 +132,6 @@ actor Session {
         }
     }
 
-    // h[impl asr.streaming]
     private func streamingLoop() async {
         while !Task.isCancelled && capture == .buffering {
             let allSamples = audioEngine.peekCapture(for: self)
@@ -161,15 +148,12 @@ actor Session {
             // let update = transcriptionService.feed(session: asrSession, samples: chunk)
             // if let update {
             //     partialTranscript = update.text
-            //     // h[impl ime.marked-text]
             //     inputClient.setMarkedText(update.text)
             //     onStreamingUpdate?(StreamingUpdate(text: update.text, ...))
             // }
         }
     }
 
-    // h[impl capture.drain-delivers]
-    // h[impl asr.tail-audio]
     private func drainAudio() async -> [Float] {
         streamingTask?.cancel()
         await streamingTask?.value
@@ -177,8 +161,6 @@ actor Session {
         return samples
     }
 
-    // h[impl asr.finalize]
-    // h[impl coord.drain-before-finalize]
     private func finalize(samples: [Float], insert: Bool, submit: Bool) async {
         asr = .finalizing
 
@@ -194,14 +176,11 @@ actor Session {
         finalText = text
 
         if insert && !text.isEmpty {
-            // h[impl ime.commit]
             inputClient.commitText(text)
-            // h[impl ime.deactivate]
             inputClient.deactivate()
             ime = .committed
 
             if submit {
-                // h[impl ime.submit]
                 try? await Task.sleep(for: .milliseconds(50))
                 inputClient.simulateReturn()
             }

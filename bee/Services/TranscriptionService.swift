@@ -31,13 +31,11 @@ final class TranscriptionService: @unchecked Sendable {
         nil
     }
 
-    // h[impl asr.streaming]
     func feed(session: OpaquePointer, samples: [Float]) -> StreamingUpdate? {
         // TODO: asr_session_feed
         nil
     }
 
-    // h[impl asr.finalize]
     func feedFinalizing(session: OpaquePointer, samples: [Float]) -> StreamingUpdate? {
         // TODO: asr_session_feed_finalizing
         nil
@@ -48,7 +46,6 @@ final class TranscriptionService: @unchecked Sendable {
         nil
     }
 
-    // h[impl lang.lock-during-streaming]
     func setLanguage(session: OpaquePointer, language: String?) -> Bool {
         // TODO: asr_session_set_language
         false

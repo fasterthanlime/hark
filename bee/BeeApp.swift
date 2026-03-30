@@ -28,13 +28,11 @@ struct MenuBarView: View {
     let appState: AppState
 
     var body: some View {
-        // h[impl menubar.status]
         Text(statusText)
             .font(.headline)
 
         Divider()
 
-        // h[impl menubar.history]
         Section("Recent") {
             Text("No recent transcriptions")
                 .foregroundStyle(.secondary)
@@ -42,11 +40,6 @@ struct MenuBarView: View {
 
         Divider()
 
-        // h[impl menubar.model]
-        // h[impl menubar.input-device]
-        // h[impl menubar.warm-toggle]
-        // h[impl menubar.run-on-startup]
-        // h[impl menubar.pause-media]
         Section("Settings") {
             Text("TODO: model, device, toggles")
                 .foregroundStyle(.secondary)
@@ -54,8 +47,6 @@ struct MenuBarView: View {
 
         Divider()
 
-        // h[impl menubar.quit]
-        // h[impl ime.safety.restore-on-quit]
         Button("Quit Bee") {
             BeeInputClient.restoreInputSourceIfNeeded()
             NSApplication.shared.terminate(nil)
