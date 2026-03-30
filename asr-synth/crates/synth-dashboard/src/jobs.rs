@@ -6775,7 +6775,8 @@ pub struct CorrectionBody {
 
 #[derive(Deserialize)]
 pub struct PrototypeCorrectionBody {
-    pub qwen: String,
+    pub transcript: Option<String>,
+    pub qwen: Option<String>,
     pub audio_wav_base64: Option<String>,
     pub max_span_tokens: Option<usize>,
     pub max_span_proposals: Option<usize>,
@@ -6804,7 +6805,8 @@ pub struct PrototypeBakeoffBody {
 pub struct PrototypeBakeoffDetailBody {
     pub source: Option<String>,
     pub recording_id: Option<i64>,
-    pub qwen: String,
+    pub transcript: Option<String>,
+    pub qwen: Option<String>,
     pub expected: String,
     pub current: String,
     pub prototype: String,
@@ -7443,6 +7445,11 @@ pub async fn api_correct_prototype(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PrototypeCorrectionBody>,
 ) -> Result<Response, AppError> {
+    let transcript = body
+        .transcript
+        .clone()
+        .or(body.qwen.clone())
+        .unwrap_or_default();
     let (vocab, alt_spellings, confusion_forms) = {
         let db = state.db.lock().unwrap();
         (
@@ -7458,7 +7465,7 @@ pub async fn api_correct_prototype(
     };
     let acoustic_input = if let Some(audio_b64) = body.audio_wav_base64.clone() {
         let state2 = state.clone();
-        let qwen_text = body.qwen.clone();
+        let qwen_text = transcript.clone();
         tokio::task::spawn_blocking(move || -> Option<AcousticInput> {
             use base64::Engine as _;
             let wav = base64::engine::general_purpose::STANDARD
@@ -7480,7 +7487,7 @@ pub async fn api_correct_prototype(
         zipa_by_qwen: &input.zipa_by_qwen,
     });
     let mut result = crate::prototype::prototype_correct_with_acoustics(
-        &body.qwen,
+        &transcript,
         &vocab,
         &alt_spellings,
         &confusion_forms,
@@ -7513,14 +7520,14 @@ pub async fn api_correct_prototype(
                     PrototypeRerankerMode::Off => Ok(serde_json::json!(null)),
                     PrototypeRerankerMode::Trained => run_prototype_reranker(
                         state2.as_ref(),
-                        &body.qwen,
+                        &transcript,
                         &reranker_candidates,
                         true,
                         prototype_reranker_train_id,
                     ),
                     PrototypeRerankerMode::OfficialQwen3 => run_official_qwen3_reranker(
                         state2.as_ref(),
-                        &body.qwen,
+                        &transcript,
                         &reranker_candidates,
                     ),
                 }
@@ -7549,8 +7556,10 @@ pub async fn api_correct_prototype(
         "sentence_candidates": result.sentence_candidates,
         "alignments": acoustic_input.as_ref().map(|input| serde_json::json!({
             "timing_source": input.timing_source,
+            "espeak": fmt_alignment_json(&input.qwen_alignment),
             "qwen": fmt_alignment_json(&input.qwen_alignment),
             "zipa": phone_segments_to_alignment(&input.zipa_trace),
+            "zipa_espeak": crate::prototype::zipa_grouped_by_alignment_json(&input.qwen_alignment, &input.zipa_segments),
             "zipa_qwen": crate::prototype::zipa_grouped_by_alignment_json(&input.qwen_alignment, &input.zipa_segments),
         })),
         "zipa_trace": acoustic_input.as_ref().map(|input| input.zipa_trace.clone()),
@@ -7673,6 +7682,7 @@ pub async fn api_correct_prototype_bakeoff(
                 let mut entries = Vec::with_capacity(total);
 
                 for (idx, item) in items.iter().enumerate() {
+                    let row_started = std::time::Instant::now();
                     if state3.job_cancel.load(Ordering::Relaxed) {
                         let db = state3.db.lock().unwrap();
                         let _ = db.append_job_log(job_id, "Stopped by user.");
@@ -7769,10 +7779,14 @@ pub async fn api_correct_prototype_bakeoff(
                         .as_deref()
                         .map(|fragment| vocab_preview(&vocab, fragment))
                         .unwrap_or(("", None));
+                    let transcript_label = if source == "human" { "Parakeet" } else { "Input" };
                     entries.push(serde_json::json!({
                         "term": item.term,
                         "case_id": item.case_id,
                         "source": source,
+                        "transcript_label": transcript_label,
+                        "transcript": item.qwen,
+                        "transcript_error": serde_json::Value::Null,
                         "expected": item.expected,
                         "qwen": item.qwen,
                         "recording_id": item.recording_id,
@@ -7791,6 +7805,7 @@ pub async fn api_correct_prototype_bakeoff(
                         "prototype": prototype_text,
                         "prototype_ok": prototype_hit,
                         "prototype_target_ok": analysis.target_ok,
+                        "elapsed_ms": row_started.elapsed().as_millis() as u64,
                         "prototype_accepted": result.accepted.iter().map(|edit| serde_json::json!({
                             "from": edit.from,
                             "to": edit.to,
@@ -8270,7 +8285,7 @@ pub async fn api_correct_prototype_bakeoff_detail(
         .to_ascii_lowercase();
     let state2 = state.clone();
     let expected = body.expected;
-    let qwen = body.qwen;
+    let transcript = body.transcript.or(body.qwen).unwrap_or_default();
     let current = body.current;
     let prototype = body.prototype;
     let use_model_reranker = body.use_model_reranker.unwrap_or(true);
@@ -8292,7 +8307,7 @@ pub async fn api_correct_prototype_bakeoff_detail(
                 )
             };
             let mut prototype_result = crate::prototype::prototype_correct_with_acoustics(
-                &qwen,
+                &transcript,
                 &vocab,
                 &alt_spellings,
                 &confusion_forms,
@@ -8313,14 +8328,14 @@ pub async fn api_correct_prototype_bakeoff_detail(
                     PrototypeRerankerMode::Trained => {
                         run_prototype_reranker(
                             state.as_ref(),
-                            &qwen,
+                            &transcript,
                             &candidates,
                             true,
                             prototype_reranker_train_id,
                         )?
                     }
                     PrototypeRerankerMode::OfficialQwen3 => {
-                        run_official_qwen3_reranker(state.as_ref(), &qwen, &candidates)?
+                        run_official_qwen3_reranker(state.as_ref(), &transcript, &candidates)?
                     }
                 };
                 if let Some(idx) = rerank_value
@@ -8341,10 +8356,12 @@ pub async fn api_correct_prototype_bakeoff_detail(
                 "ok": true,
                 "alignments": {
                     "expected": [],
+                    "espeak": [],
                     "qwen": [],
                     "current": [],
                     "prototype": [],
                     "zipa": [],
+                    "zipa_espeak": [],
                     "zipa_qwen": [],
                 },
                 "prototype_trace": {
@@ -8371,6 +8388,7 @@ pub async fn api_correct_prototype_bakeoff_detail(
     };
 
     let value = tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
+        let detail_started = std::time::Instant::now();
         let (recording, vocab, alt_spellings, confusion_forms) = {
             let db = state2.db.lock().unwrap();
             let recording = db
@@ -8487,27 +8505,41 @@ pub async fn api_correct_prototype_bakeoff_detail(
             .as_ref()
             .map(phone_segments_to_alignment)
             .unwrap_or_else(|| serde_json::json!([]));
+        let parakeet_error = parakeet_result.as_ref().err().map(|e| e.to_string());
         Ok(serde_json::json!({
             "ok": true,
             "recording_id": recording_id,
+            "transcript_label": "Parakeet",
+            "transcript": parakeet,
+            "transcript_error": parakeet_error,
+            "current": parakeet,
             "qwen": parakeet,
             "parakeet": parakeet,
             "cohere": "",
             "parakeet_alignment": parakeet_alignment_words,
             "qwen_error": serde_json::Value::Null,
-            "parakeet_error": parakeet_result.err().map(|e| e.to_string()),
+            "parakeet_error": parakeet_error,
             "cohere_error": serde_json::Value::Null,
             "correction_input": "parakeet",
+            "elapsed_ms": detail_started.elapsed().as_millis() as u64,
             "alignments": {
                 "timing_source": acoustic_input
                     .as_ref()
                     .map(|input| input.timing_source.clone())
-                    .unwrap_or_else(|| "unknown".to_string()),
+                    .unwrap_or_else(|| {
+                        if !parakeet.trim().is_empty() {
+                            "no_acoustic_context".to_string()
+                        } else {
+                            "no_transcript".to_string()
+                        }
+                    }),
                 "expected": fmt_alignment_json(&expected_alignment),
+                "espeak": fmt_alignment_json(&qwen_alignment),
                 "qwen": fmt_alignment_json(&qwen_alignment),
                 "current": fmt_alignment_json(&current_alignment),
                 "prototype": fmt_alignment_json(&prototype_alignment),
                 "zipa": zipa_alignment,
+                "zipa_espeak": crate::prototype::zipa_grouped_by_alignment_json(&qwen_alignment, &zipa_segments),
                 "zipa_qwen": crate::prototype::zipa_grouped_by_alignment_json(&qwen_alignment, &zipa_segments),
             },
             "zipa_trace": zipa_trace,

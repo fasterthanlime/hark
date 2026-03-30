@@ -44,20 +44,20 @@
             --reranker: light-dark(#a371f7, #c297ff);
             --attention: light-dark(#b08800, #e3b341);
             --candidate: light-dark(#bf8700, #ffb86b);
-            --panel-subtle: light-dark(#fbfcfe, rgba(255, 255, 255, 0.03));
-            --panel-subtle-04: light-dark(#fafbfd, rgba(255, 255, 255, 0.04));
-            --panel-subtle-05: light-dark(#f8fafc, rgba(255, 255, 255, 0.05));
-            --panel-subtle-2: light-dark(#f5f8fb, rgba(255, 255, 255, 0.06));
-            --panel-subtle-3: light-dark(#f1f5f9, rgba(255, 255, 255, 0.08));
-            --panel-subtle-4: light-dark(#e8eef5, rgba(255, 255, 255, 0.12));
-            --panel-subtle-5: light-dark(#dde6ef, rgba(255, 255, 255, 0.15));
-            --panel-subtle-6: light-dark(#d3deea, rgba(255, 255, 255, 0.2));
-            --panel-subtle-7: light-dark(#c7d4e2, rgba(255, 255, 255, 0.25));
-            --panel-subtle-8: light-dark(#eef3f8, rgba(255, 255, 255, 0.3));
-            --panel-subtle-9: light-dark(#e2eaf3, rgba(255, 255, 255, 0.4));
-            --panel-subtle-12: light-dark(#e8eef5, rgba(255, 255, 255, 0.12));
-            --panel-subtle-22: light-dark(#cfd9e5, rgba(255, 255, 255, 0.22));
-            --panel-subtle-25: light-dark(#c7d4e2, rgba(255, 255, 255, 0.25));
+            --panel-subtle: light-dark(#f7f9fc, #1b2430);
+            --panel-subtle-04: light-dark(#f5f8fb, #1d2734);
+            --panel-subtle-05: light-dark(#f2f6fa, #1f2a38);
+            --panel-subtle-2: light-dark(#edf3f8, #222f3d);
+            --panel-subtle-3: light-dark(#e7eef5, #263544);
+            --panel-subtle-4: light-dark(#dde6ef, #2b3c4d);
+            --panel-subtle-5: light-dark(#d3ddea, #304356);
+            --panel-subtle-6: light-dark(#c7d3e1, #364b60);
+            --panel-subtle-7: light-dark(#bcc8d8, #3d546b);
+            --panel-subtle-8: light-dark(#e3ebf3, #435d77);
+            --panel-subtle-9: light-dark(#d8e2ed, #4b6784);
+            --panel-subtle-12: light-dark(#dde6ef, #2b3c4d);
+            --panel-subtle-22: light-dark(#c8d4e2, #394f66);
+            --panel-subtle-25: light-dark(#bcc8d8, #3d546b);
             --overlay: light-dark(rgba(31, 35, 40, 0.5), rgba(0, 0, 0, 0.5));
             --overlay-soft: light-dark(rgba(31, 35, 40, 0.2), rgba(0, 0, 0, 0.2));
             --overlay-strong: light-dark(rgba(31, 35, 40, 0.65), rgba(0, 0, 0, 0.65));
@@ -7465,9 +7465,9 @@
                     <h2>Evaluate</h2>
                     {error && <div className="pipeline-error" style={{marginBottom:12}}>{error}</div>}
                     <div style={{fontSize:12,color:'var(--text-muted)',maxWidth:760,lineHeight:1.5,marginBottom:16}}>
-                        This page evaluates the held-out applied task only:
-                        clean sentence, one known applied corruption, exact clean-sentence recovery.
-                        Current held-out size: <b>{status.applied_eval_count || 0}</b>.
+                        This page is for live correction inspection and human-audio batch eval.
+                        The batch run measures exact clean-sentence recovery on authored recordings.
+                        Current applied hold-out size: <b>{status.applied_eval_count || 0}</b>.
                     </div>
                     {!status.adapters_exist && <div style={{fontSize:12,color:'var(--text-muted)'}}>Train a reranker first.</div>}
                     {status.adapters_exist && !status.applied_eval_exists && <div style={{fontSize:12,color:'var(--text-muted)'}}>Run Prepare first.</div>}
@@ -7519,6 +7519,9 @@
             const [recording, setRecording] = useState(false);
             const [transcribing, setTranscribing] = useState(false);
             const [selectedTrainId, setSelectedTrainId] = useState(rerankerTrains[0]?.id ?? null);
+            const [viewportWidth, setViewportWidth] = useState(
+                typeof window !== 'undefined' ? window.innerWidth : 1280
+            );
             const mediaRef = useRef(null);
             const bakeoffAudioRef = useRef(null);
             const bakeoffAudioKeyRef = useRef(null);
@@ -7537,6 +7540,23 @@
                 ));
             }, [rerankerTrains]);
 
+            useEffect(() => {
+                const onResize = () => setViewportWidth(window.innerWidth);
+                window.addEventListener('resize', onResize);
+                return () => window.removeEventListener('resize', onResize);
+            }, []);
+
+            const isNarrow = viewportWidth < 980;
+            const isPhone = viewportWidth < 720;
+            const transcriptText = value => value?.transcript || value?.current || value?.parakeet || value?.qwen || '';
+            const transcriptLabel = value => value?.transcript_label || value?.transcriptLabel || 'Transcript';
+            const transcriptError = value =>
+                value?.transcript_error
+                || value?.transcriptError
+                || value?.asrErrors?.transcript
+                || value?.asrErrors?.parakeet
+                || null;
+
             const selectedTrain = rerankerTrains.find(train => train.id === selectedTrainId) || rerankerTrains[0] || null;
             const formatRerankerTrainOption = train => {
                 const parts = [];
@@ -7552,16 +7572,22 @@
                 letterSpacing: '0.5px',
                 textTransform: 'uppercase',
                 opacity: 0.7,
-                width: 132,
+                width: isPhone ? 'auto' : 132,
                 flexShrink: 0,
                 paddingTop: 2,
             };
 
-            const demoRowStyle = {
-                display: 'flex',
-                gap: 12,
-                alignItems: 'flex-start',
-            };
+            const demoRowStyle = isPhone
+                ? {
+                    display: 'grid',
+                    gap: 4,
+                    alignItems: 'flex-start',
+                }
+                : {
+                    display: 'flex',
+                    gap: 12,
+                    alignItems: 'flex-start',
+                };
 
             const bakeoffActionBtnStyle = {
                 padding:'2px 8px',
@@ -7569,6 +7595,31 @@
                 fontSize:11,
                 lineHeight:1.4,
             };
+
+            const summaryFieldLabelStyle = isPhone
+                ? {
+                    display:'block',
+                    marginBottom:4,
+                    color:'var(--text-muted)',
+                }
+                : {
+                    color:'var(--text-muted)',
+                    width:80,
+                    display:'inline-block',
+                };
+
+            const summaryFieldInsetStyle = isPhone
+                ? {
+                    fontSize:12,
+                    color:'var(--reranker)',
+                    marginTop:4,
+                }
+                : {
+                    fontSize:12,
+                    color:'var(--reranker)',
+                    marginTop:4,
+                    paddingLeft:80,
+                };
 
             const renderCorrectedDiff = (baseline, corrected) => {
                 const segments = diffSegments(corrected || '', baseline || '');
@@ -7725,8 +7776,10 @@
                 const prototype = result?.prototype;
                 const al = prototype?.alignments || {};
                 const parakeetItems = result?.parakeet_alignment || [];
+                const espeakItems = al.espeak || ((al.timing_source === 'espeak_zipa_dp') ? (al.qwen || []) : []);
                 const rawZipaItems = al.zipa || [];
                 const firstParakeetStart = firstMeaningfulSegmentStart(parakeetItems);
+                const firstEspeakStart = firstMeaningfulSegmentStart(espeakItems);
                 const firstZipaStart = firstMeaningfulSegmentStart(rawZipaItems);
                 const autoOffsetSec =
                     alignFirstVoiced && firstParakeetStart != null && firstZipaStart != null
@@ -7738,11 +7791,13 @@
                     s: Number(item.s || 0) + effectiveOffsetSec,
                     e: Number(item.e || 0) + effectiveOffsetSec,
                 }));
-                const zipaParakeetItems = parakeetItems.length
-                    ? buildGroupedPhoneLane(zipaItems, parakeetItems, 'Parakeet')
-                    : [];
+                const zipaEspeakItems = (al.zipa_espeak || ((al.timing_source === 'espeak_zipa_dp') ? (al.zipa_qwen || []) : [])).map(item => ({
+                    ...item,
+                    s: Number(item.s || 0) + effectiveOffsetSec,
+                    e: Number(item.e || 0) + effectiveOffsetSec,
+                }));
                 const timingSource = al.timing_source || 'unknown';
-                if (!parakeetItems.length && !zipaParakeetItems.length && !zipaItems.length) return null;
+                if (!parakeetItems.length && !espeakItems.length && !zipaEspeakItems.length && !zipaItems.length) return null;
                 const highlightedRange =
                     proposal?.acoustic_window_start_sec != null && proposal?.acoustic_window_end_sec != null
                         ? [Number(proposal.acoustic_window_start_sec), Number(proposal.acoustic_window_end_sec)]
@@ -7750,14 +7805,16 @@
                 const zoomKey = `${proposal?.raw_text || 'proposal'}:${proposal?.token_start || 0}:${proposal?.token_end || 0}`;
                 const pxPerSec = liveTimelineZoom[zoomKey] || 260;
                 const parakeetLane = parakeetItems;
-                const zipaParakeetLane = zipaParakeetItems;
+                const espeakLane = espeakItems;
+                const zipaEspeakLane = zipaEspeakItems;
                 const zipaLane = zipaItems;
                 const zoomLevels = [160, 260, 380, 540];
                 const rateLevels = [1, 0.5, 0.25];
                 const maxEnd = Math.max(
                     0,
                     ...parakeetLane.map(a => Number(a.e || 0)),
-                    ...zipaParakeetLane.map(a => Number(a.e || 0)),
+                    ...espeakLane.map(a => Number(a.e || 0)),
+                    ...zipaEspeakLane.map(a => Number(a.e || 0)),
                     ...zipaLane.map(a => Number(a.e || 0)),
                 );
                 const timelineWidth = Math.max(720, Math.ceil(Math.max(maxEnd, 0.2) * pxPerSec));
@@ -7769,7 +7826,7 @@
                                 timing source: <span style={{color:'var(--accent)'}}>{timingSource}</span>
                                 </div>
                                 <div style={{fontSize:10, color:'var(--text-muted)'}}>
-                                    parakeet start {firstParakeetStart != null ? `${firstParakeetStart.toFixed(3)}s` : '—'} · raw ZIPA start {firstZipaStart != null ? `${firstZipaStart.toFixed(3)}s` : '—'} · auto {Math.round(autoOffsetSec * 1000)}ms · manual {Math.round(Number(zipaOffsetMs || 0))}ms · effective {Math.round(effectiveOffsetSec * 1000)}ms
+                                    parakeet start {firstParakeetStart != null ? `${firstParakeetStart.toFixed(3)}s` : '—'} · eSpeak start {firstEspeakStart != null ? `${firstEspeakStart.toFixed(3)}s` : '—'} · raw ZIPA start {firstZipaStart != null ? `${firstZipaStart.toFixed(3)}s` : '—'} · auto {Math.round(autoOffsetSec * 1000)}ms · manual {Math.round(Number(zipaOffsetMs || 0))}ms · effective {Math.round(effectiveOffsetSec * 1000)}ms
                                 </div>
                             </div>
                             <div style={{display:'flex', alignItems:'center', gap:6, flexWrap:'wrap', justifyContent:'flex-end'}}>
@@ -7868,7 +7925,8 @@
                                 onSegmentPlay: (item) => playBakeoffSegment(lanePlayback.entryKey, lanePlayback.entry, Number(item.s || 0), Number(item.e || 0)),
                                 clickable: true,
                             } : null)}
-                            {renderBakeoffTL('ZIPA@Par', zipaParakeetLane, rgbaFromVar('--reranker', 0.72), Math.max(maxEnd, 0.2), pxPerSec, activeTime, highlightedRange)}
+                            {renderBakeoffTL('eSpeak', espeakLane, rgbaFromVar('--attention', 0.72), Math.max(maxEnd, 0.2), pxPerSec, activeTime, highlightedRange)}
+                            {renderBakeoffTL('ZIPA@eSpeak', zipaEspeakLane, rgbaFromVar('--reranker', 0.72), Math.max(maxEnd, 0.2), pxPerSec, activeTime, highlightedRange)}
                             {renderBakeoffTL('ZIPA', zipaLane, rgbaFromVar('--accent', 0.60), Math.max(maxEnd, 0.2), pxPerSec, activeTime, highlightedRange)}
                             <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'var(--text-muted)',marginTop:3,paddingLeft:71,width:timelineWidth}}>
                                 <span>0.00s</span><span>{maxEnd.toFixed(2)}s</span>
@@ -7884,10 +7942,7 @@
                     return <span style={{color:'var(--text-muted)'}}>No prototype result.</span>;
                 }
                 const corrected = prototype.corrected || '';
-                const baseline =
-                    result?.correctionInput === 'cohere' ? (result?.cohere || '') :
-                    result?.correctionInput === 'parakeet' ? (result?.parakeet || '') :
-                    (result?.qwen || '');
+                const baseline = transcriptText(result);
                 const reranker = prototype.reranker || null;
                 const chosenText = reranker?.chosen_text || corrected || '';
                 const chosenLabel = reranker?.chosen_label || null;
@@ -7938,6 +7993,11 @@
                                         {result.asrErrors[row.key]}
                                     </div>
                                 )}
+                                {row.key === 'parakeet' && transcriptError(result) && transcriptError(result) !== result?.asrErrors?.[row.key] && (
+                                    <div style={{marginTop:4, fontSize:11, color:'var(--danger)'}}>
+                                        {transcriptError(result)}
+                                    </div>
+                                )}
                             </div>
                         </div>
                     ))}
@@ -7984,7 +8044,11 @@
                                 <select
                                     value={proposalChoiceKey(selectedProposal, selectedIndex)}
                                     onChange={e => setSelectedProposalKeys(prev => ({...prev, [inspectorKey]: e.target.value}))}
-                                    style={{minWidth:360, maxWidth:'100%'}}
+                                    style={{
+                                        width: isPhone ? '100%' : 'min(100%, 720px)',
+                                        minWidth: isPhone ? 0 : 280,
+                                        maxWidth:'100%',
+                                    }}
                                 >
                                     {proposals.map((proposal, idx) => {
                                         const primary = proposal.candidates?.[0];
@@ -8453,14 +8517,16 @@
                 if (bakeoffDetails[entryKey] || loadingBakeoffDetails[entryKey]) return;
                 setLoadingBakeoffDetails(prev => ({...prev, [entryKey]: true}));
                 try {
+                    const entryTranscript = transcriptText(entry);
                     const detail = await api('/api/correct-prototype/bakeoff/detail', {
                         method: 'POST',
                         body: JSON.stringify({
                             source: bakeoff?.source || bakeoffSource,
                             recording_id: entry.recording_id,
-                            qwen: entry.qwen,
+                            transcript: entryTranscript,
+                            qwen: entryTranscript,
                             expected: entry.expected,
-                            current: entry.current || entry.qwen,
+                            current: entryTranscript,
                             prototype: entry.prototype,
                             use_model_reranker: rerankerMode !== 'off',
                             use_prototype_adapters: rerankerMode === 'trained',
@@ -8481,11 +8547,16 @@
                     correctionInput === 'cohere' ? (cohere || qwen || parakeet || '') :
                     correctionInput === 'parakeet' ? (parakeet || qwen || cohere || '') :
                     (qwen || cohere || parakeet || '');
+                const transcriptLabelForInput =
+                    correctionInput === 'parakeet' ? 'Parakeet'
+                    : correctionInput === 'cohere' ? 'Cohere'
+                    : 'Transcript';
                 setCorrecting(true);
                 try {
                     const prototype = await api('/api/correct-prototype', {
                         method: 'POST',
                         body: JSON.stringify({
+                            transcript: chosenInput,
                             qwen: chosenInput,
                             audio_wav_base64: audioWavBase64,
                             use_model_reranker: rerankerMode !== 'off',
@@ -8496,6 +8567,9 @@
                         }),
                     });
                     setResult({
+                        transcript: chosenInput,
+                        transcript_label: transcriptLabelForInput,
+                        transcript_error: correctionInput === 'parakeet' ? (asrErrors?.parakeet || null) : null,
                         parakeet,
                         qwen,
                         cohere,
@@ -8505,7 +8579,18 @@
                         prototype,
                     });
                 } catch (e) {
-                    setResult({parakeet, qwen, cohere, parakeet_alignment: parakeetAlignment || [], correctionInput, asrErrors, error: `(error: ${e.message})`});
+                    setResult({
+                        transcript: chosenInput,
+                        transcript_label: transcriptLabelForInput,
+                        transcript_error: correctionInput === 'parakeet' ? (asrErrors?.parakeet || null) : null,
+                        parakeet,
+                        qwen,
+                        cohere,
+                        parakeet_alignment: parakeetAlignment || [],
+                        correctionInput,
+                        asrErrors,
+                        error: `(error: ${e.message})`,
+                    });
                 }
                 setCorrecting(false);
             };
@@ -8610,23 +8695,30 @@
                         </div>
                     </div>
                     <div className="stage-desc">
-                        Speak or type text to inspect the selected trained reranker path directly. Records your voice, runs ASR, then applies the reranker-backed correction path to the Qwen transcript.
+                        Speak or type text to inspect the selected trained reranker path directly. Records your voice, runs Parakeet, then applies the reranker-backed correction path to the Parakeet transcript.
                     </div>
                     <div className="stage-controls" style={{flexDirection: 'column', alignItems: 'stretch', gap: 12}}>
-                        <div style={{display: 'flex', gap: 8, alignItems: 'center'}}>
+                        <div style={{display:'grid', gap:8}}>
+                            <div style={{display:'flex', gap:8, alignItems:'center', flexWrap:'wrap'}}>
                             <button className="stage-launch-btn" onClick={recording ? stopRec : startRec}
                                 style={recording ? {borderColor: 'var(--danger)', color: 'var(--text-on-dark)', background: 'var(--danger)'} : {}}>
                                 {recording ? 'Stop' : transcribing ? 'Transcribing\u2026' : correcting ? 'Correcting\u2026' : 'Record'}
                             </button>
                                 <span style={{color: 'var(--text-muted)', fontSize: 11}}>or</span>
                             <input value={input} onChange={e => setInput(e.target.value)} placeholder="Type ASR text to correct..."
-                                style={{flex: 1}} onKeyDown={e => { if (e.key === 'Enter') manualCorrect(); }} />
+                                style={{flex: '1 1 280px', minWidth: isPhone ? '100%' : 240}} onKeyDown={e => { if (e.key === 'Enter') manualCorrect(); }} />
                             <button className="stage-launch-btn" onClick={manualCorrect} disabled={!input.trim() || correcting}>
                                 Correct
                             </button>
+                            </div>
+                            <div style={{display:'flex', gap:8, alignItems:'center', flexWrap:'wrap'}}>
                             <div style={{display:'flex', alignItems:'center', gap:6, fontSize:12, color:'var(--text-muted)'}}>
                                 <span>train</span>
-                                <select value={selectedTrainId ?? ''} onChange={e => setSelectedTrainId(Number(e.target.value) || null)} style={{minWidth:320}}>
+                                <select
+                                    value={selectedTrainId ?? ''}
+                                    onChange={e => setSelectedTrainId(Number(e.target.value) || null)}
+                                    style={{width: isPhone ? '100%' : 'min(100%, 520px)', minWidth: isPhone ? 0 : 320}}
+                                >
                                     {rerankerTrains.map(train => (
                                         <option key={train.id} value={train.id}>{formatRerankerTrainOption(train)}</option>
                                     ))}
@@ -8647,6 +8739,7 @@
                             <button className="stage-launch-btn" onClick={runBakeoff} disabled={!selectedTrainId || runningBakeoff || correcting || transcribing}>
                                 {runningBakeoff ? 'Evaluating…' : 'Evaluate'}
                             </button>
+                            </div>
                         </div>
                         {selectedTrain && (
                             <div style={{fontSize:12,color:'var(--text-muted)'}}>
@@ -8678,7 +8771,7 @@
                                         </div>
                                         <div style={{fontSize:13, color:'var(--text-muted)'}}>
                                             {(bakeoff?.source === 'human' || (!bakeoff?.source && bakeoffSource === 'human'))
-                                                ? 'Authored recordings: Qwen transcript in, exact clean sentence out.'
+                                                ? 'Authored recordings: Parakeet transcript in, exact clean sentence out.'
                                                 : 'Held-out applied rows: corrupted sentence in, exact clean sentence out.'}
                                         </div>
                                     </div>
@@ -8692,7 +8785,7 @@
                                     <div style={{color:'var(--danger)'}}>{bakeoff.error}</div>
                                 ) : (
                                     <>
-                                        <div style={{display:'grid', gridTemplateColumns:'repeat(3, minmax(0, 1fr))', gap:10, marginBottom:14}}>
+                                        <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(160px, 1fr))', gap:10, marginBottom:14}}>
                                             {[
                                                 ['Total', bakeoff.summary?.n, 'var(--text-muted)'],
                                                 ['Correct', bakeoff.summary?.prototype, 'var(--attention)'],
@@ -8708,12 +8801,18 @@
                                             {bakeoff.entries?.map((entry, idx) => {
                                                 const entryKey = `${bakeoff.source || bakeoffSource}:${entry.recording_id || `${entry.term}:${idx}`}`;
                                                 const detail = bakeoffDetails[entryKey];
+                                                const resolvedTranscriptLabel = transcriptLabel(detail || entry);
+                                                const entryTranscript = transcriptText(entry);
+                                                const detailTranscript = transcriptText(detail) || entryTranscript;
                                                 const detailInspectorResult = detail ? {
-                                                    qwen: detail.qwen || entry.qwen || '',
-                                                    parakeet: detail.parakeet || '',
+                                                    transcript: detailTranscript,
+                                                    transcript_label: resolvedTranscriptLabel,
+                                                    transcript_error: detail.transcript_error || null,
+                                                    qwen: detailTranscript,
+                                                    parakeet: detail.parakeet || detailTranscript,
                                                     cohere: detail.cohere || '',
                                                     parakeet_alignment: detail.parakeet_alignment || [],
-                                                    correctionInput: detail.correction_input || 'qwen',
+                                                    correctionInput: detail.correction_input || 'parakeet',
                                                     asrErrors: {
                                                         qwen: detail.qwen_error || null,
                                                         parakeet: detail.parakeet_error || null,
@@ -8736,9 +8835,14 @@
                                                     : 'Play';
                                                 return (
                                                     <div key={idx} style={{padding:'10px 12px', borderRadius:8, background:'var(--panel-subtle)', border:'1px solid var(--panel-subtle-2)', width:'100%', maxWidth:'100%', minWidth:0, overflowX:'hidden', boxSizing:'border-box'}}>
-                                                        <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, marginBottom:6}}>
+                                                        <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, marginBottom:6, flexWrap:'wrap'}}>
                                                             <div style={{display:'flex', alignItems:'center', gap:10, flexWrap:'wrap'}}>
                                                                 <div style={{fontWeight:700}}>{entry.term} <span style={{fontWeight:400, color:'var(--text-muted)'}}>({entry.hit_count} hits)</span></div>
+                                                                {entry.case_id && (
+                                                                    <span style={{fontSize:11, color:'var(--text-muted)', padding:'2px 8px', borderRadius:999, background:'var(--panel-subtle-2)', border:'1px solid var(--panel-subtle-5)'}}>
+                                                                        {entry.case_id}
+                                                                    </span>
+                                                                )}
                                                                 {entry.recording_id && !detail && (
                                                                     <button
                                                                         className="btn"
@@ -8760,14 +8864,14 @@
                                                             <span style={{padding:'2px 8px', borderRadius:999, border:`1px solid ${sentenceVerdict.color}55`, color:sentenceVerdict.color, background:`${sentenceVerdict.color}12`, fontSize:12}}>{sentenceVerdict.label}</span>
                                                         </div>
                                                         <div style={{display:'grid', gap:8, fontSize:13, width:'100%', minWidth:0}}>
-                                                            {entry.template_sentence && (
-                                                                <div><span style={{color:'var(--text-muted)', width:80, display:'inline-block'}}>Template</span>{entry.template_sentence}</div>
+                                                            {detail && entry.template_sentence && (
+                                                                <div><span style={summaryFieldLabelStyle}>Template</span>{entry.template_sentence}</div>
                                                             )}
-                                                            {entry.qwen_fragment && (
+                                                            {detail && entry.qwen_fragment && (
                                                                 <div style={{padding:'8px 10px', borderRadius:6, background:'var(--panel-subtle-2)', border:'1px solid var(--panel-subtle-5)'}}>
-                                                                    <div><span style={{color:'var(--text-muted)', width:80, display:'inline-block'}}>Fragment</span>{entry.qwen_fragment} → {entry.expected_fragment}</div>
+                                                                    <div><span style={summaryFieldLabelStyle}>Target fragment</span>{entry.qwen_fragment} → {entry.expected_fragment}</div>
                                                                     {(entry.qwen_fragment_phonemes || entry.expected_fragment_phonemes) && (
-                                                                        <div style={{fontSize:12, color:'var(--reranker)', marginTop:4, paddingLeft:80}}>
+                                                                        <div style={summaryFieldInsetStyle}>
                                                                             {entry.qwen_fragment_phonemes && <div>{entry.qwen_fragment} / {entry.qwen_fragment_phonemes} /</div>}
                                                                             {entry.expected_fragment_phonemes && (
                                                                                 <div>
@@ -8785,19 +8889,20 @@
                                                             {!detail && (
                                                                 <>
                                                                     <div>
-                                                                        <div style={{color:'var(--text-muted)', marginBottom:2}}>Qwen</div>
-                                                                        <div>{entry.qwen}</div>
+                                                                        <div style={{color:'var(--text-muted)', marginBottom:2}}>{resolvedTranscriptLabel}</div>
+                                                                        <div>{entryTranscript}</div>
                                                                     </div>
                                                                     <div>
                                                                         <div style={{color:'var(--text-muted)', marginBottom:2}}>Expected</div>
-                                                                        <div>{renderCorrectedDiff(entry.qwen, entry.expected)}</div>
+                                                                        <div>{renderCorrectedDiff(entryTranscript, entry.expected)}</div>
                                                                     </div>
                                                                     <div>
                                                                         <div style={{color:'var(--attention)', marginBottom:2}}>Reranker</div>
-                                                                        <div>{renderCorrectedDiff(entry.qwen, entry.prototype)}</div>
+                                                                        <div>{renderCorrectedDiff(entryTranscript, entry.prototype)}</div>
                                                                     </div>
                                                                     {entry.prototype_trace_excerpt && (
                                                                         <div style={{display:'flex', gap:12, flexWrap:'wrap', fontSize:12, color:'var(--text-muted)'}}>
+                                                                            {entry.elapsed_ms != null && <span>{(Number(entry.elapsed_ms) / 1000).toFixed(2)}s total</span>}
                                                                             <span>{entry.prototype_trace_excerpt.proposal_count || 0} span proposals</span>
                                                                             <span>{entry.prototype_trace_excerpt.sentence_candidate_count || 0} sentence candidates</span>
                                                                             <span>{entry.prototype_trace_excerpt.accepted_count || 0} accepted edits</span>
@@ -8817,7 +8922,7 @@
                                                                                         key:'expected',
                                                                                         label:'Expected',
                                                                                         color:'var(--text-muted)',
-                                                                                        render: () => renderCorrectedDiff(detailInspectorResult.qwen || '', entry.expected || ''),
+                                                                                        render: () => renderCorrectedDiff(detailTranscript, entry.expected || ''),
                                                                                     }], bakeoffPlayback?.entryKey === entryKey ? bakeoffPlayback.time : null, (
                                                                                         <>
                                                                                             {entry.recording_id && (
@@ -8841,7 +8946,12 @@
                                                                                             )}
                                                                                             {detail.zipa_trace?.timing_ms && (
                                                                                                 <span style={{fontSize:11, color:'var(--text-muted)', alignSelf:'center'}}>
-                                                                                                    ZIPA total {formatMs(detail.zipa_trace.timing_ms.total)} · build {formatMs(detail.zipa_trace.timing_ms.build_session)} · feats {formatMs(detail.zipa_trace.timing_ms.feature_extract)} · infer {formatMs(detail.zipa_trace.timing_ms.infer)}
+                                                                                                    total {formatMs(detail.elapsed_ms)} · ZIPA {formatMs(detail.zipa_trace.timing_ms.total)} · build {formatMs(detail.zipa_trace.timing_ms.build_session)} · feats {formatMs(detail.zipa_trace.timing_ms.feature_extract)} · infer {formatMs(detail.zipa_trace.timing_ms.infer)}
+                                                                                                </span>
+                                                                                            )}
+                                                                                            {!detail.zipa_trace?.timing_ms && detail.elapsed_ms != null && (
+                                                                                                <span style={{fontSize:11, color:'var(--text-muted)', alignSelf:'center'}}>
+                                                                                                    total {formatMs(detail.elapsed_ms)}
                                                                                                 </span>
                                                                                             )}
                                                                                         </>

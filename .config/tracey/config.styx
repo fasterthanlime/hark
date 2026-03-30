@@ -1,0 +1,15 @@
+specs (
+    {
+        name hark
+        include (spec/**/*.md)
+        impls (
+            {
+                name swift
+                include (
+                    hark/**/*.swift
+                    HarkInput/**/*.swift
+                )
+            }
+        )
+    }
+)
