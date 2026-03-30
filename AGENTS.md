@@ -109,6 +109,9 @@ cd ~/bearcove/hark
 # Using the sync script (excludes target, .git, corpus.db)
 echo "y" | bash sync-to-souffle.sh
 
+# Frontend-only deploy for synth-dashboard UI changes
+bash deploy-frontend-to-souffle.sh
+
 # Manual rsync (ALWAYS exclude corpus.db to avoid overwriting souffle's DB)
 rsync -av --exclude target --exclude .git --exclude 'corpus.db*' \
   ~/bearcove/hark/ souffle:~/bearcove/hark/
