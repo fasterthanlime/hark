@@ -71,6 +71,10 @@ actor Session {
         capture = .buffering
         audioEngine.startCapture(for: self.id)
 
+        // Activate IME (TIS calls need main thread)
+        await MainActor.run { inputClient.activate() }
+        ime = .active
+
         // Create ASR session
         asrSession = transcriptionService.createSession(language: language)
         if asrSession != nil {
@@ -99,6 +103,9 @@ actor Session {
         capture = .discarded
         asrSession = nil
         asr = .done
+
+        // Deactivate IME — session was never visible
+        await MainActor.run { inputClient.deactivate() }
         ime = .tornDown
 
         onComplete?(.aborted(id: id))
@@ -115,6 +122,9 @@ actor Session {
         let samples = audioEngine.stopCapture(for: self.id)
         capture = .delivered
 
+        // Clear marked text and deactivate IME
+        inputClient.clearMarkedText()
+        await MainActor.run { inputClient.deactivate() }
         ime = .cleared
 
         Task.detached { [self] in
@@ -171,6 +181,7 @@ actor Session {
 
             if let update = transcriptionService.feed(session: session, samples: chunk) {
                 partialTranscript = update.text
+                inputClient.setMarkedText(update.text)
                 onStreamingUpdate?(update.text)
             }
         }
@@ -182,7 +193,7 @@ actor Session {
         guard let session = asrSession else {
             asr = .done
             finalText = partialTranscript
-            completeSession(insert: insert, submit: submit)
+            await completeSession(insert: insert, submit: submit)
             return
         }
 
@@ -218,13 +229,30 @@ actor Session {
         asrSession = nil
 
         logger.info("[\(self.id)] Finalized: \"\(self.finalText.prefix(80))\"")
-        completeSession(insert: insert, submit: submit)
+        await completeSession(insert: insert, submit: submit)
     }
 
-    private func completeSession(insert: Bool, submit: Bool) {
-        if insert {
+    private func completeSession(insert: Bool, submit: Bool) async {
+        if insert && !finalText.isEmpty {
+            // Commit text via IME
+            inputClient.commitText(finalText)
+            try? await Task.sleep(for: .milliseconds(50))
+            await MainActor.run { inputClient.deactivate() }
+            ime = .committed
+
+            if submit {
+                try? await Task.sleep(for: .milliseconds(50))
+                inputClient.simulateReturn()
+            }
+
             onComplete?(.committed(id: id, text: finalText, submitted: submit))
+        } else if insert {
+            // Empty result — just deactivate
+            await MainActor.run { inputClient.deactivate() }
+            ime = .committed
+            onComplete?(.committed(id: id, text: finalText, submitted: false))
         } else {
+            // Cancel path — IME already cleared
             onComplete?(.cancelled(id: id, text: finalText))
         }
     }

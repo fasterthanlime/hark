@@ -63,7 +63,13 @@ final class BeeInputClient: Sendable {
     }
 
     func simulateReturn() {
-        // TODO: create CGEvent for Return keyDown + keyUp, post to HID
+        let src = CGEventSource(stateID: .hidSystemState)
+        if let down = CGEvent(keyboardEventSource: src, virtualKey: 0x24, keyDown: true),
+           let up = CGEvent(keyboardEventSource: src, virtualKey: 0x24, keyDown: false) {
+            down.post(tap: .cghidEventTap)
+            usleep(10_000) // 10ms
+            up.post(tap: .cghidEventTap)
+        }
     }
 
     // MARK: - IME Registration
