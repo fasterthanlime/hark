@@ -20,7 +20,7 @@ actor Session {
     private let transcriptionService: TranscriptionService
     private let inputClient: BeeInputClient
 
-    private var processedSampleCount: Int = 0
+    private var processedNativeCount: Int = 0
     private var asrSession: StreamingSession?
     private var streamingTask: Task<Void, Never>?
     private var finalText: String = ""
@@ -165,21 +165,25 @@ actor Session {
 
     private func streamingLoop() async {
         guard let session = asrSession else { return }
+        let nativeRate = audioEngine.nativeSampleRate
+        // Min chunk in native samples (~50ms)
+        let minNativeChunk = Int(nativeRate * 0.05)
 
         while !Task.isCancelled && capture == .buffering {
-            let allSamples = audioEngine.peekCapture(for: self.id)
-            let newCount = allSamples.count
+            let allNative = audioEngine.peekCapture(for: self.id)
+            let newNativeCount = allNative.count
 
-            // Need at least 800 new samples (~50ms at 16kHz) before feeding
-            guard newCount > processedSampleCount + 800 else {
+            guard newNativeCount > processedNativeCount + minNativeChunk else {
                 try? await Task.sleep(for: .milliseconds(30))
                 continue
             }
 
-            let chunk = Array(allSamples[processedSampleCount...])
-            processedSampleCount = newCount
+            // Slice new native-rate samples, resample to 16kHz, feed to ASR
+            let nativeChunk = Array(allNative[processedNativeCount...])
+            processedNativeCount = newNativeCount
+            let resampled = AudioEngine.resample(nativeChunk, from: nativeRate)
 
-            if let update = transcriptionService.feed(session: session, samples: chunk) {
+            if let update = transcriptionService.feed(session: session, samples: resampled) {
                 partialTranscript = update.text
                 inputClient.setMarkedText(update.text)
                 onStreamingUpdate?(update.text)
@@ -197,18 +201,19 @@ actor Session {
             return
         }
 
-        // Feed remaining unprocessed samples
-        let remaining = samples.count > processedSampleCount
-            ? Array(samples[processedSampleCount...])
+        // Feed remaining unprocessed native samples, resampled to 16kHz
+        let nativeRate = audioEngine.nativeSampleRate
+        let remainingNative = samples.count > processedNativeCount
+            ? Array(samples[processedNativeCount...])
             : []
 
-        if !remaining.isEmpty {
-            // Add silence padding for trailing speech
-            var finalChunk = remaining
-            let padSamples = Int(16_000 * 0.1) // 100ms padding
-            finalChunk.append(contentsOf: repeatElement(Float(0), count: padSamples))
+        if !remainingNative.isEmpty {
+            var resampled = AudioEngine.resample(remainingNative, from: nativeRate)
+            // Add silence padding for trailing speech (100ms at 16kHz)
+            let padSamples = Int(AudioEngine.targetSampleRate * 0.1)
+            resampled.append(contentsOf: repeatElement(Float(0), count: padSamples))
 
-            if let update = transcriptionService.feedFinalizing(session: session, samples: finalChunk) {
+            if let update = transcriptionService.feedFinalizing(session: session, samples: resampled) {
                 partialTranscript = update.text
             }
         }
