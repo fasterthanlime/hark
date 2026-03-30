@@ -1141,9 +1141,7 @@ struct HarkApp: App {
                 directInputLastText = ""
             }
         case .ime:
-            if !HarkInputClient.activateIME() {
-                activeInsertionStrategy = .paste
-            }
+            HarkInputClient.activateIME()
             directInputElement = nil
             directInputOrigin = 0
             directInputOriginalText = nil
@@ -1186,7 +1184,14 @@ struct HarkApp: App {
         // If no language is explicitly set, try detecting from the text field content.
         var language = appState.currentLanguage
         if language == nil {
-            if let detected = LanguageDetector.detectFromFocusedWindow() {
+            let detection = LanguageDetector.detectFromFocusedWindow()
+            traceEvent("language_detection", [
+                "language": detection.language ?? "none",
+                "collected_chars": String(detection.collectedText.count),
+                "elements": String(detection.elementCount),
+                "text": detection.collectedText,
+            ])
+            if let detected = detection.language {
                 language = detected
                 traceEvent("language_auto_detected", ["language": detected])
             }
@@ -2182,8 +2187,12 @@ struct HarkApp: App {
                 }
             case .ime:
                 HarkInputClient.sendCommitText(text)
+                // Give the IME time to commit text before switching input source back.
+                try? await Task.sleep(for: .milliseconds(50))
                 HarkInputClient.deactivateIME()
                 if shouldSubmit {
+                    // Small delay after deactivation for the input source switch to settle.
+                    try? await Task.sleep(for: .milliseconds(50))
                     simulateReturn()
                 }
             case .paste:
@@ -2243,16 +2252,13 @@ struct HarkApp: App {
         let currentHotkeyMonitor = hotkeyMonitor
 
         recordingControlInterceptor.shouldIntercept = { keyCode in
-            guard currentAppState.phase == .recording else { return false }
-            guard keyCode == UInt16(kVK_Escape) || keyCode == UInt16(kVK_Return) else { return false }
-
-            if currentAppState.isLockedMode {
-                // In locked mode, require that the configured hotkey keys are still held.
-                guard currentHotkeyMonitor.binding.keyCodeSet.isSubset(of: currentHotkeyMonitor.pressedKeyCodes) else {
-                    return false
-                }
+            let isRecording = currentAppState.phase == .recording
+            let isTarget = keyCode == UInt16(kVK_Escape) || keyCode == UInt16(kVK_Return)
+            let keyName = keyCode == UInt16(kVK_Return) ? "Return" : keyCode == UInt16(kVK_Escape) ? "Escape" : "key(\(keyCode))"
+            if isTarget {
+                Self.logger.warning("[hark] shouldIntercept \(keyName): isRecording=\(isRecording)")
             }
-
+            guard isRecording, isTarget else { return false }
             return true
         }
 

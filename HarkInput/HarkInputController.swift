@@ -25,16 +25,27 @@ class HarkInputController: IMKInputController {
     }
 
     override func deactivateServer(_ sender: Any!) {
-        // Don't nil out the controller or auto-commit during an active
-        // dictation session — focus changes cause transient deactivations.
-        if currentMarkedText.isEmpty {
+        let hadMarkedText = !currentMarkedText.isEmpty
+
+        // If we have marked text during an active dictation, clear it before
+        // super.deactivateServer — otherwise IMK auto-commits it as real text,
+        // causing duplication when the user switches back.
+        if hadMarkedText, let client = self.client() {
+            currentMarkedText = ""
+            client.setMarkedText(
+                "",
+                selectionRange: NSRange(location: 0, length: 0),
+                replacementRange: NSRange(location: NSNotFound, length: 0)
+            )
+        }
+
+        if !hadMarkedText {
             if HarkXPCService.shared.activeController === self {
                 HarkXPCService.shared.activeController = nil
             }
         }
         super.deactivateServer(sender)
-        let hasMarked = !self.currentMarkedText.isEmpty
-        Self.logger.warning("Server deactivated (hasMarkedText=\(hasMarked ? "yes" : "no"))")
+        Self.logger.warning("Server deactivated (hadMarkedText=\(hadMarkedText ? "yes" : "no"))")
     }
 
     // MARK: - Input handling
@@ -111,9 +122,8 @@ class HarkInputController: IMKInputController {
         }
 
         currentMarkedText = ""
-        let finalText = submit ? text + "\n" : text + " "
         client.insertText(
-            finalText,
+            text + " ",
             replacementRange: NSRange(location: NSNotFound, length: 0)
         )
     }
