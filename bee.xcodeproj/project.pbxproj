@@ -324,11 +324,8 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "bee-input/Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "Bee Dictation";
-				INFOPLIST_KEY_CFBundleName = "Bee Dictation";
-				INFOPLIST_KEY_LSBackgroundOnly = YES;
-				INFOPLIST_KEY_NSPrincipalClass = "$(PRODUCT_MODULE_NAME).BeeInputApplication";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -414,11 +411,8 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "bee-input/Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "Bee Dictation";
-				INFOPLIST_KEY_CFBundleName = "Bee Dictation";
-				INFOPLIST_KEY_LSBackgroundOnly = YES;
-				INFOPLIST_KEY_NSPrincipalClass = "$(PRODUCT_MODULE_NAME).BeeInputApplication";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

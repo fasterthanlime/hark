@@ -62,11 +62,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: fasterthanlime.inputmethod.bee
-        INFOPLIST_KEY_CFBundleDisplayName: "Bee Dictation"
-        INFOPLIST_KEY_CFBundleName: "Bee Dictation"
-        INFOPLIST_KEY_LSBackgroundOnly: YES
-        INFOPLIST_KEY_NSPrincipalClass: "$(PRODUCT_MODULE_NAME).BeeInputApplication"
         INFOPLIST_FILE: bee-input/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
         SWIFT_VERSION: "5.0"
         SWIFT_APPROACHABLE_CONCURRENCY: YES
         SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
