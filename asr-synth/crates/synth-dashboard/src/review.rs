@@ -1053,7 +1053,7 @@ pub async fn api_review_asr(
 
             let samples_16k = crate::tts::resample_to_16k(&mono, spec.sample_rate)?;
 
-            // Run both ASR models on human recording
+            // Run comparison ASR models on human recording
             let qwen = match state2.asr.transcribe_samples(
                 &samples_16k,
                 qwen3_asr::TranscribeOptions::default().with_language("english"),
@@ -1070,6 +1070,16 @@ pub async fn api_review_asr(
                     Ok(r) => r.text,
                     Err(e) => format!("(error: {e})"),
                 };
+
+            let cohere = match crate::jobs::transcribe_cohere_from_16k_warm(&state2, &samples_16k)
+            {
+                Ok(value) => value
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                Err(e) => format!("(error: {e})"),
+            };
 
             // Run forced aligner on the HUMAN recording for all alignments
             let sentence = if let Some(id) = current_id {
@@ -1128,6 +1138,7 @@ pub async fn api_review_asr(
                 };
             let qwen_alignment = align_asr(&qwen);
             let parakeet_alignment = align_asr(&parakeet);
+            let cohere_alignment = align_asr(&cohere);
 
             // Encode human audio as base64 for playback
             use base64::Engine;
@@ -1144,8 +1155,10 @@ pub async fn api_review_asr(
             Ok(serde_json::json!({
                 "qwen": qwen,
                 "parakeet": parakeet,
+                "cohere": cohere,
                 "qwen_alignment": qwen_alignment,
                 "parakeet_alignment": parakeet_alignment,
+                "cohere_alignment": cohere_alignment,
                 "alignment": alignment,
                 "written_alignment": written_alignment,
                 "audio_b64": audio_b64,

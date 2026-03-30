@@ -137,10 +137,11 @@ impl Weights {
 
     /// Load an `RmsNorm` (always dequantized).
     pub fn load_rms_norm(&self, prefix: &str, eps: f64) -> anyhow::Result<RmsNorm> {
-        Ok(RmsNorm::new(
-            self.get_tensor(&format!("{prefix}.weight"))?,
-            eps,
-        ))
+        let mut weight = self.get_tensor(&format!("{prefix}.weight"))?;
+        if !weight.device().is_cpu() && weight.dtype() == candle_core::DType::F32 {
+            weight = weight.to_dtype(candle_core::DType::BF16)?;
+        }
+        Ok(RmsNorm::new(weight, eps))
     }
 
     /// Load a `Conv2d` (always dequantized — conv weights are small).

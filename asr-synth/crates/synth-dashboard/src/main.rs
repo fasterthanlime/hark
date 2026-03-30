@@ -50,8 +50,12 @@ pub struct AppState {
     official_qwen3_reranker_server: std::sync::Mutex<Option<jobs::Qwen3RerankerSidecar>>,
     /// Shared warm ZIPA sidecar for phone decoding.
     zipa_sidecar: std::sync::Mutex<Option<jobs::ZipaSidecar>>,
+    /// Shared warm ZIPA small-ns-700k sidecar for comparison in corpus workflows.
+    zipa_ns700k_sidecar: std::sync::Mutex<Option<jobs::ZipaSidecar>>,
     /// Shared warm Allophant sidecar for IPA decoding in corpus workflows.
     allophant_sidecar: std::sync::Mutex<Option<jobs::AllophantSidecar>>,
+    /// Shared warm Cohere Transcribe sidecar for ASR comparison.
+    cohere_sidecar: std::sync::Mutex<Option<jobs::CohereSidecar>>,
 }
 
 struct LazyTtsManager {
@@ -271,7 +275,13 @@ impl AppState {
         if let Some(mut server) = self.zipa_sidecar.lock().unwrap().take() {
             server.kill();
         }
+        if let Some(mut server) = self.zipa_ns700k_sidecar.lock().unwrap().take() {
+            server.kill();
+        }
         if let Some(mut server) = self.allophant_sidecar.lock().unwrap().take() {
+            server.kill();
+        }
+        if let Some(mut server) = self.cohere_sidecar.lock().unwrap().take() {
             server.kill();
         }
     }
@@ -364,6 +374,11 @@ struct TtsPreviewBody {
 struct TtsPhonemePreviewBody {
     phonemes: String,
     backend: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct TtsConvertPhonemesBody {
+    phonemes: String,
 }
 
 pub fn err(e: impl std::fmt::Display) -> AppError {
@@ -1075,6 +1090,21 @@ async fn api_tts_preview_phonemes(
         .into_response())
 }
 
+async fn api_tts_convert_kokoro_phonemes(
+    Json(body): Json<TtsConvertPhonemesBody>,
+) -> Result<Response, AppError> {
+    let phonemes = body.phonemes.trim().to_string();
+    if phonemes.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "phonemes must not be empty".to_string()));
+    }
+    let kokoro = crate::tts::kokoro_phonemes_from_ipa(&phonemes);
+    Ok(Json(serde_json::json!({
+        "ipa": phonemes,
+        "kokoro": kokoro,
+    }))
+    .into_response())
+}
+
 // ==================== G2P SCAN ====================
 
 #[derive(Deserialize)]
@@ -1162,7 +1192,10 @@ async fn api_asr_transcribe(
 
         let result = state2
             .asr
-            .transcribe_samples(&samples_16k, qwen3_asr::TranscribeOptions::default())
+            .transcribe_samples(
+                &samples_16k,
+                qwen3_asr::TranscribeOptions::default().with_language("english"),
+            )
             .map_err(|e| anyhow::anyhow!("ASR: {e}"))?;
 
         Ok(result.text)
@@ -1174,13 +1207,13 @@ async fn api_asr_transcribe(
     Ok(Json(serde_json::json!({ "text": result })).into_response())
 }
 
-/// Run both ASR models on uploaded audio. Returns {qwen, parakeet}.
+/// Run comparison ASR models on uploaded audio. Returns per-model text plus any errors.
 async fn api_asr_dual(
     State(state): State<Arc<AppState>>,
     body: axum::body::Bytes,
 ) -> Result<Response, AppError> {
     let state2 = state.clone();
-    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
         let cursor = std::io::Cursor::new(body.to_vec());
         let mut reader =
             hound::WavReader::new(cursor).map_err(|e| anyhow::anyhow!("WAV decode: {e}"))?;
@@ -1206,23 +1239,111 @@ async fn api_asr_dual(
         };
         let samples_16k = tts::resample_to_16k(&mono, spec.sample_rate)?;
 
-        let qwen = state2
+        let qwen_result = state2
             .asr
-            .transcribe_samples(&samples_16k, qwen3_asr::TranscribeOptions::default())
-            .map(|r| r.text)
+            .transcribe_samples(
+                &samples_16k,
+                qwen3_asr::TranscribeOptions::default().with_language("english"),
+            );
+        let parakeet_result = state2.parakeet.transcribe_samples(
+            samples_16k.to_vec(),
+            16000,
+            1,
+            Some(parakeet_rs::TimestampMode::Words),
+        );
+        let cohere_result = jobs::transcribe_cohere_from_16k_warm(&state2, &samples_16k);
+
+        let qwen = qwen_result.as_ref().map(|r| r.text.clone()).unwrap_or_default();
+        let parakeet = parakeet_result
+            .as_ref()
+            .map(|r| r.text.clone())
             .unwrap_or_default();
-        let parakeet = state2
-            .parakeet
-            .transcribe_samples(samples_16k.to_vec(), 16000, 1, None)
-            .map(|r| r.text)
+        let cohere = cohere_result
+            .as_ref()
+            .ok()
+            .and_then(|value| value.get("text").and_then(|v| v.as_str()).map(str::to_string))
             .unwrap_or_default();
-        Ok((qwen, parakeet))
+        let parakeet_alignment = parakeet_result
+            .as_ref()
+            .map(|r| {
+                r.tokens
+                    .iter()
+                    .map(|token| {
+                        serde_json::json!({
+                            "w": token.text,
+                            "s": token.start,
+                            "e": token.end,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let qwen_error = qwen_result.err().map(|e| e.to_string());
+        let parakeet_error = parakeet_result.err().map(|e| e.to_string());
+        let cohere_error = match cohere_result {
+            Ok(_) => None,
+            Err(e) => Some(e.to_string()),
+        };
+
+        let correction_input = if !qwen.trim().is_empty() {
+            "qwen"
+        } else if !cohere.trim().is_empty() {
+            "cohere"
+        } else if !parakeet.trim().is_empty() {
+            "parakeet"
+        } else {
+            ""
+        };
+
+        Ok(serde_json::json!({
+            "qwen": qwen,
+            "parakeet": parakeet,
+            "cohere": cohere,
+            "parakeet_alignment": parakeet_alignment,
+            "qwen_error": qwen_error,
+            "parakeet_error": parakeet_error,
+            "cohere_error": cohere_error,
+            "correction_input": correction_input,
+        }))
     })
     .await
     .map_err(|e| err(e))?
     .map_err(err)?;
 
-    Ok(Json(serde_json::json!({"qwen": result.0, "parakeet": result.1})).into_response())
+    Ok(Json(result).into_response())
+}
+
+async fn api_asr_cohere(
+    State(state): State<Arc<AppState>>,
+    body: axum::body::Bytes,
+) -> Result<Response, AppError> {
+    let cursor = std::io::Cursor::new(body.to_vec());
+    let mut reader =
+        hound::WavReader::new(cursor).map_err(|e| err(anyhow::anyhow!("WAV decode: {e}")))?;
+    let spec = reader.spec();
+    let samples_f32: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
+        hound::SampleFormat::Int => {
+            let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .samples::<i32>()
+                .filter_map(|s| s.ok())
+                .map(|s| s as f32 / max)
+                .collect()
+        }
+    };
+    let mono: Vec<f32> = if spec.channels > 1 {
+        samples_f32
+            .chunks(spec.channels as usize)
+            .map(|ch| ch.iter().sum::<f32>() / ch.len() as f32)
+            .collect()
+    } else {
+        samples_f32
+    };
+    let samples_16k = tts::resample_to_16k(&mono, spec.sample_rate).map_err(err)?;
+    let value = jobs::transcribe_cohere_from_16k_warm(&state, &samples_16k).map_err(err)?;
+    Ok(Json(value).into_response())
 }
 
 // ==================== FORCED ALIGNMENT ====================
@@ -1513,7 +1634,9 @@ async fn main() -> anyhow::Result<()> {
         prototype_reranker_sidecar: std::sync::Mutex::new(None),
         official_qwen3_reranker_server: std::sync::Mutex::new(None),
         zipa_sidecar: std::sync::Mutex::new(None),
+        zipa_ns700k_sidecar: std::sync::Mutex::new(None),
         allophant_sidecar: std::sync::Mutex::new(None),
+        cohere_sidecar: std::sync::Mutex::new(None),
     });
 
     // Start background pre-computation loop
@@ -2398,12 +2521,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/tts/backends", get(api_tts_backends))
         .route("/api/tts/preview", post(api_tts_preview))
         .route("/api/tts/preview-phonemes", post(api_tts_preview_phonemes))
+        .route("/api/tts/convert-kokoro-phonemes", post(api_tts_convert_kokoro_phonemes))
         .route("/api/ipa/decode", post(jobs::api_ipa_decode))
         .route("/api/ipa/suggest-tts", post(jobs::api_ipa_suggest_tts))
+        .route("/api/ipa/suggest-espeak", post(jobs::api_ipa_suggest_espeak))
         .route("/api/g2p/scan", post(api_g2p_scan))
         // ASR
         .route("/api/asr/transcribe", post(api_asr_transcribe))
         .route("/api/asr/dual", post(api_asr_dual))
+        .route("/api/asr/cohere", post(api_asr_cohere))
         // Forced alignment
         .route("/api/align", post(api_align))
         // Review (server-side orchestrated)

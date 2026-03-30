@@ -170,7 +170,7 @@ pub struct AcousticContext<'a> {
 }
 
 pub fn phonetic_preview(text: &str) -> Option<String> {
-    let phones = parse_reviewed_ipa(text);
+    let phones = parse_house_ipa(text);
     phoneme_string(&phones)
 }
 
@@ -339,7 +339,11 @@ fn enumerate_span_proposals(
     config: PrototypeConfig,
     acoustic: Option<&AcousticContext<'_>>,
 ) -> Vec<PrototypeSpanProposal> {
-    let max_span = config.max_span_tokens.max(1);
+    let max_span = if acoustic.is_some() {
+        config.max_span_tokens.max(6)
+    } else {
+        config.max_span_tokens.max(1)
+    };
     let mut proposals = Vec::new();
     for start in 0..tokens.len() {
         let end_limit = (start + max_span).min(tokens.len());
@@ -358,7 +362,11 @@ fn enumerate_span_proposals(
             }
             let acoustic_window = acoustic.and_then(|ctx| acoustic_window_for_span(ctx, start, end));
             let acoustic_phones = acoustic.and_then(|ctx| acoustic_phones_for_span(ctx, start, end));
+            let acoustic_phone_count = acoustic_phones.as_ref().map(|phones| phones.len()).unwrap_or(0);
             let span_observed = observed_phonemes_for_span(&raw_text, acoustic_phones.clone());
+            if span_compact.len() < 2 && acoustic_phone_count < 2 {
+                continue;
+            }
             let observed_acoustic_score = match span_observed.kind {
                 PhonemeKind::Ipa => acoustic_phones.as_ref().map(|_| 1.0),
                 PhonemeKind::Arpabet => acoustic_phones
@@ -383,9 +391,28 @@ fn enumerate_span_proposals(
                     )
                 })
                 .collect::<Vec<_>>();
+            if let Some(phones) = acoustic_phones.as_deref().filter(|phones| !phones.is_empty()) {
+                candidates.extend(phone_led_candidates_for_span(phones, lexicon));
+            }
             if candidates.is_empty() {
                 continue;
             }
+            let mut by_form: HashMap<(String, &'static str, String), ScoredCandidate> = HashMap::new();
+            for candidate in candidates.drain(..) {
+                let key = (
+                    candidate.term.clone(),
+                    candidate.via,
+                    candidate.matched_form.clone(),
+                );
+                if by_form
+                    .get(&key)
+                    .map(|existing| candidate.score > existing.score)
+                    .unwrap_or(true)
+                {
+                    by_form.insert(key, candidate);
+                }
+            }
+            let mut candidates = by_form.into_values().collect::<Vec<_>>();
             candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
             candidates.truncate(config.max_candidates_per_span.max(1));
             proposals.push(PrototypeSpanProposal {
@@ -438,6 +465,75 @@ fn enumerate_span_proposals(
     proposals
 }
 
+fn phone_led_candidates_for_span(
+    acoustic_phones: &[String],
+    lexicon: &[LexiconTerm],
+) -> Vec<ScoredCandidate> {
+    let observed = normalize_house_ipa_tokens(acoustic_phones);
+    if observed.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for term in lexicon {
+        let has_noncanonical_forms = term.forms.iter().any(|form| form.via != "canonical");
+        let mut best: Option<ScoredCandidate> = None;
+        for form in &term.forms {
+            if !matches!(form.phoneme_kind, PhonemeKind::Ipa) || form.phonemes.is_empty() {
+                continue;
+            }
+            let phonetic_score = phoneme_similarity(&observed, &form.phonemes);
+            let phon = phonetic_score.unwrap_or(0.0);
+            let min_score = match form.via {
+                "spoken" | "confusion" | "alt" => 0.72,
+                "canonical" if has_noncanonical_forms => 0.84,
+                "canonical" => 0.78,
+                _ => 0.80,
+            };
+            if phon < min_score {
+                continue;
+            }
+            let mut score = 0.42 + 0.54 * phon + via_bonus(form.via);
+            if matches!(form.via, "spoken" | "confusion" | "alt") {
+                score += 0.04;
+            }
+            if phon >= 0.90 {
+                score += 0.04;
+            }
+            let candidate = ScoredCandidate {
+                term: term.term.clone(),
+                via: form.via,
+                matched_form: form.raw.clone(),
+                matched_form_phonemes: form.phonemes.clone(),
+                term_preview: term.term_preview.clone(),
+                term_preview_phonemes: term.term_preview_phonemes.clone(),
+                score,
+                lexical_score: None,
+                dice: None,
+                prefix_ratio: None,
+                length_ratio: None,
+                phonetic_score,
+                observed_acoustic_score: Some(1.0),
+                acoustic_score: Some(phon),
+                acoustic_delta: Some(phon - 1.0),
+                phonemes: form.phonemes.clone(),
+                exact_words: false,
+                exact_compact: false,
+            };
+            if best
+                .as_ref()
+                .map(|existing| candidate.score > existing.score)
+                .unwrap_or(true)
+            {
+                best = Some(candidate);
+            }
+        }
+        if let Some(candidate) = best {
+            out.push(candidate);
+        }
+    }
+    out
+}
+
 fn score_term(
     span_words: &str,
     span_compact: &str,
@@ -451,6 +547,10 @@ fn score_term(
     for form in &term.forms {
         let exact_words = span_words == form.words;
         let exact_compact = span_compact == form.compact;
+        let ipa_guided = matches!(span_observed.kind, PhonemeKind::Ipa)
+            && matches!(form.phoneme_kind, PhonemeKind::Ipa)
+            && !span_observed.phones.is_empty()
+            && !form.phonemes.is_empty();
         let phonetic_score = phoneme_similarity_if_compatible(
             &span_observed.phones,
             &span_observed.kind,
@@ -476,6 +576,7 @@ fn score_term(
                 &form.phoneme_kind,
             )
         });
+        let acoustic_hint = raw_acoustic_score.unwrap_or(0.0);
         let acoustic_score = acoustic_is_trustworthy.then_some(raw_acoustic_score).flatten();
         let acoustic_delta = if acoustic_is_trustworthy {
             acoustic_delta(raw_acoustic_score, observed_acoustic_score)
@@ -487,10 +588,15 @@ fn score_term(
         } else if exact_compact {
             (1.22 + via_bonus(form.via), Some(1.0), Some(1.0), Some(1.0), Some(1.0))
         } else {
-            if span_compact.len() <= 3 || form.compact.len() <= 3 {
+            if (span_compact.len() <= 3 || form.compact.len() <= 3)
+                && !(ipa_guided && phonetic_score.unwrap_or(0.0) >= 0.78)
+            {
                 continue;
             }
-            if form.via == "canonical" && has_noncanonical_forms {
+            if form.via == "canonical"
+                && has_noncanonical_forms
+                && !(ipa_guided && phonetic_score.unwrap_or(0.0) >= 0.84)
+            {
                 continue;
             }
             let dice = bigram_dice(span_compact, &form.compact);
@@ -498,49 +604,126 @@ fn score_term(
             let len_ratio = length_ratio(span_compact, &form.compact);
             let phon = phonetic_score.unwrap_or(0.0);
             let acoustic = acoustic_score.unwrap_or(0.0);
-            if form.via == "confusion" && form.word_count != span_word_count {
-                continue;
-            }
-            if form.via == "confusion" && phon < 0.78 {
-                continue;
-            }
-            if dice < 0.45 && prefix < 0.50 && phon < 0.62 {
-                continue;
-            }
+            if ipa_guided {
+                let phone_led = phon >= 0.86
+                    || (phon >= 0.76 && acoustic_hint >= 0.74)
+                    || (phon >= 0.72 && acoustic_delta.unwrap_or(0.0) >= 0.08);
+                if phone_led {
+                    let lexical = 0.16 * dice + 0.08 * prefix + 0.04 * len_ratio;
+                    let mut score =
+                        0.56 + 0.34 * phon + 0.12 * acoustic_hint + via_bonus(form.via) + lexical;
+                    if matches!(form.via, "spoken" | "confusion" | "alt") {
+                        score += 0.04;
+                    }
+                    if let Some(delta) = acoustic_delta {
+                        score += 0.18 * delta;
+                    }
+                    if span_word_count != form.word_count && phon < 0.82 {
+                        score -= 0.04;
+                    }
+                    (
+                        score,
+                        Some(lexical),
+                        Some(dice),
+                        Some(prefix),
+                        Some(len_ratio),
+                    )
+                } else {
+                    if form.via == "confusion" && form.word_count != span_word_count {
+                        continue;
+                    }
+                    if form.via == "confusion" && phon < 0.78 {
+                        continue;
+                    }
+                    if dice < 0.45 && prefix < 0.50 && phon < 0.62 {
+                        continue;
+                    }
 
-            let lexical =
-                0.40 * dice + 0.16 * prefix + 0.08 * len_ratio + 0.24 * phon + via_bonus(form.via);
-            if lexical < 0.44 && phon < 0.72 {
-                continue;
-            }
-            if let Some(delta) = acoustic_delta {
-                if delta <= -0.12 && lexical < 0.88 {
+                    let lexical = 0.40 * dice
+                        + 0.16 * prefix
+                        + 0.08 * len_ratio
+                        + 0.24 * phon
+                        + via_bonus(form.via);
+                    if lexical < 0.44 && phon < 0.72 {
+                        continue;
+                    }
+                    if let Some(delta) = acoustic_delta {
+                        if delta <= -0.12 && lexical < 0.88 {
+                            continue;
+                        }
+                    }
+
+                    let mut score = lexical;
+                    if phon >= 0.82 {
+                        score += 0.10;
+                    }
+                    if lexical >= 0.56 {
+                        if let Some(delta) = acoustic_delta {
+                            score += 0.22 * delta;
+                            if delta >= 0.10 {
+                                score += 0.05;
+                            } else if delta <= -0.08 {
+                                score -= 0.18;
+                            }
+                        } else if acoustic_score.is_some() {
+                            score += 0.03 * (acoustic - 0.5);
+                        }
+                        if acoustic >= 0.80 {
+                            score += 0.04;
+                        } else if acoustic <= 0.36 {
+                            score -= 0.08;
+                        }
+                    }
+                    (score, Some(lexical), Some(dice), Some(prefix), Some(len_ratio))
+                }
+            } else {
+                if form.via == "confusion" && form.word_count != span_word_count {
                     continue;
                 }
-            }
+                if form.via == "confusion" && phon < 0.78 {
+                    continue;
+                }
+                if dice < 0.45 && prefix < 0.50 && phon < 0.62 {
+                    continue;
+                }
 
-            let mut score = lexical;
-            if phon >= 0.82 {
-                score += 0.10;
-            }
-            if lexical >= 0.56 {
+                let lexical = 0.40 * dice
+                    + 0.16 * prefix
+                    + 0.08 * len_ratio
+                    + 0.24 * phon
+                    + via_bonus(form.via);
+                if lexical < 0.44 && phon < 0.72 {
+                    continue;
+                }
                 if let Some(delta) = acoustic_delta {
-                    score += 0.22 * delta;
-                    if delta >= 0.10 {
-                        score += 0.05;
-                    } else if delta <= -0.08 {
-                        score -= 0.18;
+                    if delta <= -0.12 && lexical < 0.88 {
+                        continue;
                     }
-                } else if acoustic_score.is_some() {
-                    score += 0.03 * (acoustic - 0.5);
                 }
-                if acoustic >= 0.80 {
-                    score += 0.04;
-                } else if acoustic <= 0.36 {
-                    score -= 0.08;
+
+                let mut score = lexical;
+                if phon >= 0.82 {
+                    score += 0.10;
                 }
+                if lexical >= 0.56 {
+                    if let Some(delta) = acoustic_delta {
+                        score += 0.22 * delta;
+                        if delta >= 0.10 {
+                            score += 0.05;
+                        } else if delta <= -0.08 {
+                            score -= 0.18;
+                        }
+                    } else if acoustic_score.is_some() {
+                        score += 0.03 * (acoustic - 0.5);
+                    }
+                    if acoustic >= 0.80 {
+                        score += 0.04;
+                    } else if acoustic <= 0.36 {
+                        score -= 0.08;
+                    }
+                }
+                (score, Some(lexical), Some(dice), Some(prefix), Some(len_ratio))
             }
-            (score, Some(lexical), Some(dice), Some(prefix), Some(len_ratio))
         };
         if best.as_ref().map(|b| score > b.score).unwrap_or(true) {
             best = Some(ScoredCandidate {
@@ -1275,15 +1458,14 @@ fn observed_phonemes_for_span(raw_text: &str, acoustic_phones: Option<Vec<String
             kind: PhonemeKind::Ipa,
         };
     }
-    let reviewed_like = parse_reviewed_ipa(raw_text);
     ObservedPhonemes {
-        phones: reviewed_like,
+        phones: Vec::new(),
         kind: PhonemeKind::Ipa,
     }
 }
 
-fn parse_reviewed_ipa(text: &str) -> Vec<String> {
-    let phones = text
+pub(crate) fn parse_house_ipa(text: &str) -> Vec<String> {
+    let spaced = text
         .split_whitespace()
         .map(str::trim)
         .filter(|token| !token.is_empty())
@@ -1291,20 +1473,29 @@ fn parse_reviewed_ipa(text: &str) -> Vec<String> {
         .map(ToString::to_string)
         .collect::<Vec<_>>();
     let input_tokens = text.split_whitespace().filter(|token| !token.trim().is_empty()).count();
-    if phones.len() == input_tokens {
-        phones
-    } else {
-        Vec::new()
+    if !spaced.is_empty() && spaced.len() == input_tokens {
+        return normalize_house_ipa_tokens(&spaced);
     }
+    tokenize_compact_ipa(text)
+}
+
+fn parse_reviewed_ipa(text: &str) -> Vec<String> {
+    parse_house_ipa(text)
 }
 
 fn phoneme_similarity(a: &[String], b: &[String]) -> Option<f32> {
     if a.is_empty() || b.is_empty() {
         return None;
     }
-    let dist = phoneme_edit_distance(a, b) as f32 / 100.0;
-    let max_len = a.len().max(b.len()) as f32;
-    Some((1.0 - dist / max_len).clamp(0.0, 1.0))
+    let a_norm = normalize_house_ipa_tokens(a);
+    let b_norm = normalize_house_ipa_tokens(b);
+    let a_features = house_ipa_to_feature_tokens(&a_norm);
+    let b_features = house_ipa_to_feature_tokens(&b_norm);
+    let dist = phoneme_edit_distance(&a_features, &b_features) as f32 / 100.0;
+    let max_len = a_features.len().max(b_features.len()) as f32;
+    let token_score = (1.0 - dist / max_len).clamp(0.0, 1.0);
+    let char_score = bigram_dice(&a_features.join(""), &b_features.join(""));
+    Some((0.78 * token_score + 0.22 * char_score).clamp(0.0, 1.0))
 }
 
 fn phoneme_similarity_if_compatible(
@@ -1377,6 +1568,165 @@ fn looks_like_ipa_token(token: &str) -> bool {
     })
 }
 
+fn tokenize_compact_ipa(text: &str) -> Vec<String> {
+    let chars = text.trim().chars().collect::<Vec<_>>();
+    if chars.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch.is_whitespace() || matches!(ch, '/' | '[' | ']' | ',' | ';') {
+            i += 1;
+            continue;
+        }
+        if matches!(ch, 'ˈ' | 'ˌ' | '.') {
+            i += 1;
+            continue;
+        }
+
+        let rest = chars[i..].iter().collect::<String>();
+        let mut matched = None;
+        for candidate in [
+            "dʒ", "tʃ", "aɪ", "aʊ", "eɪ", "ɔɪ", "əʊ", "oʊ", "eə", "ɪə", "ʊə", "əɹ", "ɜːɹ",
+            "ɜɹ", "ɚ", "ɝ",
+        ] {
+            if rest.starts_with(candidate) {
+                matched = Some(candidate);
+                break;
+            }
+        }
+        if let Some(token) = matched {
+            out.push(token.to_string());
+            i += token.chars().count();
+            continue;
+        }
+
+        let mut token = String::new();
+        token.push(ch);
+        i += 1;
+        while i < chars.len() && matches!(chars[i], 'ː' | '˞' | 'ʰ' | 'ʲ' | 'ʷ' | '̃' | '̩' | '̯') {
+            token.push(chars[i]);
+            i += 1;
+        }
+        if looks_like_ipa_token(&token) {
+            out.push(token);
+        } else {
+            return Vec::new();
+        }
+    }
+    normalize_house_ipa_tokens(&out)
+}
+
+fn normalize_house_ipa_tokens(tokens: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < tokens.len() {
+        let current = tokens[i].trim();
+        let next = tokens.get(i + 1).map(|s| s.trim());
+        let next2 = tokens.get(i + 2).map(|s| s.trim());
+        let normalized3 = match (current, next, next2) {
+            ("e", Some("ə"), Some("ɹ")) => Some(("eə", 3)),
+            ("ɛ", Some("ə"), Some("ɹ")) => Some(("eə", 3)),
+            ("e", Some("ɚ"), _) => Some(("eə", 2)),
+            ("ɛ", Some("ɚ"), _) => Some(("eə", 2)),
+            _ => None,
+        };
+        if let Some((token, consumed)) = normalized3 {
+            out.push(token.to_string());
+            i += consumed;
+            continue;
+        }
+        let normalized = match (current, next) {
+            ("o", Some("ʊ")) => Some(("əʊ", 2)),
+            ("a", Some("ɪ")) => Some(("aɪ", 2)),
+            ("a", Some("ʊ")) => Some(("aʊ", 2)),
+            ("e", Some("ɪ")) => Some(("eɪ", 2)),
+            ("ɔ", Some("ɪ")) => Some(("ɔɪ", 2)),
+            ("d", Some("ʒ")) => Some(("dʒ", 2)),
+            ("t", Some("ʃ")) => Some(("tʃ", 2)),
+            _ => None,
+        };
+        if let Some((token, consumed)) = normalized {
+            out.push(token.to_string());
+            i += consumed;
+            continue;
+        }
+        let token = match current {
+            "g" => "ɡ",
+            "ɚ" => "əɹ",
+            "ɝ" => "ɜːɹ",
+            "ɜɹ" => "ɜːɹ",
+            "ər" => "əɹ",
+            other => other,
+        };
+        let token = token
+            .replace('ˈ', "")
+            .replace('ˌ', "")
+            .replace('.', "");
+        if !token.is_empty() {
+            out.push(token);
+        }
+        i += 1;
+    }
+    out
+}
+
+pub(crate) fn house_ipa_to_feature_tokens(tokens: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for token in normalize_house_ipa_tokens(tokens) {
+        match token.as_str() {
+            "p" => out.push("P".to_string()),
+            "b" => out.push("B".to_string()),
+            "t" => out.push("T".to_string()),
+            "d" => out.push("D".to_string()),
+            "k" => out.push("K".to_string()),
+            "ɡ" | "g" => out.push("G".to_string()),
+            "f" => out.push("F".to_string()),
+            "v" => out.push("V".to_string()),
+            "θ" => out.push("TH".to_string()),
+            "ð" => out.push("DH".to_string()),
+            "s" => out.push("S".to_string()),
+            "z" => out.push("Z".to_string()),
+            "ʃ" => out.push("SH".to_string()),
+            "ʒ" => out.push("ZH".to_string()),
+            "h" => out.push("HH".to_string()),
+            "tʃ" => out.push("CH".to_string()),
+            "dʒ" => out.push("JH".to_string()),
+            "m" => out.push("M".to_string()),
+            "n" => out.push("N".to_string()),
+            "ŋ" => out.push("NG".to_string()),
+            "l" | "ɫ" => out.push("L".to_string()),
+            "ɹ" | "r" => out.push("R".to_string()),
+            "w" => out.push("W".to_string()),
+            "j" => out.push("Y".to_string()),
+            "i" | "iː" => out.push("IY".to_string()),
+            "ɪ" => out.push("IH".to_string()),
+            "e" | "eɪ" => out.push("EY".to_string()),
+            "ɛ" => out.push("EH".to_string()),
+            "æ" => out.push("AE".to_string()),
+            "ɑ" | "ɒ" => out.push("AA".to_string()),
+            "ɔ" => out.push("AO".to_string()),
+            "ə" | "ʌ" | "ɐ" => out.push("AH".to_string()),
+            "əʊ" | "oʊ" => out.push("OW".to_string()),
+            "ɔɪ" => out.push("OY".to_string()),
+            "ʊ" => out.push("UH".to_string()),
+            "u" | "uː" => out.push("UW".to_string()),
+            "əɹ" | "ɜːɹ" | "ɜɹ" => out.push("ER".to_string()),
+            "aʊ" => out.push("AW".to_string()),
+            "aɪ" => out.push("AY".to_string()),
+            "eə" => {
+                out.push("EH".to_string());
+                out.push("ER".to_string());
+            }
+            "ɜː" | "ɜ" => out.push("ER".to_string()),
+            _ => out.push(token),
+        }
+    }
+    out
+}
+
 fn prefix_ratio(a: &str, b: &str) -> f32 {
     if a.is_empty() || b.is_empty() {
         return 0.0;
@@ -1428,6 +1778,13 @@ mod tests {
             reviewed_ipa: None,
             reviewed: true,
             description: None,
+        }
+    }
+
+    fn row_with_reviewed_ipa(term: &str, spoken: &str, reviewed_ipa: &str) -> VocabRow {
+        VocabRow {
+            reviewed_ipa: Some(reviewed_ipa.to_string()),
+            ..row(term, spoken)
         }
     }
 
@@ -1880,5 +2237,80 @@ mod tests {
         let edits = build_edit_pool(&spans);
         assert_eq!(edits.len(), 1, "{:#?}", edits);
         assert_eq!(edits[0].to, "AArch64");
+    }
+
+    #[test]
+    fn phone_led_matching_survives_low_lexical_surface() {
+        let vocab = vec![row_with_reviewed_ipa("QEMU", "q emu", "k j u i m j u")];
+        let lexicon = build_lexicon(&vocab, &HashMap::new(), &HashMap::new());
+        let phones = parse_reviewed_ipa("k j u i m j u");
+        let observed = ObservedPhonemes {
+            phones: phones.clone(),
+            kind: PhonemeKind::Ipa,
+        };
+        let candidate = score_term("cuteemu", "cuteemu", &observed, Some(&phones), &lexicon[0])
+            .expect("phone-led candidate should survive");
+        assert_eq!(candidate.term, "QEMU");
+        assert!(candidate.phonetic_score.unwrap_or(0.0) >= 0.95, "{candidate:#?}");
+        assert!(candidate.score >= 0.85, "{candidate:#?}");
+    }
+
+    #[test]
+    fn phone_led_candidates_nominate_term_without_lexical_help() {
+        let vocab = vec![row_with_reviewed_ipa("DWARF", "dworf", "d w ɔ ɹ f")];
+        let lexicon = build_lexicon(&vocab, &HashMap::new(), &HashMap::new());
+        let candidates = phone_led_candidates_for_span(&parse_reviewed_ipa("d w ɔ ɹ f"), &lexicon);
+        assert_eq!(candidates.len(), 1, "{candidates:#?}");
+        assert_eq!(candidates[0].term, "DWARF");
+        assert_eq!(candidates[0].via, "spoken");
+        assert!(candidates[0].score >= 0.84, "{:#?}", candidates[0]);
+    }
+
+    #[test]
+    fn parse_reviewed_ipa_accepts_compact_espeak_style_ipa() {
+        assert_eq!(
+            parse_reviewed_ipa("bˈeəkˈəʊv"),
+            vec!["b", "eə", "k", "əʊ", "v"]
+        );
+        assert_eq!(
+            parse_reviewed_ipa("dwˈɜːf"),
+            vec!["d", "w", "ɜː", "f"]
+        );
+    }
+
+    #[test]
+    fn phoneme_similarity_normalizes_equivalent_house_ipa_forms() {
+        let spaced = parse_reviewed_ipa("b e ə ɹ k o ʊ v");
+        let compact = parse_reviewed_ipa("bˈeəkˈəʊv");
+        let sim = phoneme_similarity(&spaced, &compact).unwrap();
+        assert!(sim >= 0.9, "{sim}");
+    }
+
+    #[test]
+    fn phoneme_similarity_uses_feature_distance_for_close_phones() {
+        let sim = phoneme_similarity(&parse_house_ipa("dʒ"), &parse_house_ipa("tʃ")).unwrap();
+        assert!(sim >= 0.60, "{sim}");
+    }
+
+    #[test]
+    fn observed_phonemes_do_not_fall_back_to_text_guessing_without_acoustics() {
+        let observed = observed_phonemes_for_span("mere", None);
+        assert!(observed.phones.is_empty(), "{observed:#?}");
+    }
+
+    #[test]
+    fn house_ipa_to_feature_tokens_handles_common_technical_forms() {
+        assert_eq!(
+            house_ipa_to_feature_tokens(&parse_house_ipa("bˈeəkˈəʊv")),
+            vec!["B", "EH", "ER", "K", "OW", "V"]
+        );
+        assert_eq!(
+            house_ipa_to_feature_tokens(&parse_house_ipa("dwˈɜːf")),
+            vec!["D", "W", "ER", "F"]
+        );
+        assert_eq!(
+            house_ipa_to_feature_tokens(&parse_house_ipa("sˈɜːdeɪ")),
+            vec!["S", "ER", "D", "EY"]
+        );
     }
 }

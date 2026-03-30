@@ -1455,6 +1455,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "espeak-ng"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf53da2d1e3049cfff5ae289a05b456c753c15cbe0bff2b97251aef5a748da94"
+dependencies = [
+ "bitflags 2.11.0",
+ "espeak-ng-data-dict-en",
+ "espeak-ng-data-phonemes",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "espeak-ng-data-dict-en"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca161ecc2d9398ca60142f9eb8d8174d24b3a03b90372734f9580cad0b4b7006"
+
+[[package]]
+name = "espeak-ng-data-phonemes"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d65418fdbf64db690f177ae55b6cb0f01eec5ffd46f5e1cba6f841ae3f214ec0"
+
+[[package]]
 name = "eyre"
 version = "0.6.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4906,6 +4930,7 @@ dependencies = [
  "candle-core",
  "clap",
  "crime",
+ "espeak-ng",
  "futures",
  "hound",
  "mlx-rs",

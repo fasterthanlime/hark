@@ -444,14 +444,201 @@ impl LocalTtsBackend for KokoroBackend {
         if phonemes.is_empty() {
             anyhow::bail!("cannot synthesize empty phoneme string");
         }
+        let kokoro_phonemes = kokoro_phonemes_from_ipa(phonemes);
+        eprintln!("kokoro ipa: raw={phonemes:?} kokoro={kokoro_phonemes:?}");
         let audio =
-            voice_tts::generate(&mut self.model.lock().unwrap(), phonemes, &self.voice, 1.0)
-                .map_err(|e| anyhow::anyhow!("kokoro: {e}"))?;
+            voice_tts::generate(
+                &mut self.model.lock().unwrap(),
+                &kokoro_phonemes,
+                &self.voice,
+                1.0,
+            )
+            .map_err(|e| anyhow::anyhow!("kokoro: {e}"))?;
         audio.eval().map_err(|e| anyhow::anyhow!("mlx eval: {e}"))?;
         let samples: Vec<f32> = audio.as_slice().to_vec();
         Ok(TtsAudio {
             samples,
             sample_rate: 24000,
+        })
+    }
+}
+
+struct EspeakNgBackend;
+
+fn normalize_ipa_for_kokoro(phonemes: &str) -> String {
+    fn split_stress(token: &str) -> (String, String, String) {
+        let chars: Vec<char> = token.chars().collect();
+        let mut start = 0usize;
+        let mut end = chars.len();
+        while start < chars.len() && matches!(chars[start], 'ˈ' | 'ˌ') {
+            start += 1;
+        }
+        while end > start && matches!(chars[end - 1], 'ˈ' | 'ˌ') {
+            end -= 1;
+        }
+        (
+            chars[..start].iter().collect(),
+            chars[start..end].iter().collect(),
+            chars[end..].iter().collect(),
+        )
+    }
+
+    fn normalize_core_token(core: &str) -> Vec<String> {
+        if core.is_empty() {
+            return Vec::new();
+        }
+        let normalized = core
+            .replace('g', "ɡ")
+            .replace('r', "ɹ")
+            .replace("ɚ", "əɹ")
+            .replace("ɝ", "ɜɹ")
+            .replace("ɜːɹ", "ɜɹ")
+            .replace("ɜː", "ɜɹ")
+            .replace("oʊ", "O")
+            .replace("aɪ", "I")
+            .replace("aʊ", "W")
+            .replace("eɪ", "A")
+            .replace("ɔɪ", "Y")
+            .replace("dʒ", "ʤ")
+            .replace("tʃ", "ʧ")
+            .replace('ɾ', "T")
+            .replace('ː', "");
+        if normalized == "a" {
+            return vec!["æ".to_string()];
+        }
+        if normalized == "g" {
+            return vec!["ɡ".to_string()];
+        }
+        vec![normalized]
+    }
+
+    let mut raw_tokens: Vec<String> = phonemes
+        .split_whitespace()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string())
+        .collect();
+
+    let mut out = Vec::new();
+    let mut pending_stress = String::new();
+    let mut i = 0usize;
+    while i < raw_tokens.len() {
+        let token = raw_tokens[i].trim();
+        let (prefix, core, suffix) = split_stress(token);
+        if !prefix.is_empty() {
+            pending_stress.push_str(&prefix);
+        }
+        let next_core = raw_tokens
+            .get(i + 1)
+            .map(|next| split_stress(next).1)
+            .unwrap_or_default();
+        let combined = match (core.as_str(), next_core.as_str()) {
+            ("d", "ʒ") => Some("ʤ".to_string()),
+            ("t", "ʃ") => Some("ʧ".to_string()),
+            ("a", "ɪ") => Some("I".to_string()),
+            ("a", "ʊ") => Some("W".to_string()),
+            ("e", "ɪ") => Some("A".to_string()),
+            ("o", "ʊ") => Some("O".to_string()),
+            ("ɔ", "ɪ") => Some("Y".to_string()),
+            _ => None,
+        };
+        if let Some(mut token_out) = combined {
+            if !pending_stress.is_empty() {
+                token_out = format!("{pending_stress}{token_out}");
+                pending_stress.clear();
+            }
+            out.push(token_out);
+            if !suffix.is_empty() {
+                pending_stress.push_str(&suffix);
+            }
+            i += 2;
+            continue;
+        }
+
+        for mut token_out in normalize_core_token(&core) {
+            if token_out.is_empty() {
+                continue;
+            }
+            if !pending_stress.is_empty() {
+                token_out = format!("{pending_stress}{token_out}");
+                pending_stress.clear();
+            }
+            out.push(token_out);
+        }
+        if !suffix.is_empty() {
+            pending_stress.push_str(&suffix);
+        }
+        i += 1;
+    }
+    if !pending_stress.is_empty() {
+        out.push(pending_stress);
+    }
+    out.join(" ")
+}
+
+pub fn kokoro_phonemes_from_ipa(phonemes: &str) -> String {
+    normalize_ipa_for_kokoro(phonemes)
+}
+
+fn normalize_ipa_for_espeak(phonemes: &str) -> String {
+    let compact = phonemes.split_whitespace().collect::<String>();
+    compact
+        .replace("oʊ", "əʊ")
+        .replace("ɚ", "əɹ")
+        .replace("ɝ", "ɜːɹ")
+        .replace("g", "ɡ")
+}
+
+fn espeak_ipa_voice_params() -> espeak_ng::VoiceParams {
+    espeak_ng::VoiceParams {
+        speed_percent: 90,
+        pitch_hz: 118,
+        amplitude: 50,
+        ..espeak_ng::VoiceParams::default()
+    }
+}
+
+impl LocalTtsBackend for EspeakNgBackend {
+    fn name(&self) -> &'static str {
+        "espeak-ng"
+    }
+
+    fn generate(&self, _text: &str) -> Result<TtsAudio> {
+        anyhow::bail!("espeak-ng text synthesis path is not wired yet")
+    }
+
+    fn generate_phonemes(&self, phonemes: &str) -> Result<TtsAudio> {
+        let phonemes = phonemes.trim();
+        if phonemes.is_empty() {
+            anyhow::bail!("cannot synthesize empty phoneme string");
+        }
+        let compact = normalize_ipa_for_espeak(phonemes);
+        if compact.is_empty() {
+            anyhow::bail!("cannot synthesize empty phoneme string");
+        }
+        let voice = espeak_ipa_voice_params();
+        let segments = espeak_ng::synthesize::engine::parse_ipa(&compact, &voice);
+        eprintln!(
+            "espeak-ng ipa: raw={phonemes:?} compact={compact:?} segments={} voice={{speed_percent:{},pitch_hz:{},amplitude:{}}}",
+            segments.len(),
+            voice.speed_percent,
+            voice.pitch_hz,
+            voice.amplitude
+        );
+        if segments.is_empty() {
+            anyhow::bail!("espeak-ng: no recognisable phonemes in {:?}", compact);
+        }
+        let pcm = espeak_ng::synthesize::engine::synthesize_segments(&segments, &voice);
+        if pcm.is_empty() {
+            anyhow::bail!("espeak-ng: no samples produced");
+        }
+        let samples = pcm
+            .into_iter()
+            .map(|s| (s as f32) / 32768.0)
+            .collect::<Vec<_>>();
+        Ok(TtsAudio {
+            samples,
+            sample_rate: 22_050,
         })
     }
 }
@@ -490,7 +677,7 @@ impl RemoteTtsBackend for OpenAiTtsBackend {
                 .json(&serde_json::json!({
                     "model": "tts-1",
                     "input": text,
-                    "voice": "onyx",
+                    "voice": "alloy",
                     "response_format": "pcm",
                 }))
                 .send()
@@ -792,6 +979,8 @@ pub fn init(voice_path: &str, kokoro_voice: &str, tts_workers: usize) -> TtsMana
         Err(e) => eprintln!("kokoro not available: {e}"),
     }
 
+    local.push(std::sync::Arc::new(EspeakNgBackend));
+
     // OpenAI
     if std::env::var("OPENAI_API_KEY").is_ok() {
         let api_key = std::env::var("OPENAI_API_KEY").unwrap();
@@ -891,7 +1080,7 @@ impl KokoroBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_ogg_opus_mono, encode_ogg_opus};
+    use super::{decode_ogg_opus_mono, encode_ogg_opus, kokoro_phonemes_from_ipa};
     use std::f32::consts::TAU;
 
     #[tokio::test]
@@ -911,5 +1100,22 @@ mod tests {
         assert_eq!(decoded_rate, 48_000);
         assert!(decoded.len() > 40_000);
         assert!(decoded.iter().map(|s| s.abs()).fold(0.0f32, f32::max) > 0.05);
+    }
+
+    #[test]
+    fn kokoro_normalization_keeps_phone_boundaries() {
+        assert_eq!(kokoro_phonemes_from_ipa("ɹ ɪ p ˈg ɹ a b"), "ɹ ɪ p ˈɡ ɹ æ b");
+    }
+
+    #[test]
+    fn kokoro_normalization_collapses_common_sequences() {
+        assert_eq!(kokoro_phonemes_from_ipa("g o ʊ"), "ɡ O");
+        assert_eq!(kokoro_phonemes_from_ipa("d ʒ ʌ m p"), "ʤ ʌ m p");
+        assert_eq!(kokoro_phonemes_from_ipa("t ʃ ɪ p"), "ʧ ɪ p");
+    }
+
+    #[test]
+    fn kokoro_normalization_preserves_stress_on_next_phone() {
+        assert_eq!(kokoro_phonemes_from_ipa("h ə l ˈo ʊ"), "h ə l ˈO");
     }
 }

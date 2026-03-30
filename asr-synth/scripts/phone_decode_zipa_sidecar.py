@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -11,8 +12,8 @@ from huggingface_hub import hf_hub_download
 from phone_decode_zipa import compute_features, greedy_segments, load_tokens
 
 
-REPO_ID = "anyspeech/zipa-small-crctc-300k"
-MODEL_NAME = "model.int8.onnx"
+REPO_ID = os.environ.get("ZIPA_REPO_ID", "anyspeech/zipa-small-crctc-300k")
+MODEL_NAME = os.environ.get("ZIPA_MODEL_NAME", "model.int8.onnx")
 
 
 class ZipaSidecar:

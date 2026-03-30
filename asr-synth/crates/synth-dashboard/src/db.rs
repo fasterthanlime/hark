@@ -1956,7 +1956,8 @@ impl Db {
         let sql = r#"
             WITH raw AS (
                 SELECT term,
-                       TRIM(TRIM(qwen_heard), '.,!?;:()[]{}"''`“”‘’') AS surface_form
+                       TRIM(TRIM(qwen_heard), '.,!?;:()[]{}"''`“”‘’') AS surface_form,
+                       LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(term, ' ', ''), '-', ''), '_', ''), '.', ''), ',', ''), '''', ''), '’', ''), '`', '')) AS term_compact
                 FROM vocab_confusions
                 WHERE qwen_match = 0
             ),
@@ -1969,7 +1970,7 @@ impl Db {
                 FROM raw
                 WHERE surface_form IS NOT NULL
                   AND surface_form != ''
-                  AND LOWER(surface_form) != LOWER(term)
+                  AND LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(surface_form, ' ', ''), '-', ''), '_', ''), '.', ''), ',', ''), '''', ''), '’', ''), '`', '')) != term_compact
                 GROUP BY LOWER(surface_form)
             )
             SELECT g.surface_form, g.hit_count, g.distinct_terms, g.terms_csv
@@ -2239,16 +2240,50 @@ impl Db {
 
     pub fn list_scan_confusion_surfaces(&self) -> Result<Vec<ScanConfusionSurfaceRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT term,
-                    TRIM(TRIM(qwen_heard), '.,!?;:()[]{}\"''`“”‘’') AS surface_form,
-                    COUNT(*) AS qwen_count
-             FROM vocab_confusions
-             WHERE qwen_match = 0
-               AND qwen_heard IS NOT NULL
-               AND TRIM(qwen_heard) != ''
-             GROUP BY term, surface_form
-             HAVING TRIM(surface_form) != ''
-             ORDER BY qwen_count DESC, term, surface_form",
+            "WITH raw AS (
+                SELECT term,
+                       TRIM(TRIM(qwen_heard), '.,!?;:()[]{}\"''`“”‘’') AS surface_form,
+                       LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(term, ' ', ''), '-', ''), '_', ''), '.', ''), ',', ''), '''', ''), '’', ''), '`', '')) AS term_compact
+                FROM vocab_confusions
+                WHERE qwen_match = 0
+                  AND qwen_heard IS NOT NULL
+                  AND TRIM(qwen_heard) != ''
+            ),
+            grouped AS (
+                SELECT term,
+                       surface_form,
+                       LOWER(surface_form) AS surface_key,
+                       COUNT(*) AS qwen_count
+                FROM raw
+                WHERE TRIM(surface_form) != ''
+                  AND LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(surface_form, ' ', ''), '-', ''), '_', ''), '.', ''), ',', ''), '''', ''), '’', ''), '`', '')) != term_compact
+                GROUP BY term, surface_form
+            ),
+            surface_stats AS (
+                SELECT surface_key,
+                       COUNT(DISTINCT LOWER(term)) AS distinct_terms
+                FROM grouped
+                GROUP BY surface_key
+            )
+            SELECT g.term, g.surface_form, g.qwen_count
+            FROM grouped g
+            JOIN surface_stats s
+              ON s.surface_key = g.surface_key
+            LEFT JOIN reviewed_confusion_surfaces r
+              ON LOWER(r.term) = LOWER(g.term)
+             AND LOWER(r.surface_form) = LOWER(g.surface_form)
+            WHERE LOWER(g.surface_form) NOT IN (
+                'yeah', 'yes', 'yep', 'yup', 'no', 'nope',
+                'okay', 'ok', 'alright', 'all right', 'right',
+                'sure', 'well', 'uh', 'um', 'hmm', 'mm', 'mhm',
+                'oh', 'ah', 'hey', 'yo'
+            )
+              AND r.id IS NULL
+              AND NOT (
+                  s.distinct_terms >= 3
+                  AND LENGTH(REPLACE(g.surface_form, ' ', '')) <= 6
+              )
+            ORDER BY g.qwen_count DESC, g.term, g.surface_form",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(ScanConfusionSurfaceRow {

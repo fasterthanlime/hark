@@ -1169,6 +1169,16 @@
             return audioBuf;
         }
 
+        async function fetchKokoroPhonemeText(phonemes) {
+            const res = await fetch('/api/tts/convert-kokoro-phonemes', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({phonemes}),
+            });
+            if (!res.ok) throw new Error(`Kokoro convert ${res.status}: ${await res.text()}`);
+            return res.json();
+        }
+
         // TTS + forced alignment in one shot. Returns { audioBuf, alignment }.
         // alignment is [{word, start, end}, ...] with times in seconds.
         async function fetchTtsAligned(spokenText, backend, alignText) {
@@ -1309,11 +1319,30 @@
             'ˌ': {desc:'secondary stress: a lighter stress mark'},
         };
 
-        const IPA_KEYBOARD_ROWS = [
-            ['ˈ','ˌ','ː','ə','ɪ','ʊ','ɛ','æ','ʌ','ɔ','ɑ','ɒ'],
-            ['i','e','a','o','u','ɨ','ʉ','ɯ','ø','œ','ɜ','ɐ'],
-            ['p','b','t','d','k','g','f','v','θ','ð','s','z','ʃ','ʒ','h'],
-            ['m','n','ŋ','l','ɹ','r','j','w','tʃ','dʒ','ʔ','ɾ','x','ç','ʁ'],
+        const IPA_KEYBOARD_GROUPS = [
+            {
+                title: 'Vowels',
+                rows: [
+                    ['i','ɪ','e','ɛ','æ','a','ɑ','ɒ'],
+                    ['ə','ɜ','ɐ','ʌ','ɔ','o','ʊ','u'],
+                    ['ɨ','ʉ','ɯ','ø','œ'],
+                ],
+            },
+            {
+                title: 'Consonants',
+                rows: [
+                    ['p','b','t','d','k','g'],
+                    ['f','v','θ','ð','s','z','ʃ','ʒ','h'],
+                    ['m','n','ŋ','l','ɹ','r','j','w'],
+                    ['tʃ','dʒ','ʔ','ɾ','x','ç','ʁ'],
+                ],
+            },
+            {
+                title: 'Stress & Length',
+                rows: [
+                    ['ˈ','ˌ','ː'],
+                ],
+            },
         ];
 
         const IPA_FONT_STACK = "'Manuale IPA Web', 'Manuale IPA', 'Charis SIL', 'Gentium Plus', serif";
@@ -1374,6 +1403,16 @@
             return res.json();
         }
 
+        async function suggestIpaFromEspeak(text, lang='en') {
+            const res = await fetch('/api/ipa/suggest-espeak', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({text, backend: lang}),
+            });
+            if (!res.ok) throw new Error(`IPA suggest ${res.status}: ${await res.text()}`);
+            return res.json();
+        }
+
         async function decodeBase64WavToAudioBuffer(audioB64) {
             const binaryStr = atob(audioB64);
             const bytes = new Uint8Array(binaryStr.length);
@@ -1429,23 +1468,131 @@
             );
         }
 
-        function IpaWorkbench({value, onChange, previewText, placeholder='reviewed IPA'}) {
+        function KokoroPhonemeCompare({ipaText}) {
+            const [kokoroText, setKokoroText] = useState('');
+            const [error, setError] = useState(null);
+            const trimmed = String(ipaText || '').trim();
+
+            useEffect(() => {
+                let cancelled = false;
+                if (!trimmed) {
+                    setKokoroText('');
+                    setError(null);
+                    return;
+                }
+                fetchKokoroPhonemeText(trimmed)
+                    .then(data => {
+                        if (cancelled) return;
+                        setKokoroText(String(data.kokoro || ''));
+                        setError(null);
+                    })
+                    .catch(e => {
+                        if (cancelled) return;
+                        setKokoroText('');
+                        setError(e.message || 'failed to convert');
+                    });
+                return () => { cancelled = true; };
+            }, [trimmed]);
+
+            if (!trimmed) return null;
+            if (error) {
+                return <div style={{fontSize:12,color:'var(--error)'}}>Kokoro phonemes: {error}</div>;
+            }
+            if (!kokoroText) return null;
+            return (
+                <div style={{fontSize:12,color:'var(--text-muted)',display:'flex',gap:8,alignItems:'baseline',flexWrap:'wrap'}}>
+                    <span style={{textTransform:'uppercase',letterSpacing:'0.04em'}}>Kokoro phonemes</span>
+                    <span style={{fontFamily: IPA_FONT_STACK, color:'var(--accent)', fontSize:18, lineHeight:1.05}}>{kokoroText}</span>
+                </div>
+            );
+        }
+
+        function IpaSuggestionReadout({ipaText, rawText=null, normalizedLabel='Normalized IPA', rawLabel='Raw IPA'}) {
+            const trimmed = String(ipaText || '').trim();
+            if (!trimmed) return null;
+            const raw = String(rawText || '').trim();
+            const showRaw = raw && raw !== trimmed;
+            return (
+                <div style={{display:'grid',gap:8}}>
+                    <div style={{display:'grid',gap:4}}>
+                        <div style={{fontSize:11,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>
+                            {showRaw ? normalizedLabel : 'IPA'}
+                        </div>
+                        <div style={{
+                            fontFamily: IPA_FONT_STACK,
+                            color:'var(--accent)',
+                            fontSize:28,
+                            lineHeight:1.08,
+                            letterSpacing:'0.01em',
+                            wordBreak:'break-word',
+                        }}>
+                            {trimmed}
+                        </div>
+                    </div>
+                    {showRaw && (
+                        <div style={{display:'grid',gap:4}}>
+                            <div style={{fontSize:11,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>
+                                {rawLabel}
+                            </div>
+                            <div style={{
+                                fontFamily: IPA_FONT_STACK,
+                                color:'var(--text-muted)',
+                                fontSize:22,
+                                lineHeight:1.08,
+                                wordBreak:'break-word',
+                            }}>
+                                {raw}
+                            </div>
+                        </div>
+                    )}
+                    <details style={{fontSize:12,color:'var(--text-muted)'}}>
+                        <summary style={{cursor:'pointer',userSelect:'none'}}>Inspect tokens and Kokoro mapping</summary>
+                        <div style={{display:'grid',gap:8,marginTop:8}}>
+                            <KokoroPhonemeCompare ipaText={trimmed} />
+                            <IpaTokenGloss text={trimmed} />
+                        </div>
+                    </details>
+                </div>
+            );
+        }
+
+        function IpaWorkbench({value, onChange, previewText, placeholder='reviewed IPA', onUseVersion=null}) {
             const [recording, setRecording] = useState(false);
             const [busy, setBusy] = useState(false);
             const [playing, setPlaying] = useState(false);
+            const [playingKey, setPlayingKey] = useState(null);
             const [inputFocused, setInputFocused] = useState(false);
-            const [decodedAllophant, setDecodedAllophant] = useState('');
             const [decodedZipa, setDecodedZipa] = useState('');
+            const [decodedZipaNs700k, setDecodedZipaNs700k] = useState('');
+            const [decodedZipaRaw, setDecodedZipaRaw] = useState('');
+            const [decodedZipaNs700kRaw, setDecodedZipaNs700kRaw] = useState('');
             const [decodedTtsZipa, setDecodedTtsZipa] = useState('');
-            const [allophantElapsedMs, setAllophantElapsedMs] = useState(null);
+            const [decodedTtsZipaNs700k, setDecodedTtsZipaNs700k] = useState('');
+            const [decodedTtsZipaRaw, setDecodedTtsZipaRaw] = useState('');
+            const [decodedTtsZipaNs700kRaw, setDecodedTtsZipaNs700kRaw] = useState('');
+            const [decodedPocketZipa, setDecodedPocketZipa] = useState('');
+            const [decodedPocketZipaNs700k, setDecodedPocketZipaNs700k] = useState('');
+            const [decodedPocketZipaRaw, setDecodedPocketZipaRaw] = useState('');
+            const [decodedPocketZipaNs700kRaw, setDecodedPocketZipaNs700kRaw] = useState('');
+            const [decodedEspeakIpa, setDecodedEspeakIpa] = useState('');
             const [zipaElapsedMs, setZipaElapsedMs] = useState(null);
+            const [zipaNs700kElapsedMs, setZipaNs700kElapsedMs] = useState(null);
             const [ttsElapsedMs, setTtsElapsedMs] = useState(null);
             const [ttsZipaElapsedMs, setTtsZipaElapsedMs] = useState(null);
+            const [ttsZipaNs700kElapsedMs, setTtsZipaNs700kElapsedMs] = useState(null);
+            const [pocketElapsedMs, setPocketElapsedMs] = useState(null);
+            const [pocketZipaElapsedMs, setPocketZipaElapsedMs] = useState(null);
+            const [pocketZipaNs700kElapsedMs, setPocketZipaNs700kElapsedMs] = useState(null);
+            const [espeakElapsedMs, setEspeakElapsedMs] = useState(null);
             const [ttsSuggestedAudioB64, setTtsSuggestedAudioB64] = useState(null);
+            const [pocketSuggestedAudioB64, setPocketSuggestedAudioB64] = useState(null);
             const [decodeError, setDecodeError] = useState(null);
-            const [allophantTrace, setAllophantTrace] = useState(null);
             const [zipaTrace, setZipaTrace] = useState(null);
+            const [zipaNs700kTrace, setZipaNs700kTrace] = useState(null);
             const [ttsZipaTrace, setTtsZipaTrace] = useState(null);
+            const [ttsZipaNs700kTrace, setTtsZipaNs700kTrace] = useState(null);
+            const [pocketZipaTrace, setPocketZipaTrace] = useState(null);
+            const [pocketZipaNs700kTrace, setPocketZipaNs700kTrace] = useState(null);
             const [keyboardHover, setKeyboardHover] = useState(null);
             const recorderRef = useRef(null);
             const inputRef = useRef(null);
@@ -1462,6 +1609,21 @@
                 fontFamily: IPA_FONT_STACK,
                 fontSize:24,
                 lineHeight: 1.1,
+            };
+            const playButtonStyle = {
+                minWidth: 116,
+                justifyContent:'center',
+                gap:8,
+                opacity: playing ? 0.72 : 1,
+            };
+            const spinnerStyle = {
+                width:12,
+                height:12,
+                border:'2px solid currentColor',
+                borderTopColor:'transparent',
+                borderRadius:'50%',
+                animation:'spin 0.8s linear infinite',
+                flex:'0 0 auto',
             };
 
             const stopRecording = async (options = {}) => {
@@ -1486,6 +1648,60 @@
                 setInputFocused(true);
             };
 
+            const stopCurrentPreview = () => {
+                stopPlayback();
+                setPlaying(false);
+                setPlayingKey(null);
+            };
+
+            const startPreview = async (key, runner) => {
+                if (playing && playingKey === key) {
+                    stopCurrentPreview();
+                    return;
+                }
+                try {
+                    stopPlayback();
+                    setPlaying(true);
+                    setPlayingKey(key);
+                    const buf = await runner();
+                    if (!buf) {
+                        setPlaying(false);
+                        setPlayingKey(null);
+                        return;
+                    }
+                    playBuffer(buf, () => {
+                        setPlaying(false);
+                        setPlayingKey(current => current === key ? null : current);
+                    });
+                } catch (e) {
+                    const message = String(e?.message || e || '');
+                    if (!(e?.name === 'AbortError' || message.includes('signal is aborted'))) {
+                        setDecodeError(e.message || String(e));
+                    }
+                    setPlaying(false);
+                    setPlayingKey(null);
+                }
+            };
+
+            const renderPlayButton = (key, label, title, onPlay, disabled=false) => {
+                const active = playing && playingKey === key;
+                return (
+                    <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={disabled || (playing && !active)}
+                        onClick={() => active ? stopCurrentPreview() : onPlay()}
+                        title={title}
+                        style={playButtonStyle}
+                    >
+                        <span style={{display:'inline-flex',alignItems:'center',justifyContent:'center',width:12}}>
+                            {active ? <span style={spinnerStyle} /> : <span style={{fontSize:11,lineHeight:1}}>▶</span>}
+                        </span>
+                        <span>{label}</span>
+                    </button>
+                );
+            };
+
             const startRecording = async () => {
                 try {
                     setDecodeError(null);
@@ -1493,12 +1709,14 @@
                         try {
                             setBusy(true);
                             const data = await decodeIpaFromWav(wavBytes);
-                            setDecodedAllophant(data.allophant?.phones || data.phones || '');
-                            setDecodedZipa(data.zipa?.phones || '');
-                            setAllophantElapsedMs(Number.isFinite(data.allophant?.elapsed_ms) ? data.allophant.elapsed_ms : null);
+                            setDecodedZipa(data.zipa?.phones || data.phones || '');
+                            setDecodedZipaNs700k(data.zipa_300k?.phones || '');
+                            setDecodedZipaRaw(data.zipa?.raw_phones || '');
+                            setDecodedZipaNs700kRaw(data.zipa_300k?.raw_phones || '');
                             setZipaElapsedMs(Number.isFinite(data.zipa?.elapsed_ms) ? data.zipa.elapsed_ms : null);
-                            setAllophantTrace(data.allophant?.trace || data.trace || null);
+                            setZipaNs700kElapsedMs(Number.isFinite(data.zipa_300k?.elapsed_ms) ? data.zipa_300k.elapsed_ms : null);
                             setZipaTrace(data.zipa?.trace || null);
+                            setZipaNs700kTrace(data.zipa_300k?.trace || null);
                         } catch (e) {
                             setDecodeError(e.message);
                         } finally {
@@ -1524,10 +1742,73 @@
                     setDecodeError(null);
                     const data = await suggestIpaFromTts(text, 'openai');
                     setDecodedTtsZipa(data.zipa?.phones || '');
+                    setDecodedTtsZipaNs700k(data.zipa_300k?.phones || '');
+                    setDecodedTtsZipaRaw(data.zipa?.raw_phones || '');
+                    setDecodedTtsZipaNs700kRaw(data.zipa_300k?.raw_phones || '');
                     setTtsElapsedMs(Number.isFinite(data.tts_elapsed_ms) ? data.tts_elapsed_ms : null);
                     setTtsZipaElapsedMs(Number.isFinite(data.zipa?.elapsed_ms) ? data.zipa.elapsed_ms : null);
+                    setTtsZipaNs700kElapsedMs(Number.isFinite(data.zipa_300k?.elapsed_ms) ? data.zipa_300k.elapsed_ms : null);
                     setTtsSuggestedAudioB64(data.tts_audio_b64 || null);
                     setTtsZipaTrace(data.zipa?.trace || null);
+                    setTtsZipaNs700kTrace(data.zipa_300k?.trace || null);
+                    const suggested = String(data.zipa?.phones || data.zipa_300k?.phones || '').trim();
+                    if (suggested) {
+                        previewKokoro(suggested);
+                    }
+                } catch (e) {
+                    setDecodeError(e.message);
+                } finally {
+                    setBusy(false);
+                }
+            };
+
+            const suggestFromPocketTts = async () => {
+                const text = String(previewText || '').trim();
+                if (!text) {
+                    setDecodeError('No spoken text available for Pocket+ZIPA suggestion');
+                    return;
+                }
+                try {
+                    setBusy(true);
+                    setDecodeError(null);
+                    const data = await suggestIpaFromTts(text, 'pocket-hq');
+                    setDecodedPocketZipa(data.zipa?.phones || '');
+                    setDecodedPocketZipaNs700k(data.zipa_300k?.phones || '');
+                    setDecodedPocketZipaRaw(data.zipa?.raw_phones || '');
+                    setDecodedPocketZipaNs700kRaw(data.zipa_300k?.raw_phones || '');
+                    setPocketElapsedMs(Number.isFinite(data.tts_elapsed_ms) ? data.tts_elapsed_ms : null);
+                    setPocketZipaElapsedMs(Number.isFinite(data.zipa?.elapsed_ms) ? data.zipa.elapsed_ms : null);
+                    setPocketZipaNs700kElapsedMs(Number.isFinite(data.zipa_300k?.elapsed_ms) ? data.zipa_300k.elapsed_ms : null);
+                    setPocketSuggestedAudioB64(data.tts_audio_b64 || null);
+                    setPocketZipaTrace(data.zipa?.trace || null);
+                    setPocketZipaNs700kTrace(data.zipa_300k?.trace || null);
+                    const suggested = String(data.zipa?.phones || data.zipa_300k?.phones || '').trim();
+                    if (suggested) {
+                        previewKokoro(suggested);
+                    }
+                } catch (e) {
+                    setDecodeError(e.message);
+                } finally {
+                    setBusy(false);
+                }
+            };
+
+            const suggestFromEspeak = async () => {
+                const text = String(previewText || '').trim();
+                if (!text) {
+                    setDecodeError('No spoken text available for eSpeak suggestion');
+                    return;
+                }
+                try {
+                    setBusy(true);
+                    setDecodeError(null);
+                    const data = await suggestIpaFromEspeak(text, 'en');
+                    setDecodedEspeakIpa(String(data.ipa || '').trim());
+                    setEspeakElapsedMs(Number.isFinite(data.elapsed_ms) ? data.elapsed_ms : null);
+                    const suggested = String(data.ipa || '').trim();
+                    if (suggested) {
+                        previewKokoro(suggested);
+                    }
                 } catch (e) {
                     setDecodeError(e.message);
                 } finally {
@@ -1542,35 +1823,23 @@
             const previewKokoro = async (phonemeOverride = null) => {
                 const phonemes = String(phonemeOverride ?? value ?? '').trim();
                 if (!phonemes) return;
-                try {
-                    setPlaying(true);
-                    const buf = await fetchTtsPhonemeBuffer(phonemes, 'kokoro');
-                    if (!buf) {
-                        setPlaying(false);
-                        return;
-                    }
-                    playBuffer(buf, () => setPlaying(false));
-                } catch (e) {
-                    const message = String(e?.message || e || '');
-                    if (e?.name === 'AbortError' || message.includes('signal is aborted')) {
-                        setPlaying(false);
-                        return;
-                    }
-                    setDecodeError(e.message);
-                    setPlaying(false);
-                }
+                return startPreview(`kokoro:${phonemes}`, () => fetchTtsPhonemeBuffer(phonemes, 'kokoro'));
+            };
+
+            const previewEspeak = async (phonemeOverride = null) => {
+                const phonemes = String(phonemeOverride ?? value ?? '').trim();
+                if (!phonemes) return;
+                return startPreview(`espeak:${phonemes}`, () => fetchTtsPhonemeBuffer(phonemes, 'espeak-ng'));
             };
 
             const previewSuggestedTts = async () => {
                 if (!ttsSuggestedAudioB64) return;
-                try {
-                    setPlaying(true);
-                    const buf = await decodeBase64WavToAudioBuffer(ttsSuggestedAudioB64);
-                    playBuffer(buf, () => setPlaying(false));
-                } catch (e) {
-                    setDecodeError(e.message || 'Failed to play OpenAI TTS preview');
-                    setPlaying(false);
-                }
+                return startPreview('tts:openai', async () => await decodeBase64WavToAudioBuffer(ttsSuggestedAudioB64));
+            };
+
+            const previewSuggestedPocket = async () => {
+                if (!pocketSuggestedAudioB64) return;
+                return startPreview('tts:pocket', async () => await decodeBase64WavToAudioBuffer(pocketSuggestedAudioB64));
             };
 
             const reviewedIpa = String(value || '').trim();
@@ -1627,6 +1896,10 @@
                 queueAutoPreview();
             };
 
+            const useVersion = async (phonemes) => {
+                onChange(phonemes);
+            };
+
             const backspaceToken = () => {
                 const input = inputRef.current;
                 const current = String(value || '');
@@ -1657,75 +1930,93 @@
 
             return (
                 <div ref={workbenchRef} style={{display:'grid',gap:10}}>
-                    <div style={{display:'grid',gridTemplateColumns:'minmax(0,1fr) auto',gap:8,alignItems:'center'}}>
-                        <input
-                            ref={inputRef}
-                            value={value}
-                            onChange={e => {
-                                onChange(e.target.value);
-                                queueAutoPreview();
-                            }}
-                            onFocus={() => setInputFocused(true)}
-                            onBlur={e => {
-                                const next = e.relatedTarget;
-                                if (next && workbenchRef.current && workbenchRef.current.contains(next)) {
-                                    return;
-                                }
-                                setInputFocused(false);
-                            }}
-                            placeholder={placeholder}
-                            style={{...ipaInputStyle, minWidth:0}}
-                        />
-                        <button
-                            type="button"
-                            className="btn btn-sm"
-                            disabled={playing || !reviewedIpa}
-                            onClick={() => previewKokoro(reviewedIpa)}
-                            title="Play the current reviewed IPA through Kokoro"
-                        >
-                            {playing ? 'Playing...' : 'Play'}
-                        </button>
-                    </div>
-                    {inputFocused && (
-                        <div style={{display:'grid',gap:6}}>
-                            {IPA_KEYBOARD_ROWS.map((row, rowIdx) => (
-                                <div key={rowIdx} style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                                    {row.map(token => (
-                                        <button
-                                            key={token}
-                                            type="button"
-                                            className="btn btn-sm"
-                                            title={ipaDescription(token)}
-                                            aria-label={`${token}: ${ipaDescription(token)}`}
-                                            onMouseDown={keepInputFocus}
-                                            onClick={() => insertToken(token)}
-                                            onMouseEnter={() => setKeyboardHover(token)}
-                                            onMouseLeave={() => setKeyboardHover(current => current === token ? null : current)}
-                                            style={{fontFamily: IPA_FONT_STACK, color:'var(--accent)', fontSize: 18, lineHeight: 1.05}}
-                                        >
-                                            {token}
-                                        </button>
+                    <div style={{position:'relative'}}>
+                        <div style={{display:'grid',gridTemplateColumns:'minmax(0,1fr) auto auto',gap:8,alignItems:'center'}}>
+                            <input
+                                ref={inputRef}
+                                value={value}
+                                onChange={e => {
+                                    onChange(e.target.value);
+                                    queueAutoPreview();
+                                }}
+                                onFocus={() => setInputFocused(true)}
+                                onBlur={e => {
+                                    const next = e.relatedTarget;
+                                    if (next && workbenchRef.current && workbenchRef.current.contains(next)) {
+                                        return;
+                                    }
+                                    setInputFocused(false);
+                                }}
+                                placeholder={placeholder}
+                                style={{...ipaInputStyle, minWidth:0}}
+                            />
+                            {renderPlayButton('reviewed:kokoro', 'Play', 'Play the current reviewed IPA through Kokoro', () => previewKokoro(reviewedIpa), !reviewedIpa)}
+                        </div>
+                        {inputFocused && (
+                            <div style={{
+                                position:'absolute',
+                                left:0,
+                                top:'calc(100% + 8px)',
+                                zIndex:40,
+                                width:'min(760px, 100%)',
+                                maxWidth:'calc(100vw - 64px)',
+                                display:'grid',
+                                gap:6,
+                                padding:12,
+                                border:'1px solid var(--border)',
+                                borderRadius:12,
+                                background:'rgba(20,24,32,0.98)',
+                                boxShadow:'0 18px 40px rgba(0,0,0,0.35)',
+                                backdropFilter:'blur(8px)',
+                            }}>
+                                <div style={{display:'grid',gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr)',gap:12,alignItems:'start'}}>
+                                    {IPA_KEYBOARD_GROUPS.map(group => (
+                                        <div key={group.title} style={{display:'grid',gap:6}}>
+                                            <div style={{fontSize:11,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>
+                                                {group.title}
+                                            </div>
+                                            {group.rows.map((row, rowIdx) => (
+                                                <div key={`${group.title}-${rowIdx}`} style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                                                    {row.map(token => (
+                                                        <button
+                                                            key={token}
+                                                            type="button"
+                                                            className="btn btn-sm"
+                                                            title={ipaDescription(token)}
+                                                            aria-label={`${token}: ${ipaDescription(token)}`}
+                                                            onMouseDown={keepInputFocus}
+                                                            onClick={() => insertToken(token)}
+                                                            onMouseEnter={() => setKeyboardHover(token)}
+                                                            onMouseLeave={() => setKeyboardHover(current => current === token ? null : current)}
+                                                            style={{fontFamily: IPA_FONT_STACK, color:'var(--accent)', fontSize: 18, lineHeight: 1.05}}
+                                                        >
+                                                            {token}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            ))}
+                                        </div>
                                     ))}
                                 </div>
-                            ))}
-                            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                                <button type="button" className="btn btn-sm" onMouseDown={keepInputFocus} onClick={() => insertTextAtCursor(' ')} title="Insert a token separator">
-                                    Space
-                                </button>
-                                <button type="button" className="btn btn-sm" onMouseDown={keepInputFocus} onClick={backspaceToken} title="Remove the token before the cursor">
-                                    Backspace
-                                </button>
-                                <button type="button" className="btn btn-sm" onMouseDown={keepInputFocus} onClick={() => { onChange(''); queueAutoPreview(); }} title="Clear the reviewed IPA field">
-                                    Clear
-                                </button>
-                            </div>
-                            {keyboardHover && (
-                                <div style={{fontSize:12,color:'var(--text-muted)'}}>
-                                    {keyboardHover}: {ipaDescription(keyboardHover)}
+                                <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                                    <button type="button" className="btn btn-sm" onMouseDown={keepInputFocus} onClick={() => insertTextAtCursor(' ')} title="Insert a token separator">
+                                        Space
+                                    </button>
+                                    <button type="button" className="btn btn-sm" onMouseDown={keepInputFocus} onClick={backspaceToken} title="Remove the token before the cursor">
+                                        Backspace
+                                    </button>
+                                    <button type="button" className="btn btn-sm" onMouseDown={keepInputFocus} onClick={() => { onChange(''); queueAutoPreview(); }} title="Clear the reviewed IPA field">
+                                        Clear
+                                    </button>
                                 </div>
-                            )}
-                        </div>
-                    )}
+                                {keyboardHover && (
+                                    <div style={{fontSize:12,color:'var(--text-muted)'}}>
+                                        {keyboardHover}: {ipaDescription(keyboardHover)}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
                     <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                         <button
                             type="button"
@@ -1745,40 +2036,50 @@
                         >
                             Suggest via OpenAI+ZIPA
                         </button>
+                        <button
+                            type="button"
+                            className="btn btn-sm"
+                            disabled={busy || !String(previewText || '').trim()}
+                            onClick={suggestFromPocketTts}
+                            title="Synthesize the spoken text with pocket-tts, run ZIPA on it, and offer that IPA as another silent suggestion"
+                        >
+                            Suggest via Pocket+ZIPA
+                        </button>
+                        <button
+                            type="button"
+                            className="btn btn-sm"
+                            disabled={busy || !String(previewText || '').trim()}
+                            onClick={suggestFromEspeak}
+                            title="Use eSpeak-ng text-to-IPA directly for a text-only IPA suggestion"
+                        >
+                            Suggest via eSpeak
+                        </button>
                     </div>
                     {decodeError && <div className="pipeline-error">{decodeError}</div>}
-                    {(decodedAllophant || decodedZipa || decodedTtsZipa) && (
+                    {(decodedZipa || decodedZipaNs700k || decodedTtsZipa || decodedTtsZipaNs700k || decodedPocketZipa || decodedPocketZipaNs700k || decodedEspeakIpa) && (
                         <div style={{display:'grid',gap:10}}>
-                            {decodedAllophant && (
+                            {decodedEspeakIpa && (
                                 <div style={{display:'grid',gap:6}}>
                                     <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}>
                                         <div style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
-                                            <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>Allophant</div>
-                                            {allophantElapsedMs != null && (
-                                                <div style={{fontSize:12,color:'var(--text-muted)'}}>{allophantElapsedMs}ms</div>
+                                            <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>eSpeak</div>
+                                            {espeakElapsedMs != null && (
+                                                <div style={{fontSize:12,color:'var(--text-muted)'}}>{espeakElapsedMs}ms</div>
                                             )}
                                         </div>
                                         <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                                            {renderPlayButton('espeak-suggest:kokoro', 'Play', 'Play the eSpeak IPA through Kokoro', () => previewKokoro(decodedEspeakIpa), !decodedEspeakIpa)}
                                             <button
                                                 type="button"
                                                 className="btn btn-sm"
-                                                disabled={playing || !decodedAllophant}
-                                                onClick={() => previewKokoro(decodedAllophant)}
-                                                title="Play the Allophant IPA through Kokoro"
+                                                onClick={() => useVersion(decodedEspeakIpa)}
+                                                title="Copy the eSpeak IPA into the reviewed field"
                                             >
-                                                {playing ? 'Playing...' : 'Play'}
-                                            </button>
-                                            <button
-                                                type="button"
-                                                className="btn btn-sm"
-                                                onClick={() => onChange(decodedAllophant)}
-                                                title="Copy the Allophant IPA into the reviewed field"
-                                            >
-                                                Use this version
+                                                Use
                                             </button>
                                         </div>
                                     </div>
-                                    <IpaTokenGloss text={decodedAllophant} />
+                                    <IpaSuggestionReadout ipaText={decodedEspeakIpa} />
                                 </div>
                             )}
                             {decodedZipa && (
@@ -1791,26 +2092,42 @@
                                             )}
                                         </div>
                                         <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                                            {renderPlayButton('zipa:kokoro', 'Play', 'Play the ZIPA IPA through Kokoro', () => previewKokoro(decodedZipa), !decodedZipa)}
                                             <button
                                                 type="button"
                                                 className="btn btn-sm"
-                                                disabled={playing || !decodedZipa}
-                                                onClick={() => previewKokoro(decodedZipa)}
-                                                title="Play the ZIPA IPA through Kokoro"
-                                            >
-                                                {playing ? 'Playing...' : 'Play'}
-                                            </button>
-                                            <button
-                                                type="button"
-                                                className="btn btn-sm"
-                                                onClick={() => onChange(decodedZipa)}
+                                                onClick={() => useVersion(decodedZipa)}
                                                 title="Copy the ZIPA IPA into the reviewed field"
                                             >
-                                                Use this version
+                                                Use
                                             </button>
                                         </div>
                                     </div>
-                                    <IpaTokenGloss text={decodedZipa} />
+                                    <IpaSuggestionReadout ipaText={decodedZipa} rawText={decodedZipaRaw} rawLabel="Raw ZIPA" />
+                                </div>
+                            )}
+                            {decodedZipaNs700k && (
+                                <div style={{display:'grid',gap:6}}>
+                                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}>
+                                        <div style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                                            <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>ZIPA 300k</div>
+                                            {zipaNs700kElapsedMs != null && (
+                                                <div style={{fontSize:12,color:'var(--text-muted)'}}>{zipaNs700kElapsedMs}ms</div>
+                                            )}
+                                        </div>
+                                        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                                            {renderPlayButton('zipa-ns:kokoro', 'Play', 'Play the ZIPA 300k phones through Kokoro', () => previewKokoro(decodedZipaNs700k), !decodedZipaNs700k)}
+                                            <button
+                                                type="button"
+                                                className="btn btn-sm"
+                                                onClick={() => useVersion(decodedZipaNs700k)}
+                                                title="Copy the ZIPA 300k IPA into the reviewed field"
+                                            >
+                                                Use
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <IpaSuggestionReadout ipaText={decodedZipaNs700k} rawText={decodedZipaNs700kRaw} rawLabel="Raw ZIPA 300k" />
                                 </div>
                             )}
                             {decodedTtsZipa && (
@@ -1825,35 +2142,100 @@
                                             </div>
                                         </div>
                                         <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                                            {renderPlayButton('tts-openai:source', 'Play TTS', 'Play the original OpenAI TTS audio', previewSuggestedTts, !ttsSuggestedAudioB64)}
+                                            {renderPlayButton('tts-openai:kokoro', 'Play', 'Play the OpenAI+ZIPA phones through Kokoro', () => previewKokoro(decodedTtsZipa), !decodedTtsZipa)}
                                             <button
                                                 type="button"
                                                 className="btn btn-sm"
-                                                disabled={playing || !ttsSuggestedAudioB64}
-                                                onClick={previewSuggestedTts}
-                                                title="Play the original OpenAI TTS audio that ZIPA decoded"
-                                            >
-                                                {playing ? 'Playing...' : 'Play TTS'}
-                                            </button>
-                                            <button
-                                                type="button"
-                                                className="btn btn-sm"
-                                                disabled={playing || !decodedTtsZipa}
-                                                onClick={() => previewKokoro(decodedTtsZipa)}
-                                                title="Play the OpenAI+ZIPA phones through Kokoro"
-                                            >
-                                                {playing ? 'Playing...' : 'Play Kokoro'}
-                                            </button>
-                                            <button
-                                                type="button"
-                                                className="btn btn-sm"
-                                                onClick={() => onChange(decodedTtsZipa)}
+                                                onClick={() => useVersion(decodedTtsZipa)}
                                                 title="Copy the OpenAI+ZIPA IPA into the reviewed field"
                                             >
-                                                Use this version
+                                                Use
                                             </button>
                                         </div>
                                     </div>
-                                    <IpaTokenGloss text={decodedTtsZipa} />
+                                    <IpaSuggestionReadout ipaText={decodedTtsZipa} rawText={decodedTtsZipaRaw} rawLabel="Raw ZIPA" />
+                                </div>
+                            )}
+                            {decodedTtsZipaNs700k && (
+                                <div style={{display:'grid',gap:6}}>
+                                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}>
+                                        <div style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                                            <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>OpenAI+ZIPA 300k</div>
+                                            <div style={{fontSize:12,color:'var(--text-muted)'}}>
+                                                {ttsElapsedMs != null ? `${ttsElapsedMs}ms TTS` : null}
+                                                {ttsElapsedMs != null && ttsZipaNs700kElapsedMs != null ? ' + ' : null}
+                                                {ttsZipaNs700kElapsedMs != null ? `${ttsZipaNs700kElapsedMs}ms ZIPA` : null}
+                                            </div>
+                                        </div>
+                                        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                                            {renderPlayButton('tts-openai-ns:source', 'Play TTS', 'Play the original OpenAI TTS audio', previewSuggestedTts, !ttsSuggestedAudioB64)}
+                                            {renderPlayButton('tts-openai-ns:kokoro', 'Play', 'Play the OpenAI+ZIPA 300k phones through Kokoro', () => previewKokoro(decodedTtsZipaNs700k), !decodedTtsZipaNs700k)}
+                                            <button
+                                                type="button"
+                                                className="btn btn-sm"
+                                                onClick={() => useVersion(decodedTtsZipaNs700k)}
+                                                title="Copy the OpenAI+ZIPA 300k IPA into the reviewed field"
+                                            >
+                                                Use
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <IpaSuggestionReadout ipaText={decodedTtsZipaNs700k} rawText={decodedTtsZipaNs700kRaw} rawLabel="Raw ZIPA 300k" />
+                                </div>
+                            )}
+                            {decodedPocketZipa && (
+                                <div style={{display:'grid',gap:6}}>
+                                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}>
+                                        <div style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                                            <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>Pocket+ZIPA</div>
+                                            <div style={{fontSize:12,color:'var(--text-muted)'}}>
+                                                {pocketElapsedMs != null ? `${pocketElapsedMs}ms TTS` : null}
+                                                {pocketElapsedMs != null && pocketZipaElapsedMs != null ? ' + ' : null}
+                                                {pocketZipaElapsedMs != null ? `${pocketZipaElapsedMs}ms ZIPA` : null}
+                                            </div>
+                                        </div>
+                                        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                                            {renderPlayButton('tts-pocket:source', 'Play TTS', 'Play the original Pocket TTS audio', previewSuggestedPocket, !pocketSuggestedAudioB64)}
+                                            {renderPlayButton('tts-pocket:kokoro', 'Play', 'Play the Pocket+ZIPA phones through Kokoro', () => previewKokoro(decodedPocketZipa), !decodedPocketZipa)}
+                                            <button
+                                                type="button"
+                                                className="btn btn-sm"
+                                                onClick={() => useVersion(decodedPocketZipa)}
+                                                title="Copy the Pocket+ZIPA IPA into the reviewed field"
+                                            >
+                                                Use
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <IpaSuggestionReadout ipaText={decodedPocketZipa} rawText={decodedPocketZipaRaw} rawLabel="Raw ZIPA" />
+                                </div>
+                            )}
+                            {decodedPocketZipaNs700k && (
+                                <div style={{display:'grid',gap:6}}>
+                                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}>
+                                        <div style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                                            <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>Pocket+ZIPA 300k</div>
+                                            <div style={{fontSize:12,color:'var(--text-muted)'}}>
+                                                {pocketElapsedMs != null ? `${pocketElapsedMs}ms TTS` : null}
+                                                {pocketElapsedMs != null && pocketZipaNs700kElapsedMs != null ? ' + ' : null}
+                                                {pocketZipaNs700kElapsedMs != null ? `${pocketZipaNs700kElapsedMs}ms ZIPA` : null}
+                                            </div>
+                                        </div>
+                                        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                                            {renderPlayButton('tts-pocket-ns:source', 'Play TTS', 'Play the original Pocket TTS audio', previewSuggestedPocket, !pocketSuggestedAudioB64)}
+                                            {renderPlayButton('tts-pocket-ns:kokoro', 'Play', 'Play the Pocket+ZIPA 300k phones through Kokoro', () => previewKokoro(decodedPocketZipaNs700k), !decodedPocketZipaNs700k)}
+                                            <button
+                                                type="button"
+                                                className="btn btn-sm"
+                                                onClick={() => useVersion(decodedPocketZipaNs700k)}
+                                                title="Copy the Pocket+ZIPA 300k IPA into the reviewed field"
+                                            >
+                                                Use
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <IpaSuggestionReadout ipaText={decodedPocketZipaNs700k} rawText={decodedPocketZipaNs700kRaw} rawLabel="Raw ZIPA 300k" />
                                 </div>
                             )}
                         </div>
@@ -2314,6 +2696,7 @@
             const scrollRef = useRef(null);
             const qColor = '#58a6ff';
             const pColor = '#7ee787';
+            const cColor = '#f78166';
             const dimStyle = {opacity: 0.2};
 
             // Unknown word set + left-to-right numbering
@@ -2335,6 +2718,7 @@
             const refAlign = humanAsr?.written_alignment || writtenAlignment || alignment || [];
             const qAlign = humanAsr?.qwen_alignment || asr?.qwen_alignment || [];
             const pAlign = humanAsr?.parakeet_alignment || asr?.parakeet_alignment || [];
+            const cAlign = humanAsr?.cohere_alignment || asr?.cohere_alignment || [];
 
             // Build time-based groups: collect all boundaries, find overlapping words
             const groups = useMemo(() => {
@@ -2342,7 +2726,7 @@
 
                 // Collect all time boundaries
                 const boundaries = new Set();
-                for (const list of [spokenAlign, refAlign, qAlign, pAlign]) {
+                for (const list of [spokenAlign, refAlign, qAlign, pAlign, cAlign]) {
                     for (const w of list) {
                         boundaries.add(w.start);
                         boundaries.add(w.end);
@@ -2374,20 +2758,21 @@
 
                 // Walk time slots and build columns (each column = a unique combination change)
                 const cols = [];
-                let lastSpoken = null, lastRef = null, lastQ = null, lastP = null;
+                let lastSpoken = null, lastRef = null, lastQ = null, lastP = null, lastC = null;
                 for (let i = 0; i < times.length - 1; i++) {
                     const t = (times[i] + times[i + 1]) / 2;
                     const spoken = findWordAt(spokenAlign, t);
                     const ref = findWordAt(refAlign, t);
                     const q = findWordAt(qAlign, t);
                     const p = findWordAt(pAlign, t);
-                    if (!spoken && !ref && !q && !p) continue;
-                    if (spoken === lastSpoken && ref === lastRef && q === lastQ && p === lastP) continue;
-                    cols.push({spoken, ref, q, p, start: times[i]});
-                    lastSpoken = spoken; lastRef = ref; lastQ = q; lastP = p;
+                    const c = findWordAt(cAlign, t);
+                    if (!spoken && !ref && !q && !p && !c) continue;
+                    if (spoken === lastSpoken && ref === lastRef && q === lastQ && p === lastP && c === lastC) continue;
+                    cols.push({spoken, ref, q, p, c, start: times[i]});
+                    lastSpoken = spoken; lastRef = ref; lastQ = q; lastP = p; lastC = c;
                 }
                 return cols;
-            }, [spokenAlign, refAlign, qAlign, pAlign]);
+            }, [spokenAlign, refAlign, qAlign, pAlign, cAlign]);
 
             // Compute per-row spans: for each row, find runs of same word object
             const rowSpans = useMemo(() => {
@@ -2408,6 +2793,7 @@
                     ref: computeSpans(g => g.ref),
                     q: computeSpans(g => g.q),
                     p: computeSpans(g => g.p),
+                    c: computeSpans(g => g.c),
                 };
             }, [groups]);
 
@@ -2454,13 +2840,14 @@
                         <span style={{color: 'var(--text-muted)'}}>Original</span>
                         <span style={{color: qColor}}>Qwen</span>
                         <span style={{color: pColor}}>Parakeet</span>
+                        <span style={{color: cColor}}>Cohere</span>
                     </div>
                     {/* Scrolling grid */}
                     <div ref={scrollRef} style={{overflowX: 'auto', paddingBottom: 4}} className="transcript-grid-scroll">
                         <div style={{
                             display: 'inline-grid',
                             gridTemplateColumns: `repeat(${groups.length}, max-content)`,
-                            gridTemplateRows: 'auto auto auto auto',
+                            gridTemplateRows: 'auto auto auto auto auto',
                             gap: '1px 0',
                             padding: '.5em .2em',
                             whiteSpace: 'nowrap',
@@ -2530,6 +2917,19 @@
                                 }
                                 return <div key={`p${i}`} style={{gridRow: 4, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em', padding: '0 4px', borderRight: !isLast ? '1px solid rgba(48,54,61,0.4)' : undefined, background: isSpanActive(s) ? activeBg : undefined, borderRadius: isSpanActive(s) ? 3 : undefined}}>
                                     <span style={{color: pColor, opacity: isMatch ? 0.2 : 1}}>{s.word}</span>
+                                </div>;
+                            })}
+                            {/* Row 5: Cohere */}
+                            {rowSpans.c.map((s, i) => {
+                                const isLast = s.colStart + s.colSpan >= groups.length;
+                                if (!s.word) return <div key={`c${i}`} style={{gridRow: 5, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em'}} />;
+                                let isMatch = false;
+                                for (let c = s.colStart; c < s.colStart + s.colSpan; c++) {
+                                    const r = groups[c]?.ref;
+                                    if (r && cleanWord(s.word) === cleanWord(r.word)) {isMatch = true; break;}
+                                }
+                                return <div key={`c${i}`} style={{gridRow: 5, gridColumn: `${s.colStart + 1} / span ${s.colSpan}`, lineHeight: '1.5em', padding: '0 4px', borderRight: !isLast ? '1px solid rgba(48,54,61,0.4)' : undefined, background: isSpanActive(s) ? activeBg : undefined, borderRadius: isSpanActive(s) ? 3 : undefined}}>
+                                    <span style={{color: cColor, opacity: isMatch ? 0.2 : 1}}>{s.word}</span>
                                 </div>;
                             })}
                         </div>
@@ -3200,7 +3600,7 @@
             const [sentenceRec, setSentenceRec] = useState(false); // recording the full sentence
             const [recordedBuf, setRecordedBuf] = useState(null);
             const [transcribing, setTranscribing] = useState(false);
-            const [humanAsr, setHumanAsr] = useState(null); // {qwen, parakeet} from human recording
+            const [humanAsr, setHumanAsr] = useState(null); // {qwen, parakeet, cohere} from human recording
             const mediaRecorderRef = useRef(null);
 
             // Play audio buffer from a given offset (seconds)
@@ -5057,6 +5457,7 @@
             const [reviewedConfusionDrafts, setReviewedConfusionDrafts] = useState({});
             const [reviewedConfusionSaving, setReviewedConfusionSaving] = useState({});
             const [scanConfusionDrafts, setScanConfusionDrafts] = useState({});
+            const [scanConfusionSpokenDrafts, setScanConfusionSpokenDrafts] = useState({});
             const [scanConfusionSaving, setScanConfusionSaving] = useState({});
             const [recordingSentence, setRecordingSentence] = useState(null);
             const [recordings, setRecordings] = useState([]);
@@ -5067,6 +5468,7 @@
             const [recordingPhonesById, setRecordingPhonesById] = useState({});
             const [recordingPhonesLoading, setRecordingPhonesLoading] = useState({});
             const [recordingPhonesError, setRecordingPhonesError] = useState({});
+            const [corpusSection, setCorpusSection] = useState('ipa-queue');
             const recordingRecorderRef = useRef(null);
 
             const load = async () => {
@@ -5087,6 +5489,7 @@
                     setVocabSpokenQueueDrafts(Object.fromEntries((Array.isArray(vocab) ? vocab : []).map(row => [row.id, row.spoken_override || ''])));
                     setVocabIpaDrafts(Object.fromEntries((Array.isArray(vocab) ? vocab : []).map(row => [row.id, row.reviewed_ipa || ''])));
                     setReviewedConfusionDrafts(Object.fromEntries((Array.isArray(confusionData?.reviewed) ? confusionData.reviewed : []).map(row => [`${row.term}::${row.surface_form}`, row.reviewed_ipa || ''])));
+                    setScanConfusionSpokenDrafts(Object.fromEntries((Array.isArray(confusionData?.scan_candidates) ? confusionData.scan_candidates : []).map(row => [`${row.term}::${row.surface_form}`, row.surface_form || ''])));
                 } catch (e) {
                     setError(e.message);
                 } finally {
@@ -5150,6 +5553,12 @@
                     const bMissing = b.reviewed_ipa ? 1 : 0;
                     return aMissing - bMissing || a.term.localeCompare(b.term) || a.surface_form.localeCompare(b.surface_form);
                 });
+            const reviewedIpaForTerm = (term) => {
+                const target = String(term || '').trim().toLowerCase();
+                if (!target) return '';
+                const row = vocabRows.find(item => String(item.term || '').trim().toLowerCase() === target);
+                return String(row?.reviewed_ipa || '').trim();
+            };
 
             const readiness = [
                 {
@@ -5423,9 +5832,9 @@
                     setReviewedConfusionSaving(prev => ({...prev, [key]: false}));
                 }
             };
-            const acceptScanCandidate = async (row) => {
+            const acceptScanCandidate = async (row, reviewedIpaOverride = null) => {
                 const key = `${row.term}::${row.surface_form}`;
-                const reviewed_ipa = (scanConfusionDrafts[key] || '').trim();
+                const reviewed_ipa = String(reviewedIpaOverride ?? scanConfusionDrafts[key] ?? '').trim();
                 setScanConfusionSaving(prev => ({...prev, [key]: true}));
                 setError(null);
                 try {
@@ -5440,7 +5849,97 @@
                         }),
                     });
                     if (res?.error) throw new Error(res.error);
-                    await load();
+                    const acceptedRow = {
+                        term: row.term,
+                        surface_form: row.surface_form,
+                        reviewed_ipa,
+                        status: 'accepted',
+                        source: 'scan',
+                    };
+                    setReviewedConfusions(prev => {
+                        const exists = prev.some(item =>
+                            item.term.toLowerCase() === row.term.toLowerCase() &&
+                            item.surface_form.toLowerCase() === row.surface_form.toLowerCase()
+                        );
+                        if (exists) {
+                            return prev.map(item =>
+                                item.term.toLowerCase() === row.term.toLowerCase() &&
+                                item.surface_form.toLowerCase() === row.surface_form.toLowerCase()
+                                    ? {...item, reviewed_ipa, status: 'accepted', source: 'scan'}
+                                    : item
+                            );
+                        }
+                        return [acceptedRow, ...prev];
+                    });
+                    setScanConfusionCandidates(prev => prev.filter(item =>
+                        !(item.term.toLowerCase() === row.term.toLowerCase() &&
+                          item.surface_form.toLowerCase() === row.surface_form.toLowerCase())
+                    ));
+                    setReviewedConfusionDrafts(prev => ({...prev, [key]: reviewed_ipa}));
+                    setScanConfusionDrafts(prev => ({...prev, [key]: reviewed_ipa}));
+                    setScanConfusionSpokenDrafts(prev => {
+                        const next = {...prev};
+                        delete next[key];
+                        return next;
+                    });
+                } catch (e) {
+                    setError(e.message);
+                } finally {
+                    setScanConfusionSaving(prev => ({...prev, [key]: false}));
+                }
+            };
+            const rejectScanCandidate = async (row) => {
+                const key = `${row.term}::${row.surface_form}`;
+                setScanConfusionSaving(prev => ({...prev, [key]: true}));
+                setError(null);
+                try {
+                    const res = await api('/api/corpus/confusion-surfaces', {
+                        method:'POST',
+                        body: JSON.stringify({
+                            term: row.term,
+                            surface_form: row.surface_form,
+                            reviewed_ipa: null,
+                            status: 'rejected',
+                            source: 'scan',
+                        }),
+                    });
+                    if (res?.error) throw new Error(res.error);
+                    const rejectedRow = {
+                        term: row.term,
+                        surface_form: row.surface_form,
+                        reviewed_ipa: null,
+                        status: 'rejected',
+                        source: 'scan',
+                    };
+                    setReviewedConfusions(prev => {
+                        const exists = prev.some(item =>
+                            item.term.toLowerCase() === row.term.toLowerCase() &&
+                            item.surface_form.toLowerCase() === row.surface_form.toLowerCase()
+                        );
+                        if (exists) {
+                            return prev.map(item =>
+                                item.term.toLowerCase() === row.term.toLowerCase() &&
+                                item.surface_form.toLowerCase() === row.surface_form.toLowerCase()
+                                    ? {...item, reviewed_ipa: null, status: 'rejected', source: 'scan'}
+                                    : item
+                            );
+                        }
+                        return [rejectedRow, ...prev];
+                    });
+                    setScanConfusionCandidates(prev => prev.filter(item =>
+                        !(item.term.toLowerCase() === row.term.toLowerCase() &&
+                          item.surface_form.toLowerCase() === row.surface_form.toLowerCase())
+                    ));
+                    setScanConfusionDrafts(prev => {
+                        const next = {...prev};
+                        delete next[key];
+                        return next;
+                    });
+                    setScanConfusionSpokenDrafts(prev => {
+                        const next = {...prev};
+                        delete next[key];
+                        return next;
+                    });
                 } catch (e) {
                     setError(e.message);
                 } finally {
@@ -5541,6 +6040,20 @@
             const recordingsNeedingAttention = authoredRows
                 .filter(row => (row.recording_count || 0) === 0 || (row.phone_trace_count || 0) < (row.recording_count || 0))
                 .slice(0, 12);
+            const needsWorkTotal = needsWork.reduce((sum, item) => sum + Number(item.count || 0), 0);
+            const openCorpusSection = (sectionId) => {
+                const normalized = String(sectionId || '').replace(/^corpus-/, '').trim();
+                if (normalized) setCorpusSection(normalized);
+            };
+            const corpusSections = [
+                { id: 'ipa-queue', label: 'IPA Queue', count: ipaQueueCount, detail: 'Backfill reviewed IPA and pending scans.' },
+                { id: 'readiness', label: 'Readiness', count: status.prepare_ready ? 'Ready' : 'Blocked', detail: 'Prepare and dataset status.' },
+                { id: 'needs-work', label: 'Needs Work', count: needsWorkTotal, detail: 'Concrete gaps blocking quality.' },
+                { id: 'vocabulary', label: 'Vocabulary', count: readyVocab.length, detail: 'Terms, overrides, reviewed IPA.' },
+                { id: 'sentences', label: 'Sentences', count: authoredRows.length, detail: 'Clean rows and counterexamples.' },
+                { id: 'recordings', label: 'Recordings', count: recordingsNeedingAttention.length, detail: 'Human takes and grouped IPA.' },
+                { id: 'confusions', label: 'Confusions', count: previewScanCandidates.length, detail: 'Reviewed surfaces and pending scans.' },
+            ];
 
             return (
                 <div className="container">
@@ -5552,6 +6065,41 @@
                     </div>
                     {error && <div className="pipeline-error" style={{marginBottom:16}}>{error}</div>}
 
+                    <div style={{display:'grid',gridTemplateColumns:'240px minmax(0, 1fr)',gap:16,alignItems:'start'}}>
+                        <div className="card" style={{padding:'12px',position:'sticky',top:16}}>
+                            <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:10}}>
+                                Corpus Sections
+                            </div>
+                            <div style={{display:'grid',gap:8}}>
+                                {corpusSections.map(section => {
+                                    const active = section.id === corpusSection;
+                                    return (
+                                        <button
+                                            key={section.id}
+                                            type="button"
+                                            className="btn"
+                                            onClick={() => setCorpusSection(section.id)}
+                                            style={{
+                                                justifyContent:'space-between',
+                                                textAlign:'left',
+                                                padding:'10px 12px',
+                                                background: active ? 'rgba(88,166,255,0.14)' : 'transparent',
+                                                borderColor: active ? 'rgba(88,166,255,0.5)' : 'var(--border)',
+                                            }}
+                                        >
+                                            <span style={{display:'grid',gap:2}}>
+                                                <span style={{fontWeight:600,color:'var(--text)'}}>{section.label}</span>
+                                                <span style={{fontSize:11,color:'var(--text-muted)',whiteSpace:'normal'}}>{section.detail}</span>
+                                            </span>
+                                            <span style={{fontSize:12,color:active ? 'var(--accent)' : 'var(--text-muted)',marginLeft:8,flex:'0 0 auto'}}>{section.count}</span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        <div style={{display:'grid',gap:12}}>
+                    {corpusSection === 'ipa-queue' && (
                     <div id="corpus-ipa-queue" className="card" style={{marginBottom:16,padding:'14px 16px'}}>
                         <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',gap:12,marginBottom:12,flexWrap:'wrap'}}>
                             <div>
@@ -5644,19 +6192,50 @@
                                     <div style={{display:'grid',gap:8}}>
                                         {previewScanCandidates.map(row => {
                                             const key = `${row.term}::${row.surface_form}`;
+                                            const termReviewedIpa = reviewedIpaForTerm(row.term);
                                             return (
-                                                <div key={`queue-scan-${key}`} style={{display:'grid',gridTemplateColumns:'180px 220px 70px minmax(420px, 1.8fr) auto',gap:10,alignItems:'start',padding:'10px 12px',border:'1px solid rgba(255,255,255,0.06)',borderRadius:8}}>
-                                                    <div style={{fontFamily:'monospace',fontWeight:700}}>{row.term}</div>
-                                                    <div style={{fontFamily:'monospace',color:'var(--text)'}}>{row.surface_form}</div>
-                                                    <div style={{fontSize:12,color:'var(--text-muted)'}}>{row.qwen_count}x</div>
-                                                    <IpaWorkbench
-                                                        value={scanConfusionDrafts[key] ?? ''}
-                                                        onChange={value => setScanConfusionDrafts(prev => ({...prev, [key]: value}))}
-                                                        previewText={row.surface_form}
-                                                    />
-                                                    <button type="button" className="btn btn-sm" disabled={!!scanConfusionSaving[key]} onClick={() => acceptScanCandidate(row)}>
-                                                        {scanConfusionSaving[key] ? 'Adding...' : 'Accept'}
-                                                    </button>
+                                                <div key={`queue-scan-${key}`} style={{display:'grid',gap:10,padding:'10px 12px',border:'1px solid rgba(255,255,255,0.06)',borderRadius:8}}>
+                                                    <div style={{display:'flex',alignItems:'baseline',gap:16,flexWrap:'wrap'}}>
+                                                        <div style={{fontFamily:'monospace',fontWeight:700}}>{row.term}</div>
+                                                        <div style={{fontFamily:'monospace',color:'var(--text)'}}>{row.surface_form}</div>
+                                                        <div style={{fontSize:12,color:'var(--text-muted)'}}>{row.qwen_count}x</div>
+                                                    </div>
+                                                    <div style={{display:'grid',gap:6}}>
+                                                        <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>
+                                                            TTS phrase
+                                                        </div>
+                                                        <input
+                                                            value={scanConfusionSpokenDrafts[key] ?? row.surface_form ?? ''}
+                                                            onChange={e => setScanConfusionSpokenDrafts(prev => ({...prev, [key]: e.target.value}))}
+                                                            placeholder="Phrase sent to TTS for silent suggestions"
+                                                            style={{...inputStyle, width:'100%'}}
+                                                            title="Edit the phrase sent to TTS for silent suggestions"
+                                                        />
+                                                    </div>
+                                                    <div style={{display:'grid',gridTemplateColumns:'minmax(420px, 1fr) auto',gap:10,alignItems:'start'}}>
+                                                        <IpaWorkbench
+                                                            value={scanConfusionDrafts[key] ?? ''}
+                                                            onChange={value => setScanConfusionDrafts(prev => ({...prev, [key]: value}))}
+                                                            previewText={(scanConfusionSpokenDrafts[key] ?? row.surface_form ?? '').trim()}
+                                                        />
+                                                        <div style={{display:'grid',gap:8}}>
+                                                            <button
+                                                                type="button"
+                                                                className="btn btn-sm"
+                                                                disabled={!termReviewedIpa}
+                                                                title={termReviewedIpa ? `Copy ${row.term}'s reviewed IPA into this field` : `No reviewed IPA saved yet for ${row.term}`}
+                                                                onClick={() => setScanConfusionDrafts(prev => ({...prev, [key]: termReviewedIpa}))}
+                                                            >
+                                                                Same as term
+                                                            </button>
+                                                            <button type="button" className="btn btn-sm" disabled={!!scanConfusionSaving[key]} onClick={() => rejectScanCandidate(row)}>
+                                                                {scanConfusionSaving[key] ? 'Saving...' : 'No'}
+                                                            </button>
+                                                            <button type="button" className="btn btn-sm" disabled={!!scanConfusionSaving[key]} onClick={() => acceptScanCandidate(row)}>
+                                                                {scanConfusionSaving[key] ? 'Adding...' : 'Accept'}
+                                                            </button>
+                                                        </div>
+                                                    </div>
                                                 </div>
                                             );
                                         })}
@@ -5668,7 +6247,9 @@
                             )}
                         </div>
                     </div>
+                    )}
 
+                    {corpusSection === 'readiness' && (
                     <div id="corpus-readiness" className="card" style={{marginBottom:16,padding:'14px 16px'}}>
                         <div style={{fontSize:13,color:'var(--text-muted)',marginBottom:12}}>
                             The corpus pipeline is: reviewed vocabulary + clean authored sentences + counterexamples + mined confusion surfaces.
@@ -5681,7 +6262,9 @@
                                 <div className="stat-card"><div className="value">{phoneTraceCount}</div><div className="label">Timed Phone Traces</div></div>
                             </div>
                     </div>
+                    )}
 
+                    {corpusSection === 'readiness' && (
                     <div className="card" style={{marginBottom:16,padding:'14px 16px'}}>
                         <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',gap:12,marginBottom:12,flexWrap:'wrap'}}>
                             <h3 style={{margin:0}}>Dataset Readiness</h3>
@@ -5701,14 +6284,16 @@
                                     <div style={{fontSize:13,color:'var(--text-muted)',lineHeight:1.45,marginBottom:10}}>
                                         {item.detail}
                                     </div>
-                                    <button className="btn btn-sm" onClick={() => scrollToCorpusSection(item.sectionId)}>
+                                    <button className="btn btn-sm" onClick={() => openCorpusSection(item.sectionId)}>
                                         {item.action}
                                     </button>
                                 </div>
                             ))}
                         </div>
                     </div>
+                    )}
 
+                    {corpusSection === 'needs-work' && (
                     <div className="card" style={{marginBottom:16,padding:'14px 16px'}}>
                         <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',gap:12,marginBottom:12,flexWrap:'wrap'}}>
                             <h3 style={{margin:0}}>Needs Work</h3>
@@ -5739,13 +6324,14 @@
                                             <span style={{fontSize:12,color:'var(--text-muted)'}}>{item.empty}</span>
                                         )}
                                     </div>
-                                    <button className="btn btn-sm" onClick={() => scrollToCorpusSection(item.sectionId)}>{item.action}</button>
+                                    <button className="btn btn-sm" onClick={() => openCorpusSection(item.sectionId)}>{item.action}</button>
                                 </div>
                             ))}
                         </div>
                     </div>
+                    )}
 
-                    <div style={{display:'grid',gap:12}}>
+                    {corpusSection === 'vocabulary' && (
                         <div id="corpus-vocabulary" className="card" style={{padding:'14px 16px'}}>
                             <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',gap:12,marginBottom:10,flexWrap:'wrap'}}>
                                 <h3 style={{margin:0}}>Vocabulary</h3>
@@ -5812,7 +6398,9 @@
                                 </div>
                             </div>
                         </div>
+                    )}
 
+                    {corpusSection === 'sentences' && (
                         <div id="corpus-sentences" className="card" style={{padding:'14px 16px'}}>
                             <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',gap:12,marginBottom:10,flexWrap:'wrap'}}>
                                 <h3 style={{margin:0}}>Sentences</h3>
@@ -5888,7 +6476,9 @@
                                 ))}
                             </div>
                         </div>
+                    )}
 
+                    {corpusSection === 'recordings' && (
                         <div id="corpus-recordings" className="card" style={{padding:'14px 16px'}}>
                             <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',gap:12,marginBottom:10,flexWrap:'wrap'}}>
                                 <h3 style={{margin:0}}>Recordings & IPA</h3>
@@ -5919,7 +6509,9 @@
                                 )}
                             </div>
                         </div>
+                    )}
 
+                    {corpusSection === 'confusions' && (
                         <div id="corpus-confusions" className="card" style={{padding:'14px 16px'}}>
                             <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',gap:12,marginBottom:10,flexWrap:'wrap'}}>
                                 <h3 style={{margin:0}}>Confusions</h3>
@@ -5980,19 +6572,50 @@
                                     <div style={{display:'grid',gap:8}}>
                                         {previewScanCandidates.map(row => {
                                             const key = `${row.term}::${row.surface_form}`;
+                                            const termReviewedIpa = reviewedIpaForTerm(row.term);
                                             return (
-                                                <div key={key} style={{display:'grid',gridTemplateColumns:'180px 220px 70px minmax(420px, 1.8fr) auto',gap:10,alignItems:'start',padding:'10px 12px',border:'1px solid rgba(255,255,255,0.06)',borderRadius:8}}>
-                                                    <div style={{fontFamily:'monospace',fontWeight:700}}>{row.term}</div>
-                                                    <div style={{fontFamily:'monospace',color:'var(--text)'}}>{row.surface_form}</div>
-                                                    <div style={{fontSize:12,color:'var(--text-muted)'}}>{row.qwen_count}x</div>
-                                                    <IpaWorkbench
-                                                        value={scanConfusionDrafts[key] ?? ''}
-                                                        onChange={value => setScanConfusionDrafts(prev => ({...prev, [key]: value}))}
-                                                        previewText={row.surface_form}
-                                                    />
-                                                    <button type="button" className="btn btn-sm" disabled={!!scanConfusionSaving[key]} onClick={() => acceptScanCandidate(row)}>
-                                                        {scanConfusionSaving[key] ? 'Adding...' : 'Accept'}
-                                                    </button>
+                                                <div key={key} style={{display:'grid',gap:10,padding:'10px 12px',border:'1px solid rgba(255,255,255,0.06)',borderRadius:8}}>
+                                                    <div style={{display:'flex',alignItems:'baseline',gap:16,flexWrap:'wrap'}}>
+                                                        <div style={{fontFamily:'monospace',fontWeight:700}}>{row.term}</div>
+                                                        <div style={{fontFamily:'monospace',color:'var(--text)'}}>{row.surface_form}</div>
+                                                        <div style={{fontSize:12,color:'var(--text-muted)'}}>{row.qwen_count}x</div>
+                                                    </div>
+                                                    <div style={{display:'grid',gap:6}}>
+                                                        <div style={{fontSize:12,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>
+                                                            TTS phrase
+                                                        </div>
+                                                        <input
+                                                            value={scanConfusionSpokenDrafts[key] ?? row.surface_form ?? ''}
+                                                            onChange={e => setScanConfusionSpokenDrafts(prev => ({...prev, [key]: e.target.value}))}
+                                                            placeholder="Phrase sent to TTS for silent suggestions"
+                                                            style={{...inputStyle, width:'100%'}}
+                                                            title="Edit the phrase sent to TTS for silent suggestions"
+                                                        />
+                                                    </div>
+                                                    <div style={{display:'grid',gridTemplateColumns:'minmax(420px, 1fr) auto',gap:10,alignItems:'start'}}>
+                                                        <IpaWorkbench
+                                                            value={scanConfusionDrafts[key] ?? ''}
+                                                            onChange={value => setScanConfusionDrafts(prev => ({...prev, [key]: value}))}
+                                                            previewText={(scanConfusionSpokenDrafts[key] ?? row.surface_form ?? '').trim()}
+                                                        />
+                                                        <div style={{display:'grid',gap:8}}>
+                                                            <button
+                                                                type="button"
+                                                                className="btn btn-sm"
+                                                                disabled={!termReviewedIpa}
+                                                                title={termReviewedIpa ? `Copy ${row.term}'s reviewed IPA into this field` : `No reviewed IPA saved yet for ${row.term}`}
+                                                                onClick={() => setScanConfusionDrafts(prev => ({...prev, [key]: termReviewedIpa}))}
+                                                            >
+                                                                Same as term
+                                                            </button>
+                                                            <button type="button" className="btn btn-sm" disabled={!!scanConfusionSaving[key]} onClick={() => rejectScanCandidate(row)}>
+                                                                {scanConfusionSaving[key] ? 'Saving...' : 'No'}
+                                                            </button>
+                                                            <button type="button" className="btn btn-sm" disabled={!!scanConfusionSaving[key]} onClick={() => acceptScanCandidate(row)}>
+                                                                {scanConfusionSaving[key] ? 'Adding...' : 'Accept'}
+                                                            </button>
+                                                        </div>
+                                                    </div>
                                                 </div>
                                             );
                                         })}
@@ -6002,6 +6625,8 @@
                                     </div>
                                 </div>
                             </div>
+                        </div>
+                    )}
                         </div>
                     </div>
 
@@ -6804,12 +7429,13 @@
             const [bakeoff, setBakeoff] = useState(null);
             const [runningBakeoff, setRunningBakeoff] = useState(false);
             const [runningBakeoffJob, setRunningBakeoffJob] = useState(null);
-            const bakeoffSource = 'applied';
+            const bakeoffSource = 'human';
             const [bakeoffLimit, setBakeoffLimit] = useState(150);
             const [bakeoffDetails, setBakeoffDetails] = useState({});
             const [loadingBakeoffDetails, setLoadingBakeoffDetails] = useState({});
             const [bakeoffTimelineZoom, setBakeoffTimelineZoom] = useState({});
             const [bakeoffPlayback, setBakeoffPlayback] = useState(null);
+            const [liveTimelineZoom, setLiveTimelineZoom] = useState({});
             const [recording, setRecording] = useState(false);
             const [transcribing, setTranscribing] = useState(false);
             const [selectedTrainId, setSelectedTrainId] = useState(rerankerTrains[0]?.id ?? null);
@@ -6891,6 +7517,196 @@
                         {timing.prefill_ms != null && <span>prefill {(timing.prefill_ms/1000).toFixed(2)}s </span>}
                         {timing.decode_ms != null && <span>decode {(timing.decode_ms/1000).toFixed(2)}s </span>}
                         {timing.output_tokens != null && <span>{timing.output_tokens} toks</span>}
+                    </div>
+                );
+            };
+
+            const renderInlineProposalLane = (label, items, color, windowStart, windowEnd, pxPerSec, highlightedIndices, highlightedRange) => {
+                if (!items?.length) return null;
+                const visibleItems = items.filter(a => Number(a.e || 0) > windowStart && Number(a.s || 0) < windowEnd);
+                if (!visibleItems.length) return null;
+                const windowDuration = Math.max(0.2, windowEnd - windowStart);
+                const timelineWidth = Math.max(560, Math.ceil(windowDuration * pxPerSec));
+                const px = v => `${Math.max(0, (Number(v || 0) - windowStart) * pxPerSec).toFixed(1)}px`;
+                return (
+                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
+                        <span style={{fontSize:10,color:'var(--text-muted)',width:72,textAlign:'right',flexShrink:0,fontWeight:600}}>{label}</span>
+                        <div style={{position:'relative',height:24,width:timelineWidth,background:'rgba(255,255,255,0.03)',borderRadius:4,overflow:'hidden',flexShrink:0}}>
+                            {highlightedRange && (
+                                <div style={{
+                                    position:'absolute',
+                                    left:px(highlightedRange[0]),
+                                    width:px(Math.max((highlightedRange[1] - highlightedRange[0]) || 0, 0.03)),
+                                    top:0,
+                                    bottom:0,
+                                    border:'1px dashed rgba(255,255,255,0.45)',
+                                    borderRadius:4,
+                                    background:'rgba(255,255,255,0.03)',
+                                    pointerEvents:'none',
+                                    zIndex:2,
+                                }} />
+                            )}
+                            {visibleItems.map((a, j) => {
+                                const originalIndex = items.indexOf(a);
+                                const isHighlighted = highlightedIndices?.has?.(originalIndex) || false;
+                                return (
+                                    <div
+                                        key={`${originalIndex}:${a.s}:${a.e}`}
+                                        title={a.t || `${a.w} (${Number(a.s || 0).toFixed(3)}s–${Number(a.e || 0).toFixed(3)}s)`}
+                                        style={{
+                                            position:'absolute',
+                                            left:px(a.s),
+                                            width:px(Math.max((a.e - a.s) || 0, 0.03)),
+                                            top:2,
+                                            bottom:2,
+                                            borderRadius:3,
+                                            background: isHighlighted ? color.replace(/[\d.]+\)$/,'0.95)') : color,
+                                            border:`1px solid ${isHighlighted ? color.replace(/[\d.]+\)$/,'1)') : color.replace(/[\d.]+\)$/,'0.85)')}`,
+                                            display:'flex',
+                                            alignItems:'center',
+                                            justifyContent:'center',
+                                            overflow:'hidden',
+                                            boxShadow: isHighlighted ? `0 0 0 1px rgba(255,255,255,0.22), 0 0 0 2px ${color.replace(/[\d.]+\)$/,'0.35)')}` : 'none',
+                                            zIndex:isHighlighted ? 3 : 1,
+                                        }}
+                                    >
+                                        <span style={{fontSize:10,color:'#fff',whiteSpace:'nowrap',padding:'0 4px'}}>{a.w}</span>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                );
+            };
+
+            const renderLiveProposalLanes = (result, proposal) => {
+                const prototype = result?.prototype;
+                const al = prototype?.alignments || {};
+                const qwenItems = al.qwen || [];
+                const parakeetItems = result?.parakeet_alignment || [];
+                const zipaQwenItems = al.zipa_qwen || [];
+                const zipaItems = al.zipa || [];
+                const zipaParakeetItems = parakeetItems.length
+                    ? buildGroupedPhoneLane(zipaItems, parakeetItems, 'Parakeet')
+                    : [];
+                const timingSource = al.timing_source || 'unknown';
+                if (!qwenItems.length && !parakeetItems.length && !zipaQwenItems.length && !zipaItems.length) return null;
+                const tokenHighlight = new Set(
+                    Array.from(
+                        {length: Math.max(0, (proposal?.token_end || 0) - (proposal?.token_start || 0))},
+                        (_, idx) => (proposal?.token_start || 0) + idx
+                    )
+                );
+                const highlightedRange =
+                    proposal?.acoustic_window_start_sec != null && proposal?.acoustic_window_end_sec != null
+                        ? [Number(proposal.acoustic_window_start_sec), Number(proposal.acoustic_window_end_sec)]
+                        : null;
+                let windowStart = 0;
+                let windowEnd = 1;
+                if (highlightedRange) {
+                    const margin = 0.45;
+                    windowStart = Math.max(0, highlightedRange[0] - margin);
+                    windowEnd = highlightedRange[1] + margin;
+                } else {
+                    const tokenItems = qwenItems.slice(proposal?.token_start || 0, proposal?.token_end || 0);
+                    if (tokenItems.length) {
+                        const margin = 0.45;
+                        windowStart = Math.max(0, Number(tokenItems[0].s || 0) - margin);
+                        windowEnd = Number(tokenItems[tokenItems.length - 1].e || 0) + margin;
+                    } else {
+                        const allItems = [...qwenItems, ...parakeetItems, ...zipaParakeetItems, ...zipaQwenItems, ...zipaItems];
+                        windowStart = 0;
+                        windowEnd = allItems.length ? Math.min(1.5, Math.max(...allItems.map(a => Number(a.e || 0)))) : 1;
+                    }
+                }
+                const cropLane = items => (items || [])
+                    .filter(a => Number(a.e || 0) > windowStart && Number(a.s || 0) < windowEnd)
+                    .map(a => ({
+                        ...a,
+                        s: Math.max(0, Number(a.s || 0) - windowStart),
+                        e: Math.max(0, Math.min(Number(a.e || 0), windowEnd) - windowStart),
+                    }));
+                const windowDuration = Math.max(0.2, windowEnd - windowStart);
+                const zoomKey = `${proposal?.raw_text || 'proposal'}:${proposal?.token_start || 0}:${proposal?.token_end || 0}`;
+                const pxPerSec = liveTimelineZoom[zoomKey] || 260;
+                const qwenLane = cropLane(qwenItems);
+                const parakeetLane = cropLane(parakeetItems);
+                const zipaParakeetLane = cropLane(zipaParakeetItems);
+                const zipaQwenLane = cropLane(zipaQwenItems);
+                const zipaLane = cropLane(zipaItems);
+                const zoomLevels = [160, 260, 380, 540];
+                const timelineWidth = Math.max(720, Math.ceil(windowDuration * pxPerSec));
+                return (
+                    <div style={{marginTop:8, padding:'8px 10px', borderRadius:6, background:'rgba(255,255,255,0.02)', border:'1px solid rgba(255,255,255,0.05)', overflowX:'auto'}}>
+                        <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, marginBottom:8, flexWrap:'wrap'}}>
+                            <div style={{fontSize:10, color:'var(--text-muted)'}}>
+                                timing source: <span style={{color:'var(--accent)'}}>{timingSource}</span>
+                            </div>
+                            <div style={{display:'flex', alignItems:'center', gap:6, flexWrap:'wrap'}}>
+                                <span style={{fontSize:11, color:'var(--text-muted)'}}>zoom</span>
+                                {zoomLevels.map(level => (
+                                    <button
+                                        key={level}
+                                        type="button"
+                                        onClick={() => setLiveTimelineZoom(prev => ({...prev, [zoomKey]: level}))}
+                                        style={{
+                                            padding:'2px 8px',
+                                            borderRadius:999,
+                                            border:'1px solid rgba(255,255,255,0.12)',
+                                            background: pxPerSec === level ? 'rgba(88,166,255,0.16)' : 'rgba(255,255,255,0.03)',
+                                            color: pxPerSec === level ? '#58a6ff' : 'var(--text-muted)',
+                                            fontSize:11,
+                                        }}
+                                    >
+                                        {Math.round(level / 100 * 10) / 10}x
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <div style={{width:'100%', minWidth:0, overflowX:'auto', overflowY:'hidden', paddingBottom:4}}>
+                            {renderBakeoffTL('Qwen', qwenLane, 'rgba(210,153,34,0.70)', windowDuration, pxPerSec, null)}
+                            {renderBakeoffTL('Parakeet', parakeetLane, 'rgba(126,231,135,0.72)', windowDuration, pxPerSec, null)}
+                            {renderBakeoffTL('ZIPA@Par', zipaParakeetLane, 'rgba(78,201,176,0.72)', windowDuration, pxPerSec, null)}
+                            {renderBakeoffTL(timingSource === 'parakeet_words' ? 'ZIPA@Map' : 'ZIPA/Q', zipaQwenLane, 'rgba(126,231,135,0.65)', windowDuration, pxPerSec, null)}
+                            {renderBakeoffTL('ZIPA', zipaLane, 'rgba(88,166,255,0.60)', windowDuration, pxPerSec, null)}
+                            <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'var(--text-muted)',marginTop:3,paddingLeft:71,width:timelineWidth}}>
+                                <span>{windowStart.toFixed(2)}s</span><span>{windowEnd.toFixed(2)}s</span>
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
+            const renderRerankerSummary = result => {
+                const prototype = result?.prototype;
+                if (!prototype) {
+                    return <span style={{color:'var(--text-muted)'}}>No prototype result.</span>;
+                }
+                const corrected = prototype.corrected || '';
+                const baseline =
+                    result?.correctionInput === 'cohere' ? (result?.cohere || '') :
+                    result?.correctionInput === 'parakeet' ? (result?.parakeet || '') :
+                    (result?.qwen || '');
+                const reranker = prototype.reranker || null;
+                const chosenText = reranker?.chosen_text || corrected || '';
+                const chosenLabel = reranker?.chosen_label || null;
+                const mode = reranker?.mode || null;
+                if (!chosenText) {
+                    return <span style={{color:'var(--text-muted)'}}>No reranker output.</span>;
+                }
+                return (
+                    <div>
+                        <div>
+                            {baseline ? renderCorrectedDiff(baseline, chosenText) : chosenText}
+                        </div>
+                        <div style={{marginTop: 6, fontSize: 11, color: 'var(--text-muted)'}}>
+                            {mode && <span>{mode}</span>}
+                            {chosenLabel && <span>{mode ? ' · ' : ''}{chosenLabel}</span>}
+                            {reranker?.candidate_count != null && <span>{(mode || chosenLabel) ? ' · ' : ''}{reranker.candidate_count} candidates</span>}
+                            {result?.correctionInput && <span>{((mode || chosenLabel || reranker?.candidate_count != null) ? ' · ' : '')}input {result.correctionInput}</span>}
+                            {!baseline && <span>{((mode || chosenLabel || reranker?.candidate_count != null || result?.correctionInput) ? ' · ' : '')}ASR transcript missing</span>}
+                        </div>
+                        {renderTiming(reranker?.result?.timing || reranker?.timing || reranker?.timing_ms)}
                     </div>
                 );
             };
@@ -6995,13 +7811,51 @@
                 );
             };
 
+            const buildOwnershipRanges = scaffoldItems => {
+                if (!scaffoldItems?.length) return [];
+                return scaffoldItems.map((word, idx) => {
+                    const start = Number(word.s || 0);
+                    const end = Math.max(start, Number(word.e || 0));
+                    const prevEnd = idx > 0 ? Math.max(Number(scaffoldItems[idx - 1].e || 0), Number(scaffoldItems[idx - 1].s || 0)) : start;
+                    const nextStart = idx + 1 < scaffoldItems.length ? Number(scaffoldItems[idx + 1].s || 0) : end;
+                    const ownStart = idx > 0 ? (prevEnd + start) * 0.5 : start;
+                    const ownEnd = idx + 1 < scaffoldItems.length ? (end + nextStart) * 0.5 : end;
+                    return { start, end, ownStart, ownEnd };
+                });
+            };
+
+            const intervalOverlapSec = (aStart, aEnd, bStart, bEnd) => Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart));
+
             const buildGroupedPhoneLane = (phoneItems, scaffoldItems, labelPrefix) => {
                 if (!phoneItems?.length || !scaffoldItems?.length) return [];
+                const ownership = buildOwnershipRanges(scaffoldItems);
+                const grouped = scaffoldItems.map(() => []);
+                for (const phone of phoneItems) {
+                    const ps = Number(phone.s || 0);
+                    const pe = Math.max(ps, Number(phone.e || 0));
+                    if (!(pe > ps)) continue;
+                    const mid = (ps + pe) * 0.5;
+                    let bestIdx = -1;
+                    let bestOverlap = 0;
+                    let bestDistance = Infinity;
+                    for (let idx = 0; idx < ownership.length; idx += 1) {
+                        const own = ownership[idx];
+                        const overlap = intervalOverlapSec(ps, pe, own.ownStart, own.ownEnd);
+                        if (overlap <= 0) continue;
+                        const wordMid = (own.ownStart + own.ownEnd) * 0.5;
+                        const distance = Math.abs(mid - wordMid);
+                        if (overlap > bestOverlap + 1e-9 || (Math.abs(overlap - bestOverlap) <= 1e-9 && distance < bestDistance)) {
+                            bestIdx = idx;
+                            bestOverlap = overlap;
+                            bestDistance = distance;
+                        }
+                    }
+                    if (bestIdx >= 0) grouped[bestIdx].push(phone);
+                }
                 return scaffoldItems.map((word, idx) => {
                     const ws = Number(word.s || 0);
-                    const we = Number(word.e || 0);
-                    const overlapping = phoneItems.filter(phone => Number(phone.e || 0) > ws && Number(phone.s || 0) < we);
-                    const phones = overlapping.map(phone => phone.w).filter(Boolean);
+                    const we = Math.max(ws, Number(word.e || 0));
+                    const phones = grouped[idx].map(phone => phone.w).filter(Boolean);
                     return {
                         s: ws,
                         e: we,
@@ -7078,13 +7932,17 @@
                 setLoadingBakeoffDetails(prev => ({...prev, [entryKey]: false}));
             };
 
-            const correct = async (parakeet, qwen, audioWavBase64 = null) => {
+            const correct = async (parakeet, qwen, cohere = '', audioWavBase64 = null, correctionInput = 'qwen', asrErrors = null, parakeetAlignment = null) => {
+                const chosenInput =
+                    correctionInput === 'cohere' ? (cohere || qwen || parakeet || '') :
+                    correctionInput === 'parakeet' ? (parakeet || qwen || cohere || '') :
+                    (qwen || cohere || parakeet || '');
                 setCorrecting(true);
                 try {
                     const prototype = await api('/api/correct-prototype', {
                         method: 'POST',
                         body: JSON.stringify({
-                            qwen,
+                            qwen: chosenInput,
                             audio_wav_base64: audioWavBase64,
                             use_model_reranker: rerankerMode !== 'off',
                             use_adapters: false,
@@ -7096,10 +7954,14 @@
                     setResult({
                         parakeet,
                         qwen,
+                        cohere,
+                        parakeet_alignment: parakeetAlignment || [],
+                        correctionInput,
+                        asrErrors,
                         prototype,
                     });
                 } catch (e) {
-                    setResult({parakeet, qwen, error: `(error: ${e.message})`});
+                    setResult({parakeet, qwen, cohere, parakeet_alignment: parakeetAlignment || [], correctionInput, asrErrors, error: `(error: ${e.message})`});
                 }
                 setCorrecting(false);
             };
@@ -7129,7 +7991,15 @@
                                 await correct(
                                     asr.parakeet || '',
                                     asr.qwen || '',
+                                    asr.cohere || '',
                                     bytesToBase64(new Uint8Array(wavBytes)),
+                                    asr.correction_input || 'qwen',
+                                    {
+                                        qwen: asr.qwen_error || null,
+                                        parakeet: asr.parakeet_error || null,
+                                        cohere: asr.cohere_error || null,
+                                    },
+                                    asr.parakeet_alignment || [],
                                 );
                             } else { setTranscribing(false); }
                         } catch (e) { console.error(e); setTranscribing(false); }
@@ -7148,7 +8018,7 @@
 
             const manualCorrect = () => {
                 if (!input.trim()) return;
-                correct('', input.trim());
+                correct('', input.trim(), '');
             };
 
             const runBakeoff = async () => {
@@ -7243,22 +8113,24 @@
                             </div>
                         )}
                         {result && (
-                            <div style={{padding: '14px 16px', background: 'rgba(0,0,0,0.3)', borderRadius: 6, border: '1px solid rgba(88,166,255,0.1)', fontSize: 13, lineHeight: 1.8}}>
-                                {result.parakeet !== result.qwen ? (<>
-                                    <div style={demoRowStyle}>
-                                        <span style={{...demoRowLabelStyle, color: '#7ee787'}}>Parakeet raw</span>
-                                        <div style={{flex: 1}}>{result.parakeet}</div>
+                            <div style={{padding: '14px 16px', background: 'rgba(0,0,0,0.3)', borderRadius: 6, border: '1px solid rgba(88,166,255,0.1)', fontSize: 13, lineHeight: 1.8, overflowX:'auto'}}>
+                                {[
+                                    {key:'parakeet', label:'Parakeet raw', color:'#7ee787', value: result.parakeet},
+                                    {key:'qwen', label:'Qwen raw', color:'#58a6ff', value: result.qwen},
+                                    {key:'cohere', label:'Cohere raw', color:'#f78166', value: result.cohere},
+                                ].map(row => (
+                                    <div key={row.key} style={demoRowStyle}>
+                                        <span style={{...demoRowLabelStyle, color: row.color}}>{row.label}</span>
+                                        <div style={{flex: 1}}>
+                                            {row.value || <span style={{color:'var(--text-muted)'}}>—</span>}
+                                            {!!result.asrErrors?.[row.key] && (
+                                                <div style={{marginTop:4, fontSize:11, color:'var(--danger)'}}>
+                                                    {result.asrErrors[row.key]}
+                                                </div>
+                                            )}
+                                        </div>
                                     </div>
-                                    <div style={demoRowStyle}>
-                                        <span style={{...demoRowLabelStyle, color: '#58a6ff'}}>Qwen raw</span>
-                                        <div style={{flex: 1}}>{result.qwen}</div>
-                                    </div>
-                                </>) : (
-                                    <div style={demoRowStyle}>
-                                        <span style={{...demoRowLabelStyle, color: '#58a6ff'}}>Qwen input</span>
-                                        <div style={{flex: 1}}>{result.qwen}</div>
-                                    </div>
-                                )}
+                                ))}
                                 {result.error ? (
                                     <div style={{marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(88,166,255,0.1)', color: 'var(--danger)'}}>
                                         {result.error}
@@ -7268,8 +8140,7 @@
                                         <div style={demoRowStyle}>
                                             <span style={{...demoRowLabelStyle, color: '#e3b341'}}>Reranker</span>
                                             <div style={{flex: 1}}>
-                                                {renderCorrectedDiff(result.qwen, result.prototype?.corrected)}
-                                                {renderTiming(result.prototype?.reranker?.result?.timing)}
+                                                {renderRerankerSummary(result)}
                                             </div>
                                         </div>
                                         {result.prototype?.accepted?.length > 0 && (
@@ -7295,13 +8166,13 @@
                                         {result.prototype?.proposals?.length > 0 && (
                                             <div style={demoRowStyle}>
                                                 <span style={{...demoRowLabelStyle, color: '#58a6ff'}}>Top proposals</span>
-                                                <div style={{flex:1, display:'grid', gap:6}}>
+                                                <div style={{flex:1, display:'grid', gap:6, minWidth:0, overflowX:'auto'}}>
                                                     {result.prototype.proposals.slice(0, 5).map((proposal, idx) => (
-                                                        <div key={idx} style={{padding:'8px 10px', borderRadius:6, background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.06)'}}>
+                                                        <div key={idx} style={{padding:'8px 10px', borderRadius:6, background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.06)', overflowX:'auto'}}>
                                                             <div><strong>{proposal.raw_text}</strong></div>
                                                             {proposal.phonemes && (
                                                                 <div style={{fontSize:12, color:'#c297ff', marginTop:2}}>
-                                                                    / {proposal.phonemes} /
+                                                                    observed / {proposal.phonemes} /
                                                                 </div>
                                                             )}
                                                             <div style={{fontSize:12, color:'var(--text-muted)'}}>
@@ -7309,10 +8180,10 @@
                                                                     <span key={cidx} style={{display:'inline-block', marginRight:12, marginTop:4}}>
                                                                         <span>{candidate.term} ({candidate.via}, {candidate.score.toFixed(2)})</span>
                                                                         {candidate.phonetic_score != null && (
-                                                                            <span style={{marginLeft:6, color:'#c297ff'}}>phon {candidate.phonetic_score.toFixed(2)}</span>
+                                                                            <span style={{marginLeft:6, color:'#c297ff'}}>IPA {candidate.phonetic_score.toFixed(2)}</span>
                                                                         )}
-                                                                        {candidate.acoustic_score != null && (
-                                                                            <span style={{marginLeft:6, color:'#7ee787'}}>acoustic {candidate.acoustic_score.toFixed(2)}</span>
+                                                                        {candidate.acoustic_score != null && Math.abs(Number(candidate.acoustic_score) - Number(candidate.phonetic_score ?? candidate.acoustic_score)) > 0.02 && (
+                                                                            <span style={{marginLeft:6, color:'#7ee787'}}>rescue {candidate.acoustic_score.toFixed(2)}</span>
                                                                         )}
                                                                         {candidate.acoustic_delta != null && (
                                                                             <span style={{marginLeft:6, color: candidate.acoustic_delta >= 0 ? '#7ee787' : '#ff7b72'}}>
@@ -7325,6 +8196,7 @@
                                                                     </span>
                                                                 ))}
                                                             </div>
+                                                            {renderLiveProposalLanes(result, proposal)}
                                                         </div>
                                                     ))}
                                                 </div>
@@ -7365,9 +8237,15 @@
                             <div style={{padding: '14px 16px', background: 'rgba(0,0,0,0.3)', borderRadius: 6, border: '1px solid rgba(88,166,255,0.1)', fontSize: 13, lineHeight: 1.6, width:'100%', maxWidth:'100%', overflowX:'hidden', boxSizing:'border-box'}}>
                                 <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, marginBottom:12}}>
                                     <div>
-                                        <div style={{fontSize:12, textTransform:'uppercase', letterSpacing:'0.5px', color:'var(--text-muted)'}}>Applied Eval</div>
+                                        <div style={{fontSize:12, textTransform:'uppercase', letterSpacing:'0.5px', color:'var(--text-muted)'}}>
+                                            {bakeoff?.source === 'human' || (!bakeoff?.source && bakeoffSource === 'human')
+                                                ? 'Human Audio Eval'
+                                                : 'Applied Eval'}
+                                        </div>
                                         <div style={{fontSize:13, color:'var(--text-muted)'}}>
-                                            {`Held-out applied rows: corrupted sentence in, exact clean sentence out.`}
+                                            {(bakeoff?.source === 'human' || (!bakeoff?.source && bakeoffSource === 'human'))
+                                                ? 'Authored recordings: Qwen transcript in, exact clean sentence out.'
+                                                : 'Held-out applied rows: corrupted sentence in, exact clean sentence out.'}
                                         </div>
                                     </div>
                                     {runningBakeoff && (

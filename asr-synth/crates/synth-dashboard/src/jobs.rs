@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use axum::{
     extract::State,
@@ -1505,9 +1505,11 @@ pub struct ZipaSidecar {
 }
 
 impl ZipaSidecar {
-    pub fn start() -> anyhow::Result<Self> {
+    pub fn start(repo_id: &str, model_name: &str) -> anyhow::Result<Self> {
         let mut child = Command::new("bash")
             .arg("scripts/phone_decode_zipa_sidecar.sh")
+            .env("ZIPA_REPO_ID", repo_id)
+            .env("ZIPA_MODEL_NAME", model_name)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -1566,11 +1568,47 @@ fn decode_zipa_trace_from_16k_warm(
     state: &AppState,
     samples_16k: &[f32],
 ) -> anyhow::Result<serde_json::Value> {
-    let temp_wav = write_temp_wav_16k(samples_16k, "zipa")?;
+    decode_zipa_ns700k_trace_from_16k_warm(state, samples_16k)
+}
+
+fn decode_zipa_300k_trace_from_16k_warm(
+    state: &AppState,
+    samples_16k: &[f32],
+) -> anyhow::Result<serde_json::Value> {
+    decode_zipa_trace_from_16k_warm_with_sidecar(
+        &state.zipa_sidecar,
+        samples_16k,
+        "zipa_300k",
+        "anyspeech/zipa-small-crctc-300k",
+        "model.int8.onnx",
+    )
+}
+
+fn decode_zipa_ns700k_trace_from_16k_warm(
+    state: &AppState,
+    samples_16k: &[f32],
+) -> anyhow::Result<serde_json::Value> {
+    decode_zipa_trace_from_16k_warm_with_sidecar(
+        &state.zipa_ns700k_sidecar,
+        samples_16k,
+        "zipa_ns700k",
+        "anyspeech/zipa-small-crctc-ns-700k",
+        "model.int8.onnx",
+    )
+}
+
+fn decode_zipa_trace_from_16k_warm_with_sidecar(
+    sidecar_slot: &std::sync::Mutex<Option<ZipaSidecar>>,
+    samples_16k: &[f32],
+    stem: &str,
+    repo_id: &str,
+    model_name: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let temp_wav = write_temp_wav_16k(samples_16k, stem)?;
     let result = (|| -> anyhow::Result<serde_json::Value> {
-        let mut guard = state.zipa_sidecar.lock().unwrap();
+        let mut guard = sidecar_slot.lock().unwrap();
         if guard.is_none() {
-            *guard = Some(ZipaSidecar::start()?);
+            *guard = Some(ZipaSidecar::start(repo_id, model_name)?);
         }
         let sidecar = guard.as_mut().unwrap();
         match sidecar.decode_wav_path(&temp_wav) {
@@ -1708,6 +1746,95 @@ fn decode_allophant_trace_from_16k_warm(
     result.or_else(|_| decode_allophant_trace_from_16k(samples_16k))
 }
 
+pub struct CohereSidecar {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl CohereSidecar {
+    pub fn start() -> anyhow::Result<Self> {
+        let mut child = Command::new("bash")
+            .arg("scripts/cohere_asr_sidecar.sh")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("cohere sidecar missing stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("cohere sidecar missing stdout"))?;
+        let mut sidecar = Self {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+        };
+        let ready = sidecar.read_json_line()?;
+        if ready.get("ready").and_then(|v| v.as_bool()) != Some(true) {
+            anyhow::bail!("cohere sidecar failed to start: {ready}");
+        }
+        Ok(sidecar)
+    }
+
+    fn read_json_line(&mut self) -> anyhow::Result<serde_json::Value> {
+        let mut line = String::new();
+        let read = self.stdout.read_line(&mut line)?;
+        if read == 0 {
+            anyhow::bail!("cohere sidecar closed stdout");
+        }
+        Ok(serde_json::from_str(line.trim())?)
+    }
+
+    pub fn transcribe_wav_path(
+        &mut self,
+        path: &std::path::Path,
+    ) -> anyhow::Result<serde_json::Value> {
+        let req = serde_json::json!({ "audio": path });
+        serde_json::to_writer(&mut self.stdin, &req)?;
+        self.stdin.write_all(b"\n")?;
+        self.stdin.flush()?;
+        let value = self.read_json_line()?;
+        if let Some(error) = value.get("error").and_then(|v| v.as_str()) {
+            anyhow::bail!("cohere sidecar error: {error}");
+        }
+        Ok(value)
+    }
+
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+pub fn transcribe_cohere_from_16k_warm(
+    state: &AppState,
+    samples_16k: &[f32],
+) -> anyhow::Result<serde_json::Value> {
+    let temp_wav = write_temp_wav_16k(samples_16k, "cohere_asr")?;
+    let result = (|| -> anyhow::Result<serde_json::Value> {
+        let mut guard = state.cohere_sidecar.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(CohereSidecar::start()?);
+        }
+        let sidecar = guard.as_mut().unwrap();
+        match sidecar.transcribe_wav_path(&temp_wav) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                if let Some(mut server) = guard.take() {
+                    server.kill();
+                }
+                Err(error)
+            }
+        }
+    })();
+    let _ = std::fs::remove_file(&temp_wav);
+    result
+}
+
 fn clean_zipa_phone_string(text: &str) -> String {
     text.replace('▁', " ")
         .split_whitespace()
@@ -1716,21 +1843,61 @@ fn clean_zipa_phone_string(text: &str) -> String {
         .join(" ")
 }
 
+fn normalize_zipa_to_house_ipa(text: &str) -> String {
+    let tokens: Vec<String> = clean_zipa_phone_string(text)
+        .split_whitespace()
+        .map(|token| match token {
+            "g" => "ɡ".to_string(),
+            "ɚ" => "əɹ".to_string(),
+            "ɝ" => "ɜːɹ".to_string(),
+            other => other.to_string(),
+        })
+        .collect();
+
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < tokens.len() {
+        let current = tokens[i].as_str();
+        let next = tokens.get(i + 1).map(|s| s.as_str());
+        let combined = match (current, next) {
+            ("o", Some("ʊ")) => Some("əʊ"),
+            ("a", Some("ɪ")) => Some("aɪ"),
+            ("a", Some("ʊ")) => Some("aʊ"),
+            ("e", Some("ɪ")) => Some("eɪ"),
+            ("ɔ", Some("ɪ")) => Some("ɔɪ"),
+            ("ɛ", Some("ɪ")) => Some("eə"),
+            ("ɛ", Some("ɚ")) => Some("eə"),
+            ("ɛ", Some("əɹ")) => Some("eə"),
+            _ => None,
+        };
+        if let Some(token) = combined {
+            out.push(token.to_string());
+            i += 2;
+            continue;
+        }
+        out.push(tokens[i].clone());
+        i += 1;
+    }
+    out.join(" ")
+}
+
+fn with_leading_silence(samples: &[f32], sample_rate: u32, silence_ms: usize) -> Vec<f32> {
+    if silence_ms == 0 {
+        return samples.to_vec();
+    }
+    let silence_samples = ((sample_rate as usize) * silence_ms) / 1000;
+    let mut out = Vec::with_capacity(silence_samples + samples.len());
+    out.resize(silence_samples, 0.0);
+    out.extend_from_slice(samples);
+    out
+}
+
 pub async fn api_ipa_decode(
     State(state): State<Arc<AppState>>,
     body: axum::body::Bytes,
 ) -> Result<Response, AppError> {
     let (mono, sample_rate) = decode_wav_mono(&body).map_err(err)?;
     let samples_16k = tts::resample_to_16k(&mono, sample_rate).map_err(err)?;
-    let allophant_started = std::time::Instant::now();
-    let allophant_trace = decode_allophant_trace_from_16k_warm(&state, &samples_16k).map_err(err)?;
-    let allophant_elapsed_ms = allophant_started.elapsed().as_millis() as u64;
-    let allophant_phones = allophant_trace
-        .get("phones")
-        .and_then(|value| value.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
     let zipa_started = std::time::Instant::now();
     let zipa_trace = decode_zipa_trace_from_16k_warm(&state, &samples_16k).ok();
     let zipa_elapsed_ms = zipa_started.elapsed().as_millis() as u64;
@@ -1741,17 +1908,38 @@ pub async fn api_ipa_decode(
         .unwrap_or("")
         .trim()
         .to_string();
-    let zipa_phones = clean_zipa_phone_string(&zipa_phones);
+    let zipa_raw_phones = clean_zipa_phone_string(&zipa_phones);
+    let zipa_phones = normalize_zipa_to_house_ipa(&zipa_raw_phones);
+    let zipa_300k_started = std::time::Instant::now();
+    let zipa_300k_trace = decode_zipa_300k_trace_from_16k_warm(&state, &samples_16k).ok();
+    let zipa_300k_elapsed_ms = zipa_300k_started.elapsed().as_millis() as u64;
+    let zipa_300k_phones = zipa_300k_trace
+        .as_ref()
+        .and_then(|trace| trace.get("phones"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let zipa_300k_raw_phones = clean_zipa_phone_string(&zipa_300k_phones);
+    let zipa_300k_phones = normalize_zipa_to_house_ipa(&zipa_300k_raw_phones);
     Ok(Json(serde_json::json!({
-        "phones": allophant_phones,
-        "trace": allophant_trace,
-        "allophant": {
-            "phones": allophant_phones,
-            "trace": allophant_trace,
-            "elapsed_ms": allophant_elapsed_ms,
-        },
+        "phones": zipa_phones,
+        "trace": zipa_trace,
         "zipa": zipa_trace.as_ref().map(|trace| serde_json::json!({
             "phones": zipa_phones,
+            "raw_phones": zipa_raw_phones,
+            "trace": trace,
+            "elapsed_ms": zipa_elapsed_ms,
+        })),
+        "zipa_300k": zipa_300k_trace.as_ref().map(|trace| serde_json::json!({
+            "phones": zipa_300k_phones,
+            "raw_phones": zipa_300k_raw_phones,
+            "trace": trace,
+            "elapsed_ms": zipa_300k_elapsed_ms,
+        })),
+        "zipa_ns700k": zipa_trace.as_ref().map(|trace| serde_json::json!({
+            "phones": zipa_phones,
+            "raw_phones": zipa_raw_phones,
             "trace": trace,
             "elapsed_ms": zipa_elapsed_ms,
         })),
@@ -1781,7 +1969,9 @@ pub async fn api_ipa_suggest_tts(
     let tts_elapsed_ms = tts_started.elapsed().as_millis() as u64;
     let tts_audio_b64 = base64::engine::general_purpose::STANDARD
         .encode(audio.to_wav().map_err(err)?);
-    let samples_16k = tts::resample_to_16k(&audio.samples, audio.sample_rate).map_err(err)?;
+    let zipa_input =
+        with_leading_silence(&audio.samples, audio.sample_rate, 180);
+    let samples_16k = tts::resample_to_16k(&zipa_input, audio.sample_rate).map_err(err)?;
     let zipa_started = std::time::Instant::now();
     let zipa_trace = decode_zipa_trace_from_16k_warm(&state, &samples_16k).map_err(err)?;
     let zipa_elapsed_ms = zipa_started.elapsed().as_millis() as u64;
@@ -1791,19 +1981,86 @@ pub async fn api_ipa_suggest_tts(
         .unwrap_or("")
         .trim()
         .to_string();
-    let zipa_phones = clean_zipa_phone_string(&zipa_phones);
+    let zipa_raw_phones = clean_zipa_phone_string(&zipa_phones);
+    let zipa_phones = normalize_zipa_to_house_ipa(&zipa_raw_phones);
+    let zipa_300k_started = std::time::Instant::now();
+    let zipa_300k_trace = decode_zipa_300k_trace_from_16k_warm(&state, &samples_16k).map_err(err)?;
+    let zipa_300k_elapsed_ms = zipa_300k_started.elapsed().as_millis() as u64;
+    let zipa_300k_phones = zipa_300k_trace
+        .get("phones")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let zipa_300k_raw_phones = clean_zipa_phone_string(&zipa_300k_phones);
+    let zipa_300k_phones = normalize_zipa_to_house_ipa(&zipa_300k_raw_phones);
     Ok(Json(serde_json::json!({
         "text": text,
         "backend": backend,
         "tts_elapsed_ms": tts_elapsed_ms,
         "tts_audio_b64": tts_audio_b64,
+        "zipa_input_pad_ms": 180,
         "zipa": {
             "phones": zipa_phones,
+            "raw_phones": zipa_raw_phones,
             "trace": zipa_trace,
             "elapsed_ms": zipa_elapsed_ms,
         },
+        "zipa_300k": {
+            "phones": zipa_300k_phones,
+            "raw_phones": zipa_300k_raw_phones,
+            "trace": zipa_300k_trace,
+            "elapsed_ms": zipa_300k_elapsed_ms,
+        },
+        "zipa_ns700k": {
+            "phones": zipa_phones,
+            "raw_phones": zipa_raw_phones,
+            "trace": zipa_trace,
+            "elapsed_ms": zipa_elapsed_ms,
+        }
     }))
     .into_response())
+}
+
+pub async fn api_ipa_suggest_espeak(
+    Json(body): Json<IpaSuggestTtsBody>,
+) -> Result<Response, AppError> {
+    let text = body.text.trim().to_string();
+    if text.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "text must not be empty".to_string()));
+    }
+    let lang = body
+        .backend
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("en");
+    let started = std::time::Instant::now();
+    let data_dir = ensure_espeak_bundled_data_dir().map_err(err)?;
+    let engine = espeak_ng::EspeakNg::with_data_dir(lang, &data_dir).map_err(err)?;
+    let ipa = engine.text_to_phonemes(&text).map_err(err)?;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    Ok(Json(serde_json::json!({
+        "text": text,
+        "lang": lang,
+        "ipa": ipa.trim(),
+        "elapsed_ms": elapsed_ms,
+    }))
+    .into_response())
+}
+
+fn ensure_espeak_bundled_data_dir() -> anyhow::Result<&'static std::path::PathBuf> {
+    static DIR: OnceLock<anyhow::Result<std::path::PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join("hark-espeak-ng-data");
+        std::fs::create_dir_all(&dir)?;
+        if !dir.join("phontab").exists() || !dir.join("en_dict").exists() {
+            espeak_ng::install_bundled_languages(&dir, &["en"])?;
+        }
+        Ok(dir)
+    })
+    .as_ref()
+    .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 fn decode_allophant_traces_from_16k_batch(
@@ -6424,12 +6681,477 @@ struct PrototypeBakeoffItem {
     expected_fragment: Option<String>,
 }
 
-type AcousticInput = (
-    Vec<qwen3_asr::ForcedAlignItem>,
-    serde_json::Value,
-    Vec<crate::prototype::AcousticSegment>,
-    Vec<Vec<String>>,
-);
+#[derive(Clone)]
+struct AcousticInput {
+    qwen_alignment: Vec<qwen3_asr::ForcedAlignItem>,
+    timing_source: String,
+    zipa_trace: serde_json::Value,
+    zipa_segments: Vec<crate::prototype::AcousticSegment>,
+    zipa_by_qwen: Vec<Vec<String>>,
+}
+
+#[derive(Clone, Debug)]
+struct TimedWord {
+    text: String,
+    start: f64,
+    end: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum TimingMapStep {
+    Q1P1,
+    Q1P2,
+    Q2P1,
+    SkipQ,
+    SkipP,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PhoneAlignStep {
+    Match,
+    DeleteQ,
+    InsertZ,
+}
+
+fn normalize_timing_word(token: &str) -> String {
+    token
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .to_ascii_lowercase()
+}
+
+fn compact_timing_word(token: &str) -> String {
+    normalize_timing_word(token)
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect()
+}
+
+fn tokenize_timing_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(normalize_timing_word)
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+fn timing_bigram_dice(a: &str, b: &str) -> f32 {
+    if a == b {
+        return 1.0;
+    }
+    if a.len() < 2 || b.len() < 2 {
+        return 0.0;
+    }
+    let a_bigrams = a
+        .as_bytes()
+        .windows(2)
+        .map(|w| (w[0], w[1]))
+        .collect::<Vec<_>>();
+    let b_bigrams = b
+        .as_bytes()
+        .windows(2)
+        .map(|w| (w[0], w[1]))
+        .collect::<HashSet<_>>();
+    let overlap = a_bigrams.iter().filter(|g| b_bigrams.contains(g)).count();
+    (2 * overlap) as f32 / (a_bigrams.len() + b_bigrams.len()) as f32
+}
+
+fn timing_match_cost(q: &str, p: &str) -> f32 {
+    if q.is_empty() || p.is_empty() {
+        return 1.0;
+    }
+    if q == p {
+        return 0.0;
+    }
+    let q_compact = compact_timing_word(q);
+    let p_compact = compact_timing_word(p);
+    if q_compact.is_empty() || p_compact.is_empty() {
+        return 1.0;
+    }
+    if q_compact == p_compact {
+        return 0.05;
+    }
+    if q_compact.starts_with(&p_compact) || p_compact.starts_with(&q_compact) {
+        return 0.22;
+    }
+    let dice = timing_bigram_dice(&q_compact, &p_compact);
+    if dice >= 0.85 {
+        return 0.18;
+    }
+    if dice >= 0.65 {
+        return 0.35;
+    }
+    if dice >= 0.45 {
+        return 0.58;
+    }
+    1.0
+}
+
+fn split_window(start: f64, end: f64, left_weight: usize, right_weight: usize) -> (f64, f64, f64) {
+    let duration = (end - start).max(0.0);
+    let total = left_weight.max(1) + right_weight.max(1);
+    let pivot = start + duration * (left_weight.max(1) as f64 / total as f64);
+    (start, pivot, end)
+}
+
+fn parakeet_words_to_qwen_timing(
+    qwen_text: &str,
+    parakeet_words: &[TimedWord],
+) -> Option<Vec<qwen3_asr::ForcedAlignItem>> {
+    let qwen_words = tokenize_timing_words(qwen_text);
+    if qwen_words.is_empty() || parakeet_words.is_empty() {
+        return None;
+    }
+    let para_words = parakeet_words
+        .iter()
+        .map(|w| normalize_timing_word(&w.text))
+        .collect::<Vec<_>>();
+    let n = qwen_words.len();
+    let m = para_words.len();
+    let inf = 1e9f32;
+    let mut dp = vec![vec![inf; m + 1]; n + 1];
+    let mut prev = vec![vec![None; m + 1]; n + 1];
+    dp[0][0] = 0.0;
+    for i in 0..=n {
+        for j in 0..=m {
+            let cur = dp[i][j];
+            if !cur.is_finite() {
+                continue;
+            }
+            if i < n && j < m {
+                let cost = cur + timing_match_cost(&qwen_words[i], &para_words[j]);
+                if cost < dp[i + 1][j + 1] {
+                    dp[i + 1][j + 1] = cost;
+                    prev[i + 1][j + 1] = Some(TimingMapStep::Q1P1);
+                }
+            }
+            if i < n && j + 1 < m {
+                let merged = format!("{}{}", para_words[j], para_words[j + 1]);
+                let cost = cur + timing_match_cost(&qwen_words[i], &merged) + 0.08;
+                if cost < dp[i + 1][j + 2] {
+                    dp[i + 1][j + 2] = cost;
+                    prev[i + 1][j + 2] = Some(TimingMapStep::Q1P2);
+                }
+            }
+            if i + 1 < n && j < m {
+                let merged = format!("{}{}", qwen_words[i], qwen_words[i + 1]);
+                let cost = cur + timing_match_cost(&merged, &para_words[j]) + 0.08;
+                if cost < dp[i + 2][j + 1] {
+                    dp[i + 2][j + 1] = cost;
+                    prev[i + 2][j + 1] = Some(TimingMapStep::Q2P1);
+                }
+            }
+            if i < n {
+                let cost = cur + 0.85;
+                if cost < dp[i + 1][j] {
+                    dp[i + 1][j] = cost;
+                    prev[i + 1][j] = Some(TimingMapStep::SkipQ);
+                }
+            }
+            if j < m {
+                let cost = cur + 0.85;
+                if cost < dp[i][j + 1] {
+                    dp[i][j + 1] = cost;
+                    prev[i][j + 1] = Some(TimingMapStep::SkipP);
+                }
+            }
+        }
+    }
+    if !dp[n][m].is_finite() {
+        return None;
+    }
+    let mut assigned = vec![None::<(f64, f64)>; n];
+    let mut i = n;
+    let mut j = m;
+    let mut matched = 0usize;
+    while i > 0 || j > 0 {
+        let Some(step) = prev[i][j] else { break };
+        match step {
+            TimingMapStep::Q1P1 => {
+                let pw = &parakeet_words[j - 1];
+                assigned[i - 1] = Some((pw.start, pw.end));
+                matched += 1;
+                i -= 1;
+                j -= 1;
+            }
+            TimingMapStep::Q1P2 => {
+                let p0 = &parakeet_words[j - 2];
+                let p1 = &parakeet_words[j - 1];
+                assigned[i - 1] = Some((p0.start, p1.end));
+                matched += 1;
+                i -= 1;
+                j -= 2;
+            }
+            TimingMapStep::Q2P1 => {
+                let pw = &parakeet_words[j - 1];
+                let left = compact_timing_word(&qwen_words[i - 2]).len();
+                let right = compact_timing_word(&qwen_words[i - 1]).len();
+                let (start, pivot, end) = split_window(pw.start, pw.end, left, right);
+                assigned[i - 2] = Some((start, pivot));
+                assigned[i - 1] = Some((pivot, end));
+                matched += 2;
+                i -= 2;
+                j -= 1;
+            }
+            TimingMapStep::SkipQ => {
+                i -= 1;
+            }
+            TimingMapStep::SkipP => {
+                j -= 1;
+            }
+        }
+    }
+    if matched * 2 < n {
+        return None;
+    }
+    let mut out = Vec::with_capacity(n);
+    let mut last_end = 0.0f64;
+    let mut next_assigned = assigned.iter().enumerate().filter_map(|(idx, range)| range.map(|r| (idx, r)));
+    let mut next_item = next_assigned.next();
+    for (idx, word) in qwen_words.iter().enumerate() {
+        let (start, end) = if let Some((s, e)) = assigned[idx] {
+            last_end = e;
+            (s, e)
+        } else {
+            let future_start = next_item
+                .filter(|(future_idx, _)| *future_idx > idx)
+                .map(|(_, (s, _))| s)
+                .unwrap_or(last_end + 0.12);
+            let start = last_end;
+            let end = future_start.max(start + 0.02);
+            last_end = end;
+            (start, end)
+        };
+        while let Some((future_idx, _)) = next_item {
+            if future_idx <= idx {
+                next_item = next_assigned.next();
+            } else {
+                break;
+            }
+        }
+        out.push(ai(word, start, end));
+    }
+    Some(out)
+}
+
+fn zipa_segment_house_tokens(phone: &str) -> Vec<String> {
+    let cleaned = phone
+        .trim()
+        .replace('~', "")
+        .replace('ˈ', "")
+        .replace('ˌ', "");
+    if cleaned.is_empty() || cleaned == "▁" || cleaned == "_" {
+        return Vec::new();
+    }
+    let parsed = crate::prototype::parse_house_ipa(&cleaned);
+    if !parsed.is_empty() {
+        return parsed;
+    }
+    vec![cleaned]
+}
+
+fn feature_delete_cost(phone: &str) -> u32 {
+    match phone {
+        "AH" | "ER" => 60,
+        "HH" | "Y" | "W" => 75,
+        _ => 100,
+    }
+}
+
+fn feature_insert_cost(phone: &str) -> u32 {
+    match phone {
+        "AH" | "ER" => 60,
+        "HH" | "Y" | "W" => 75,
+        _ => 100,
+    }
+}
+
+fn assigned_ranges_to_alignment(
+    qwen_words: &[String],
+    assigned: &[Option<(f64, f64)>],
+) -> Option<Vec<qwen3_asr::ForcedAlignItem>> {
+    if qwen_words.is_empty() || assigned.len() != qwen_words.len() {
+        return None;
+    }
+    let matched = assigned.iter().filter(|r| r.is_some()).count();
+    if matched * 2 < qwen_words.len() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(qwen_words.len());
+    let mut last_end = 0.0f64;
+    let mut next_assigned = assigned
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, range)| range.map(|r| (idx, r)));
+    let mut next_item = next_assigned.next();
+    for (idx, word) in qwen_words.iter().enumerate() {
+        let (start, end) = if let Some((s, e)) = assigned[idx] {
+            last_end = e;
+            (s, e)
+        } else {
+            let future_start = next_item
+                .filter(|(future_idx, _)| *future_idx > idx)
+                .map(|(_, (s, _))| s)
+                .unwrap_or(last_end + 0.12);
+            let start = last_end;
+            let end = future_start.max(start + 0.02);
+            last_end = end;
+            (start, end)
+        };
+        while let Some((future_idx, _)) = next_item {
+            if future_idx <= idx {
+                next_item = next_assigned.next();
+            } else {
+                break;
+            }
+        }
+        out.push(ai(word, start, end));
+    }
+    Some(out)
+}
+
+fn qwen_ipa_words_to_zipa_timing(
+    qwen_words: &[String],
+    qwen_ipa_words: &[Vec<String>],
+    zipa_segments: &[crate::prototype::AcousticSegment],
+) -> Option<Vec<qwen3_asr::ForcedAlignItem>> {
+    if qwen_words.is_empty() || qwen_words.len() != qwen_ipa_words.len() || zipa_segments.is_empty() {
+        return None;
+    }
+
+    let mut q_features = Vec::<(String, usize)>::new();
+    for (word_idx, ipa_tokens) in qwen_ipa_words.iter().enumerate() {
+        for feature in crate::prototype::house_ipa_to_feature_tokens(ipa_tokens) {
+            q_features.push((feature, word_idx));
+        }
+    }
+    let mut z_features = Vec::<(String, usize)>::new();
+    for (seg_idx, seg) in zipa_segments.iter().enumerate() {
+        let house = zipa_segment_house_tokens(&seg.phone);
+        for feature in crate::prototype::house_ipa_to_feature_tokens(&house) {
+            z_features.push((feature, seg_idx));
+        }
+    }
+    if q_features.is_empty() || z_features.is_empty() {
+        return None;
+    }
+
+    let m = q_features.len();
+    let n = z_features.len();
+    let inf = u32::MAX / 4;
+    let mut dp = vec![vec![inf; n + 1]; m + 1];
+    let mut prev = vec![vec![None; n + 1]; m + 1];
+    dp[0][0] = 0;
+    for i in 1..=m {
+        let del = feature_delete_cost(&q_features[i - 1].0);
+        dp[i][0] = dp[i - 1][0].saturating_add(del);
+        prev[i][0] = Some(PhoneAlignStep::DeleteQ);
+    }
+    for j in 1..=n {
+        let ins = feature_insert_cost(&z_features[j - 1].0);
+        dp[0][j] = dp[0][j - 1].saturating_add(ins);
+        prev[0][j] = Some(PhoneAlignStep::InsertZ);
+    }
+    for i in 1..=m {
+        for j in 1..=n {
+            let sub = (synth_corrupt::features::substitution_cost(&q_features[i - 1].0, &z_features[j - 1].0) * 100.0) as u32;
+            let mut best = dp[i - 1][j - 1].saturating_add(sub);
+            let mut step = PhoneAlignStep::Match;
+            let del = dp[i - 1][j].saturating_add(feature_delete_cost(&q_features[i - 1].0));
+            if del < best {
+                best = del;
+                step = PhoneAlignStep::DeleteQ;
+            }
+            let ins = dp[i][j - 1].saturating_add(feature_insert_cost(&z_features[j - 1].0));
+            if ins < best {
+                best = ins;
+                step = PhoneAlignStep::InsertZ;
+            }
+            dp[i][j] = best;
+            prev[i][j] = Some(step);
+        }
+    }
+
+    let mut matched_seg_indices = vec![Vec::<usize>::new(); qwen_words.len()];
+    let mut i = m;
+    let mut j = n;
+    while i > 0 || j > 0 {
+        let Some(step) = prev[i][j] else { break };
+        match step {
+            PhoneAlignStep::Match => {
+                let word_idx = q_features[i - 1].1;
+                let seg_idx = z_features[j - 1].1;
+                if !matched_seg_indices[word_idx].contains(&seg_idx) {
+                    matched_seg_indices[word_idx].push(seg_idx);
+                }
+                i -= 1;
+                j -= 1;
+            }
+            PhoneAlignStep::DeleteQ => {
+                i -= 1;
+            }
+            PhoneAlignStep::InsertZ => {
+                j -= 1;
+            }
+        }
+    }
+
+    let anchor_ranges = matched_seg_indices
+        .iter()
+        .map(|indices| {
+            Some((
+                indices.iter().min().copied()?,
+                indices.iter().max().copied()?,
+            ))
+        })
+        .collect::<Vec<_>>();
+    let anchored = anchor_ranges
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, range)| range.map(|r| (idx, r)))
+        .collect::<Vec<_>>();
+    let last_seg_idx = zipa_segments.len().saturating_sub(1);
+    let mut assigned = vec![None; qwen_words.len()];
+    for (pos, (word_idx, (first, last))) in anchored.iter().copied().enumerate() {
+        let own_first = if pos == 0 {
+            0
+        } else {
+            let (_, (_, prev_last)) = anchored[pos - 1];
+            ((prev_last + first) / 2) + 1
+        };
+        let own_last = if pos + 1 >= anchored.len() {
+            last_seg_idx
+        } else {
+            let (_, (next_first, _)) = anchored[pos + 1];
+            (last + next_first) / 2
+        };
+        assigned[word_idx] = Some((
+            zipa_segments[own_first.min(last_seg_idx)].start_sec,
+            zipa_segments[own_last.min(last_seg_idx)].end_sec,
+        ));
+    }
+
+    assigned_ranges_to_alignment(qwen_words, &assigned)
+}
+
+fn espeak_words_to_qwen_zipa_timing(
+    qwen_text: &str,
+    zipa_segments: &[crate::prototype::AcousticSegment],
+) -> Option<Vec<qwen3_asr::ForcedAlignItem>> {
+    let qwen_words = tokenize_timing_words(qwen_text);
+    if qwen_words.is_empty() || zipa_segments.is_empty() {
+        return None;
+    }
+    let data_dir = ensure_espeak_bundled_data_dir().ok()?;
+    let engine = espeak_ng::EspeakNg::with_data_dir("en", &data_dir).ok()?;
+    let qwen_ipa_words = qwen_words
+        .iter()
+        .map(|word| {
+            let ipa = engine.text_to_phonemes(word).ok()?;
+            let phones = crate::prototype::parse_house_ipa(&ipa);
+            (!phones.is_empty()).then_some(phones)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    qwen_ipa_words_to_zipa_timing(&qwen_words, &qwen_ipa_words, zipa_segments)
+}
 
 fn build_acoustic_input_from_samples_16k(
     state: &AppState,
@@ -6437,12 +7159,49 @@ fn build_acoustic_input_from_samples_16k(
     samples_16k: &[f32],
     qwen_text: &str,
 ) -> Option<AcousticInput> {
-    let qwen_alignment = aligner.align(samples_16k, qwen_text).ok()?;
     let zipa_trace = decode_zipa_trace_from_16k_warm(state, samples_16k).ok()?;
     let zipa_segments = zipa_segments_from_trace(&zipa_trace);
+    let espeak_alignment = espeak_words_to_qwen_zipa_timing(qwen_text, &zipa_segments);
+    let parakeet_alignment = state
+        .parakeet
+        .transcribe_samples(
+            samples_16k.to_vec(),
+            16000,
+            1,
+            Some(parakeet_rs::TimestampMode::Words),
+        )
+        .ok()
+        .and_then(|result| {
+            let words = result
+                .tokens
+                .into_iter()
+                .map(|token| TimedWord {
+                    text: token.text,
+                    start: token.start as f64,
+                    end: token.end as f64,
+                })
+                .collect::<Vec<_>>();
+            parakeet_words_to_qwen_timing(qwen_text, &words)
+        });
+    let (qwen_alignment, timing_source) = if let Some(alignment) = espeak_alignment {
+        (alignment, "espeak_zipa_dp".to_string())
+    } else if let Some(alignment) = parakeet_alignment {
+        (alignment, "parakeet_words".to_string())
+    } else {
+        (
+            aligner.align(samples_16k, qwen_text).ok()?,
+            "forced_aligner_fallback".to_string(),
+        )
+    };
     let zipa_by_qwen =
         crate::prototype::zipa_grouped_arpabet_by_alignment(&qwen_alignment, &zipa_segments);
-    Some((qwen_alignment, zipa_trace, zipa_segments, zipa_by_qwen))
+    Some(AcousticInput {
+        qwen_alignment,
+        timing_source,
+        zipa_trace,
+        zipa_segments,
+        zipa_by_qwen,
+    })
 }
 
 fn zipa_segments_from_trace(trace: &serde_json::Value) -> Vec<crate::prototype::AcousticSegment> {
@@ -6525,12 +7284,7 @@ pub async fn api_correct_prototype(
     let acoustic_input = if let Some(audio_b64) = body.audio_wav_base64.clone() {
         let state2 = state.clone();
         let qwen_text = body.qwen.clone();
-        tokio::task::spawn_blocking(move || -> Option<(
-            Vec<qwen3_asr::ForcedAlignItem>,
-            serde_json::Value,
-            Vec<crate::prototype::AcousticSegment>,
-            Vec<Vec<String>>,
-        )> {
+        tokio::task::spawn_blocking(move || -> Option<AcousticInput> {
             use base64::Engine as _;
             let wav = base64::engine::general_purpose::STANDARD
                 .decode(audio_b64)
@@ -6544,15 +7298,10 @@ pub async fn api_correct_prototype(
     } else {
         None
     };
-    let acoustic_context =
-        acoustic_input
-            .as_ref()
-            .map(|(qwen_alignment, _, zipa_segments, zipa_by_qwen)| {
-        crate::prototype::AcousticContext {
-            qwen_alignment,
-            zipa_segments,
-            zipa_by_qwen,
-        }
+    let acoustic_context = acoustic_input.as_ref().map(|input| crate::prototype::AcousticContext {
+        qwen_alignment: &input.qwen_alignment,
+        zipa_segments: &input.zipa_segments,
+        zipa_by_qwen: &input.zipa_by_qwen,
     });
     let mut result = crate::prototype::prototype_correct_with_acoustics(
         &body.qwen,
@@ -6622,7 +7371,13 @@ pub async fn api_correct_prototype(
         "accepted": result.accepted,
         "proposals": result.proposals,
         "sentence_candidates": result.sentence_candidates,
-        "zipa_trace": acoustic_input.as_ref().map(|(_, trace, _, _)| trace.clone()),
+        "alignments": acoustic_input.as_ref().map(|input| serde_json::json!({
+            "timing_source": input.timing_source,
+            "qwen": fmt_alignment_json(&input.qwen_alignment),
+            "zipa": phone_segments_to_alignment(&input.zipa_trace),
+            "zipa_qwen": crate::prototype::zipa_grouped_by_alignment_json(&input.qwen_alignment, &input.zipa_segments),
+        })),
+        "zipa_trace": acoustic_input.as_ref().map(|input| input.zipa_trace.clone()),
         "reranker": reranker,
     }))
     .into_response())
@@ -6648,7 +7403,7 @@ pub async fn api_correct_prototype_bakeoff(
         use_model_reranker,
         use_prototype_adapters,
     );
-    let prototype_only_eval = reranker_mode == PrototypeRerankerMode::OfficialQwen3;
+    let prototype_only_eval = true;
     if source == "applied" {
         check_no_running_jobs(&state)?;
         let job_id = {
@@ -6982,9 +7737,7 @@ pub async fn api_correct_prototype_bakeoff(
             for item in &items {
                 let acoustic_input = if source == "human" {
                     item.wav_path.as_deref().and_then(|wav_path| {
-                        let wav = std::fs::read(wav_path).ok()?;
-                        let (mono, sample_rate) = decode_wav_mono(&wav).ok()?;
-                        let samples_16k = tts::resample_to_16k(&mono, sample_rate).ok()?;
+                        let samples_16k = load_authored_recording_16k(wav_path).ok()?;
                         build_acoustic_input_from_samples_16k(
                             &state2,
                             &state2.aligner,
@@ -6995,16 +7748,11 @@ pub async fn api_correct_prototype_bakeoff(
                 } else {
                     None
                 };
-                let acoustic_context =
-                    acoustic_input
-                        .as_ref()
-                        .map(|(qwen_alignment, _, zipa_segments, zipa_by_qwen)| {
-                            crate::prototype::AcousticContext {
-                                qwen_alignment,
-                                zipa_segments,
-                                zipa_by_qwen,
-                            }
-                        });
+                let acoustic_context = acoustic_input.as_ref().map(|input| crate::prototype::AcousticContext {
+                    qwen_alignment: &input.qwen_alignment,
+                    zipa_segments: &input.zipa_segments,
+                    zipa_by_qwen: &input.zipa_by_qwen,
+                });
                 let mut result = crate::prototype::prototype_correct_with_acoustics(
                     &item.qwen,
                     &vocab,
@@ -7050,9 +7798,7 @@ pub async fn api_correct_prototype_bakeoff(
             for item in &items {
                 let acoustic_input = if source == "human" {
                     item.wav_path.as_deref().and_then(|wav_path| {
-                        let wav = std::fs::read(wav_path).ok()?;
-                        let (mono, sample_rate) = decode_wav_mono(&wav).ok()?;
-                        let samples_16k = tts::resample_to_16k(&mono, sample_rate).ok()?;
+                        let samples_16k = load_authored_recording_16k(wav_path).ok()?;
                         build_acoustic_input_from_samples_16k(
                             &state2,
                             &state2.aligner,
@@ -7063,16 +7809,11 @@ pub async fn api_correct_prototype_bakeoff(
                 } else {
                     None
                 };
-                let acoustic_context =
-                    acoustic_input
-                        .as_ref()
-                        .map(|(qwen_alignment, _, zipa_segments, zipa_by_qwen)| {
-                            crate::prototype::AcousticContext {
-                                qwen_alignment,
-                                zipa_segments,
-                                zipa_by_qwen,
-                            }
-                        });
+                let acoustic_context = acoustic_input.as_ref().map(|input| crate::prototype::AcousticContext {
+                    qwen_alignment: &input.qwen_alignment,
+                    zipa_segments: &input.zipa_segments,
+                    zipa_by_qwen: &input.zipa_by_qwen,
+                });
                 let result = crate::prototype::prototype_correct_with_acoustics(
                     &item.qwen,
                     &vocab,
@@ -9014,6 +9755,14 @@ mod tests {
         json.as_array().cloned().unwrap_or_default()
     }
 
+    fn timed(text: &str, start: f64, end: f64) -> TimedWord {
+        TimedWord {
+            text: text.to_string(),
+            start,
+            end,
+        }
+    }
+
     #[test]
     fn ownership_ranges_handle_zero_width_alignment_items() {
         let alignment = vec![
@@ -9093,6 +9842,107 @@ mod tests {
         assert_eq!(phones_for(0), vec!["iɪ".to_string()]);
         assert_eq!(phones_for(1), vec!["w".to_string(), "ʌ".to_string()]);
         assert!(phones_for(2).is_empty());
+    }
+
+    #[test]
+    fn parakeet_timing_maps_one_to_one_words() {
+        let mapped = parakeet_words_to_qwen_timing(
+            "bear cove",
+            &[timed("bear", 1.00, 1.24), timed("cove", 1.24, 1.52)],
+        )
+        .expect("expected timing map");
+
+        assert_eq!(mapped.len(), 2);
+        assert_eq!(mapped[0].word, "bear");
+        assert!((mapped[0].start_time - 1.00).abs() < 1e-6);
+        assert!((mapped[0].end_time - 1.24).abs() < 1e-6);
+        assert_eq!(mapped[1].word, "cove");
+        assert!((mapped[1].start_time - 1.24).abs() < 1e-6);
+        assert!((mapped[1].end_time - 1.52).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parakeet_timing_merges_two_words_into_one_qwen_token() {
+        let mapped = parakeet_words_to_qwen_timing(
+            "bearcove",
+            &[timed("bear", 1.00, 1.22), timed("cove", 1.22, 1.54)],
+        )
+        .expect("expected timing map");
+
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(mapped[0].word, "bearcove");
+        assert!((mapped[0].start_time - 1.00).abs() < 1e-6);
+        assert!((mapped[0].end_time - 1.54).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parakeet_timing_splits_one_word_across_two_qwen_tokens() {
+        let mapped = parakeet_words_to_qwen_timing("bear cove", &[timed("bearcove", 2.00, 2.64)])
+            .expect("expected timing map");
+
+        assert_eq!(mapped.len(), 2);
+        assert_eq!(mapped[0].word, "bear");
+        assert_eq!(mapped[1].word, "cove");
+        assert!((mapped[0].start_time - 2.00).abs() < 1e-6);
+        assert!(mapped[0].end_time > mapped[0].start_time);
+        assert!((mapped[1].end_time - 2.64).abs() < 1e-6);
+        assert!((mapped[0].end_time - mapped[1].start_time).abs() < 1e-6);
+    }
+
+    #[test]
+    fn espeak_zipa_dp_maps_bear_cove_from_fuzzy_house_ipa() {
+        let qwen_words = vec!["bear".to_string(), "cove".to_string()];
+        let qwen_ipa = vec![
+            crate::prototype::parse_house_ipa("bˈeə"),
+            crate::prototype::parse_house_ipa("kˈəʊv"),
+        ];
+        let zipa_segments = vec![
+            seg("b", 1.00, 1.06),
+            seg("ɛ", 1.06, 1.14),
+            seg("ɹ", 1.14, 1.20),
+            seg("k", 1.20, 1.27),
+            seg("o", 1.27, 1.35),
+            seg("ʊ", 1.35, 1.42),
+            seg("v", 1.42, 1.48),
+        ];
+
+        let mapped = qwen_ipa_words_to_zipa_timing(&qwen_words, &qwen_ipa, &zipa_segments)
+            .expect("expected eSpeak/ZIPA timing map");
+
+        assert_eq!(mapped.len(), 2);
+        assert_eq!(mapped[0].word, "bear");
+        assert_eq!(mapped[1].word, "cove");
+        assert!((mapped[0].start_time - 1.00).abs() < 1e-6);
+        assert!((mapped[0].end_time - 1.20).abs() < 1e-6);
+        assert!((mapped[1].start_time - 1.20).abs() < 1e-6);
+        assert!((mapped[1].end_time - 1.48).abs() < 1e-6);
+    }
+
+    #[test]
+    fn espeak_zipa_dp_handles_sir_day_style_vowel_drift() {
+        let qwen_words = vec!["sir".to_string(), "day".to_string()];
+        let qwen_ipa = vec![
+            crate::prototype::parse_house_ipa("sˈɜː"),
+            crate::prototype::parse_house_ipa("dˈeɪ"),
+        ];
+        let zipa_segments = vec![
+            seg("s", 0.50, 0.56),
+            seg("ɚ", 0.56, 0.66),
+            seg("d", 0.66, 0.73),
+            seg("ɛ", 0.73, 0.81),
+            seg("ɪ", 0.81, 0.90),
+        ];
+
+        let mapped = qwen_ipa_words_to_zipa_timing(&qwen_words, &qwen_ipa, &zipa_segments)
+            .expect("expected fuzzy eSpeak/ZIPA timing map");
+
+        assert_eq!(mapped.len(), 2);
+        assert_eq!(mapped[0].word, "sir");
+        assert_eq!(mapped[1].word, "day");
+        assert!((mapped[0].start_time - 0.50).abs() < 1e-6);
+        assert!((mapped[0].end_time - 0.66).abs() < 1e-6);
+        assert!((mapped[1].start_time - 0.66).abs() < 1e-6);
+        assert!((mapped[1].end_time - 0.90).abs() < 1e-6);
     }
 
     #[test]
