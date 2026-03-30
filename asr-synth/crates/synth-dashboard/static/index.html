@@ -7511,6 +7511,7 @@
             const [loadingBakeoffDetails, setLoadingBakeoffDetails] = useState({});
             const [bakeoffTimelineZoom, setBakeoffTimelineZoom] = useState({});
             const [bakeoffPlayback, setBakeoffPlayback] = useState(null);
+            const [bakeoffPlaybackRate, setBakeoffPlaybackRate] = useState(1);
             const [liveTimelineZoom, setLiveTimelineZoom] = useState({});
             const [selectedProposalKeys, setSelectedProposalKeys] = useState({});
             const [zipaOffsetMs, setZipaOffsetMs] = useState(0);
@@ -7520,6 +7521,8 @@
             const [selectedTrainId, setSelectedTrainId] = useState(rerankerTrains[0]?.id ?? null);
             const mediaRef = useRef(null);
             const bakeoffAudioRef = useRef(null);
+            const bakeoffAudioKeyRef = useRef(null);
+            const bakeoffSegmentRef = useRef(null);
             const bakeoffAnimRef = useRef(null);
             const bakeoffPollRef = useRef(null);
             const rerankerMode = 'trained';
@@ -7718,7 +7721,7 @@
                 return `${idx + 1}. ${proposal?.raw_text || '—'} → ${primary?.term || '—'}${via}${matched}${tokenSpan}${ipa} · ${decision.state}`;
             };
 
-            const renderLiveProposalLanes = (result, proposal, activeTime = null) => {
+            const renderLiveProposalLanes = (result, proposal, activeTime = null, lanePlayback = null) => {
                 const prototype = result?.prototype;
                 const al = prototype?.alignments || {};
                 const parakeetItems = result?.parakeet_alignment || [];
@@ -7750,6 +7753,7 @@
                 const zipaParakeetLane = zipaParakeetItems;
                 const zipaLane = zipaItems;
                 const zoomLevels = [160, 260, 380, 540];
+                const rateLevels = [1, 0.5, 0.25];
                 const maxEnd = Math.max(
                     0,
                     ...parakeetLane.map(a => Number(a.e || 0)),
@@ -7805,6 +7809,40 @@
                                 >
                                     reset
                                 </button>
+                                {lanePlayback?.entry?.recording_id && (
+                                    <button
+                                        type="button"
+                                        onClick={() => playBakeoffRecording(lanePlayback.entryKey, lanePlayback.entry)}
+                                        style={{
+                                            padding:'2px 8px',
+                                            borderRadius:999,
+                                            border:'1px solid var(--panel-subtle-4)',
+                                            background:'var(--panel-subtle)',
+                                            color:'var(--text)',
+                                            fontSize:11,
+                                        }}
+                                    >
+                                        {bakeoffPlayback?.entryKey === lanePlayback.entryKey && bakeoffPlayback?.playing ? 'Pause' : 'Play'}
+                                    </button>
+                                )}
+                                <span style={{fontSize:11, color:'var(--text-muted)'}}>speed</span>
+                                {rateLevels.map(level => (
+                                    <button
+                                        key={level}
+                                        type="button"
+                                        onClick={() => setBakeoffPlaybackRate(level)}
+                                        style={{
+                                            padding:'2px 8px',
+                                            borderRadius:999,
+                                            border:'1px solid var(--panel-subtle-4)',
+                                            background: bakeoffPlaybackRate === level ? 'var(--accent-bg-16)' : 'var(--panel-subtle)',
+                                            color: bakeoffPlaybackRate === level ? 'var(--accent)' : 'var(--text-muted)',
+                                            fontSize:11,
+                                        }}
+                                    >
+                                        {level}x
+                                    </button>
+                                ))}
                                 <span style={{fontSize:11, color:'var(--text-muted)'}}>zoom</span>
                                 {zoomLevels.map(level => (
                                     <button
@@ -7826,7 +7864,10 @@
                             </div>
                         </div>
                         <div style={{width:'100%', minWidth:0, overflowX:'auto', overflowY:'hidden', paddingBottom:4}}>
-                            {renderBakeoffTL('Parakeet', parakeetLane, rgbaFromVar('--success', 0.72), Math.max(maxEnd, 0.2), pxPerSec, activeTime, highlightedRange)}
+                            {renderBakeoffTL('Parakeet', parakeetLane, rgbaFromVar('--success', 0.72), Math.max(maxEnd, 0.2), pxPerSec, activeTime, highlightedRange, lanePlayback?.entry?.recording_id ? {
+                                onSegmentPlay: (item) => playBakeoffSegment(lanePlayback.entryKey, lanePlayback.entry, Number(item.s || 0), Number(item.e || 0)),
+                                clickable: true,
+                            } : null)}
                             {renderBakeoffTL('ZIPA@Par', zipaParakeetLane, rgbaFromVar('--reranker', 0.72), Math.max(maxEnd, 0.2), pxPerSec, activeTime, highlightedRange)}
                             {renderBakeoffTL('ZIPA', zipaLane, rgbaFromVar('--accent', 0.60), Math.max(maxEnd, 0.2), pxPerSec, activeTime, highlightedRange)}
                             <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'var(--text-muted)',marginTop:3,paddingLeft:71,width:timelineWidth}}>
@@ -7926,7 +7967,7 @@
                 )
             );
 
-            const renderTopProposals = (result, activeTime = null, inspectorKey = 'live') => (
+            const renderTopProposals = (result, activeTime = null, inspectorKey = 'live', lanePlayback = null) => (
                 result?.prototype?.proposals?.length > 0 && (() => {
                     const proposals = result.prototype.proposals.slice(0, 12);
                     const selectedKey = selectedProposalKeys[inspectorKey];
@@ -8011,7 +8052,7 @@
                                 <div style={{marginTop:8, fontSize:11, color:'var(--text-muted)'}}>
                                     rank = combined candidate score, higher is better · IPA = phonetic similarity to observed phones, 1.00 is exact · Δ = candidate acoustic score minus the observed slice baseline, closer to 0 is better
                                 </div>
-                                {renderLiveProposalLanes(result, selectedProposal, activeTime)}
+                                {renderLiveProposalLanes(result, selectedProposal, activeTime, lanePlayback)}
                             </div>
                         </div>
                     </div>
@@ -8049,7 +8090,7 @@
                 )
             );
 
-            const renderCorrectionInspector = (result, extraRows = [], activeTime = null, controls = null, inspectorKey = 'live') => (
+            const renderCorrectionInspector = (result, extraRows = [], activeTime = null, controls = null, inspectorKey = 'live', lanePlayback = null) => (
                 <div style={{marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--accent-bg-10)', display:'grid', gap:10}}>
                     {controls && (
                         <div style={{display:'flex', justifyContent:'flex-end', gap:8, flexWrap:'wrap'}}>
@@ -8064,7 +8105,7 @@
                         </div>
                     </div>
                     {renderAcceptedEdits(result)}
-                    {renderTopProposals(result, activeTime, inspectorKey)}
+                    {renderTopProposals(result, activeTime, inspectorKey, lanePlayback)}
                     {renderRerankerDebug(result)}
                 </div>
             );
@@ -8094,6 +8135,12 @@
                 return `${Math.round(n)}ms`;
             };
 
+            useEffect(() => {
+                if (bakeoffAudioRef.current) {
+                    bakeoffAudioRef.current.playbackRate = Number(bakeoffPlaybackRate || 1);
+                }
+            }, [bakeoffPlaybackRate]);
+
             useEffect(() => () => {
                 if (bakeoffAnimRef.current) {
                     cancelAnimationFrame(bakeoffAnimRef.current);
@@ -8104,6 +8151,8 @@
                     bakeoffAudioRef.current.src = '';
                     bakeoffAudioRef.current = null;
                 }
+                bakeoffAudioKeyRef.current = null;
+                bakeoffSegmentRef.current = null;
             }, []);
 
             useEffect(() => {
@@ -8136,8 +8185,10 @@
                 return () => clearInterval(bakeoffPollRef.current);
             }, [runningBakeoffJob?.id]);
 
-            const renderBakeoffTL = (label, items, color, maxTime, pxPerSec, activeTime, highlightedRange = null) => {
+            const renderBakeoffTL = (label, items, color, maxTime, pxPerSec, activeTime, highlightedRange = null, options = null) => {
                 if (!items || !items.length) return null;
+                const onSegmentPlay = options?.onSegmentPlay || null;
+                const clickable = !!options?.clickable && typeof onSegmentPlay === 'function';
                 const timelineWidth = Math.max(720, Math.ceil(Math.max(maxTime || 1, 0.001) * pxPerSec));
                 const px = v => `${Math.max(0, Number(v || 0) * pxPerSec).toFixed(1)}px`;
                 const playheadLeft = activeTime == null ? null : Math.max(0, Number(activeTime || 0) * pxPerSec);
@@ -8180,6 +8231,7 @@
                                     <div
                                         key={j}
                                         title={a.t || `${a.w} (${Number(a.s).toFixed(3)}s–${Number(a.e).toFixed(3)}s)${a.avg_logprob != null ? ` lp=${Number(a.avg_logprob).toFixed(2)}` : ''}${conf == null ? '' : ` conf=${conf.toFixed(2)}`}`}
+                                        onClick={clickable ? () => onSegmentPlay(a) : undefined}
                                         style={{
                                             position:'absolute',
                                             left:px(a.s),
@@ -8196,6 +8248,7 @@
                                             boxShadow: isActive ? `0 0 0 2px ${color.replace(/[\d.]+\)$/, '0.55)')}, inset 0 0 0 1px ${rgbaFromVar('--text-on-dark', 0.25)}` : 'none',
                                             opacity,
                                             zIndex: isActive ? 2 : 1,
+                                            cursor: clickable ? 'pointer' : 'default',
                                         }}
                                     >
                                         <span style={{fontSize:10,color:'var(--text-on-dark)',whiteSpace:'nowrap',padding:'0 4px'}}>{a.w}</span>
@@ -8224,7 +8277,15 @@
 
             const isPlaceholderPhoneLabel = label => {
                 const text = String(label || '').trim().toLowerCase();
-                return !text || text === '∅' || text === '-' || text === '—' || text === 'sil' || text === 'sp' || text === 'pau' || text === 'blank';
+                return !text
+                    || text === '∅'
+                    || text === '-'
+                    || text === '—'
+                    || text === 'sil'
+                    || text === 'sp'
+                    || text === 'pau'
+                    || text === 'blank'
+                    || /^_+$/.test(text);
             };
 
             const firstMeaningfulSegmentStart = items => {
@@ -8276,79 +8337,115 @@
                 });
             };
 
-            const playBakeoffRecording = async (entryKey, entry) => {
-                if (!entry.recording_id) return;
+            const ensureBakeoffAudio = async (entryKey, entry) => {
+                if (!entry.recording_id) return null;
                 if (!bakeoffDetails[entryKey] && !loadingBakeoffDetails[entryKey]) {
                     loadBakeoffDetail(entryKey, entry);
                 }
                 let audio = bakeoffAudioRef.current;
-                if (audio && bakeoffPlayback?.entryKey === entryKey) {
-                    if (audio.paused) {
-                        await audio.play();
-                    } else {
-                        audio.pause();
-                    }
-                    return;
-                }
-                if (audio) {
+                const sameEntry = bakeoffAudioKeyRef.current === entryKey && audio;
+                if (!sameEntry && audio) {
                     if (bakeoffAnimRef.current) {
                         cancelAnimationFrame(bakeoffAnimRef.current);
                         bakeoffAnimRef.current = null;
                     }
                     audio.pause();
                     audio.src = '';
+                    bakeoffSegmentRef.current = null;
                 }
-                audio = new Audio(`/api/author/recordings/${entry.recording_id}/audio`);
-                bakeoffAudioRef.current = audio;
-                const tick = () => {
-                    const current = bakeoffAudioRef.current;
-                    if (!current) return;
-                    setBakeoffPlayback(prev => ({
+                if (!sameEntry) {
+                    audio = new Audio(`/api/author/recordings/${entry.recording_id}/audio`);
+                    audio.playbackRate = Number(bakeoffPlaybackRate || 1);
+                    bakeoffAudioRef.current = audio;
+                    bakeoffAudioKeyRef.current = entryKey;
+                    const tick = () => {
+                        const current = bakeoffAudioRef.current;
+                        if (!current || bakeoffAudioKeyRef.current !== entryKey) return;
+                        const clip = bakeoffSegmentRef.current;
+                        if (clip && clip.entryKey === entryKey && Number.isFinite(clip.endSec) && current.currentTime >= clip.endSec) {
+                            current.pause();
+                            current.currentTime = clip.startSec;
+                            bakeoffSegmentRef.current = null;
+                        }
+                        setBakeoffPlayback(prev => ({
+                            entryKey,
+                            time: Number.isFinite(current.currentTime) ? current.currentTime : (prev?.entryKey === entryKey ? prev.time : 0),
+                            duration: Number.isFinite(current.duration) ? current.duration : (prev?.entryKey === entryKey ? prev.duration : null),
+                            playing: !current.paused,
+                        }));
+                        if (!current.paused && !current.ended) {
+                            bakeoffAnimRef.current = requestAnimationFrame(tick);
+                        } else {
+                            bakeoffAnimRef.current = null;
+                        }
+                    };
+                    const sync = playing => setBakeoffPlayback(prev => ({
                         entryKey,
-                        time: Number.isFinite(current.currentTime) ? current.currentTime : (prev?.entryKey === entryKey ? prev.time : 0),
-                        duration: Number.isFinite(current.duration) ? current.duration : (prev?.entryKey === entryKey ? prev.duration : null),
-                        playing: !current.paused,
+                        time: Number.isFinite(audio.currentTime) ? audio.currentTime : (prev?.entryKey === entryKey ? prev.time : 0),
+                        duration: Number.isFinite(audio.duration) ? audio.duration : (prev?.entryKey === entryKey ? prev.duration : null),
+                        playing,
                     }));
-                    if (!current.paused && !current.ended) {
+                    audio.onloadedmetadata = () => sync(false);
+                    audio.onplay = () => {
+                        sync(true);
+                        if (bakeoffAnimRef.current) cancelAnimationFrame(bakeoffAnimRef.current);
                         bakeoffAnimRef.current = requestAnimationFrame(tick);
-                    } else {
-                        bakeoffAnimRef.current = null;
+                    };
+                    audio.onpause = () => {
+                        sync(false);
+                        if (bakeoffAnimRef.current) {
+                            cancelAnimationFrame(bakeoffAnimRef.current);
+                            bakeoffAnimRef.current = null;
+                        }
+                    };
+                    audio.onended = () => {
+                        bakeoffSegmentRef.current = null;
+                        if (bakeoffAnimRef.current) {
+                            cancelAnimationFrame(bakeoffAnimRef.current);
+                            bakeoffAnimRef.current = null;
+                        }
+                        setBakeoffPlayback(prev => prev?.entryKey === entryKey ? {...prev, time: 0, playing: false} : prev);
+                    };
+                    audio.onerror = () => {
+                        bakeoffSegmentRef.current = null;
+                        if (bakeoffAnimRef.current) {
+                            cancelAnimationFrame(bakeoffAnimRef.current);
+                            bakeoffAnimRef.current = null;
+                        }
+                        setBakeoffPlayback(prev => prev?.entryKey === entryKey ? {...prev, playing: false} : prev);
+                    };
+                    setBakeoffPlayback({entryKey, time: 0, duration: null, playing: false});
+                    if (audio.readyState < 1) {
+                        await new Promise(resolve => {
+                            const done = () => resolve();
+                            audio.addEventListener('loadedmetadata', done, {once:true});
+                            audio.addEventListener('error', done, {once:true});
+                        });
                     }
-                };
-                const sync = playing => setBakeoffPlayback(prev => ({
-                    entryKey,
-                    time: Number.isFinite(audio.currentTime) ? audio.currentTime : (prev?.entryKey === entryKey ? prev.time : 0),
-                    duration: Number.isFinite(audio.duration) ? audio.duration : (prev?.entryKey === entryKey ? prev.duration : null),
-                    playing,
-                }));
-                audio.addEventListener('loadedmetadata', () => sync(false));
-                audio.addEventListener('play', () => {
-                    sync(true);
-                    if (bakeoffAnimRef.current) cancelAnimationFrame(bakeoffAnimRef.current);
-                    bakeoffAnimRef.current = requestAnimationFrame(tick);
-                });
-                audio.addEventListener('pause', () => {
-                    sync(false);
-                    if (bakeoffAnimRef.current) {
-                        cancelAnimationFrame(bakeoffAnimRef.current);
-                        bakeoffAnimRef.current = null;
-                    }
-                });
-                audio.addEventListener('ended', () => {
-                    if (bakeoffAnimRef.current) {
-                        cancelAnimationFrame(bakeoffAnimRef.current);
-                        bakeoffAnimRef.current = null;
-                    }
-                    setBakeoffPlayback(prev => prev?.entryKey === entryKey ? {...prev, time: 0, playing: false} : prev);
-                });
-                audio.addEventListener('error', () => {
-                    if (bakeoffAnimRef.current) {
-                        cancelAnimationFrame(bakeoffAnimRef.current);
-                        bakeoffAnimRef.current = null;
-                    }
-                    setBakeoffPlayback(prev => prev?.entryKey === entryKey ? {...prev, playing: false} : prev);
-                });
-                setBakeoffPlayback({entryKey, time: 0, duration: null, playing: false});
+                } else {
+                    audio.playbackRate = Number(bakeoffPlaybackRate || 1);
+                }
+                return audio;
+            };
+
+            const playBakeoffRecording = async (entryKey, entry) => {
+                const audio = await ensureBakeoffAudio(entryKey, entry);
+                if (!audio) return;
+                if (bakeoffAudioKeyRef.current === entryKey && !bakeoffSegmentRef.current && !audio.paused) {
+                    audio.pause();
+                    return;
+                }
+                bakeoffSegmentRef.current = null;
+                await audio.play();
+            };
+
+            const playBakeoffSegment = async (entryKey, entry, startSec, endSec) => {
+                const audio = await ensureBakeoffAudio(entryKey, entry);
+                if (!audio) return;
+                const start = Math.max(0, Number(startSec || 0));
+                const end = Math.max(start, Number(endSec || start));
+                bakeoffSegmentRef.current = {entryKey, startSec: start, endSec: end};
+                audio.currentTime = start;
                 await audio.play();
             };
 
@@ -8566,7 +8663,7 @@
                                         {result.error}
                                     </div>
                                 ) : (
-                                    renderCorrectionInspector(result, [], null, null, 'live')
+                                    renderCorrectionInspector(result, [], null, null, 'live', null)
                                 )}
                             </div>
                         )}
@@ -8748,7 +8845,7 @@
                                                                                                 </span>
                                                                                             )}
                                                                                         </>
-                                                                                    ), entryKey)}
+                                                                                    ), entryKey, {entryKey, entry})}
                                                                                 </>
                                                                             );
                                                                         })()
