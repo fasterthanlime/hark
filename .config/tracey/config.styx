@@ -4,10 +4,15 @@ specs (
         include (spec/**/*.md)
         impls (
             {
-                name swift
+                name app
                 include (
                     hark/**/*.swift
                     HarkInput/**/*.swift
+                    qwen3-asr-rs/**/*.rs
+                )
+                exclude (
+                    qwen3-asr-rs/target/**
+                    qwen3-asr-rs/vendor/**
                 )
             }
         )

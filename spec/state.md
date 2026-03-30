@@ -8,8 +8,9 @@ text into the frontmost application via a custom IME.
 
 There are two layers:
 
-- **UI layer** — handles hotkey events, drives the overlay, decides when to
-  create sessions and how they end. Runs on the main thread.
+- **UI layer** — handles hotkey events, shows a status indicator at the
+  cursor, decides when to create sessions and how they end. Runs on the
+  main thread.
 - **Session** — a self-contained unit of work created for each dictation
   attempt. Owns its capture buffer, ASR handle, and IME handle. Multiple
   sessions can coexist (e.g., the previous one finalizing while a new one
@@ -49,6 +50,19 @@ that is discarded unless a session taps into it.
 > Core Audio. If the selected device disappeared, Hark falls back to the
 > system default.
 
+### Internal format
+
+> h[audio.internal-format]
+> The audio engine always outputs 16kHz mono float32 samples, regardless
+> of the input device's native format. Resampling happens inside the
+> engine. Sessions and the ASR layer never deal with sample rates or
+> channel counts.
+
+> h[audio.resample-on-device-change]
+> When the active device changes (including mid-recording), the engine
+> reconfigures its resampling pipeline for the new device's native format.
+> The output format remains 16kHz mono float32.
+
 ### Engine states
 
 The audio engine has two states: Cold and Warm.
@@ -82,17 +96,16 @@ Events while Warm:
 The UI layer handles keyboard events and manages the overlay. It creates
 sessions and tells them how to end.
 
-### Key event consumption
+### Key event handling
 
-> h[ui.event-consumption]
-> Every key event handled by the UI layer is either **consumed** (the app
-> never sees it) or **passthrough** (the app receives it normally). Each
-> event is marked explicitly below.
+Hark observes all key events via CGEvent tap. By default, events pass
+through to the app — Hark reacts but doesn't prevent the app from seeing
+them. Some events are **swallowed**: Hark prevents the app from receiving
+them entirely.
 
-> h[ui.spurious-replay]
-> When a Pending activation is determined to be spurious (another key was
-> pressed), the other key event MUST be passed through to the app. The
-> original ROpt down was already consumed.
+> h[ui.swallow-policy]
+> Key events are swallowed only when explicitly marked below. All other
+> events pass through to the app even if Hark reacts to them.
 
 ### States
 
@@ -109,10 +122,9 @@ Not recording, no active session.
 > h[ui.idle-to-pending]
 > On ROpt down: create a new session, transition to Pending.
 
-| Event | Consumed? | Effect |
+| Event | Swallowed? | Effect |
 |---|---|---|
-| ROpt down | yes | create session, → Pending |
-| RCmd+P | yes | paste last history entry |
+| ROpt down | no | create session, → Pending |
 | everything else | no | ignored |
 
 #### Pending
@@ -132,11 +144,12 @@ UI doesn't know yet whether this is a real activation.
 > If any other key is pressed while in Pending: abort the session,
 > transition to Idle. The other key MUST be passed through to the app.
 
-| Event | Consumed? | Effect |
+| Event | Swallowed? | Effect |
 |---|---|---|
 | ~300ms timer fires | — | → PushToTalk |
-| ROpt up (clean) | yes | → Locked |
-| any other key down | **no** | abort session, → Idle |
+| ROpt up (clean) | no | → Locked |
+| P (no other modifiers) | **yes** | paste last history entry, abort session, → Idle |
+| any other key down | no | abort session, → Idle |
 
 #### PushToTalk
 
@@ -147,16 +160,16 @@ ROpt is held. Recording is confirmed.
 
 > h[ui.ptt-to-locked]
 > On RCmd down while in PushToTalk: transition to Locked. The next ROpt up
-> MUST be consumed without committing.
+> MUST NOT trigger a commit.
 
 > h[ui.ptt-cancel]
 > On Escape while in PushToTalk: cancel the session, transition to Idle.
 
-| Event | Consumed? | Effect |
+| Event | Swallowed? | Effect |
 |---|---|---|
-| ROpt up | yes | commit(submit: false), → Idle |
-| RCmd down | yes | → Locked (consume next ROpt up) |
-| Escape | yes | cancel, → Idle |
+| ROpt up | **yes** | commit(submit: false), → Idle |
+| RCmd down | **yes** | → Locked |
+| Escape | **yes** | cancel, → Idle |
 | max duration (300s) | — | commit(submit: false), → Idle |
 | all other keys | no | passthrough |
 
@@ -169,17 +182,17 @@ Hands-free recording. ROpt is not held. The user may switch apps freely.
 
 > h[ui.locked-enter]
 > On Enter while in Locked: commit the session with submit, transition to
-> Idle. The Enter MUST be consumed — the session will simulate Return
+> Idle. The Enter MUST be swallowed — the session will simulate Return
 > after text insertion.
 
 > h[ui.locked-esc-passthrough]
 > On Escape while in Locked: passthrough to the app. Not intercepted.
 
-| Event | Consumed? | Effect |
+| Event | Swallowed? | Effect |
 |---|---|---|
-| ROpt down | yes | → LockedOptionHeld |
-| Enter | yes | commit(submit: true), → Idle |
-| Escape | **no** | passthrough |
+| ROpt down | **yes** | → LockedOptionHeld |
+| Enter | **yes** | commit(submit: true), → Idle |
+| Escape | no | passthrough |
 | max duration (300s) | — | commit(submit: false), → Idle |
 | all other keys | no | passthrough |
 
@@ -197,12 +210,12 @@ In locked mode, ROpt is currently being held.
 
 > h[ui.locked-option-held-cancel]
 > On Escape while in LockedOptionHeld: cancel the session, transition to
-> Idle. The Escape MUST be consumed.
+> Idle. The Escape MUST be swallowed.
 
-| Event | Consumed? | Effect |
+| Event | Swallowed? | Effect |
 |---|---|---|
-| ROpt up | yes | commit(submit: false), → Idle |
-| Escape | yes | cancel, → Idle |
+| ROpt up | **yes** | commit(submit: false), → Idle |
+| Escape | **yes** | cancel, → Idle |
 | max duration (300s) | — | commit(submit: false), → Idle |
 | all other keys | no | passthrough |
 
@@ -212,20 +225,24 @@ In locked mode, ROpt is currently being held.
 > After 300s of recording, the UI layer commits the current session
 > regardless of current state.
 
-### Overlay
+### Status indicator
 
-The overlay is driven by the UI layer. It reflects the state of the
-current session.
+A small status indicator is shown at the IME cursor position during
+recording. It does not display the transcript (that's the IME marked
+text) — it shows the session's state so the user knows what's happening.
 
-> h[ui.overlay.position]
-> The overlay is positioned at the IME cursor location.
+> h[ui.indicator.position]
+> The status indicator is positioned at the IME cursor location.
 
-> h[ui.overlay.tether]
-> In locked mode, if the user switches to a different app, the overlay
-> indicates that recording is tethered to the original app.
+> h[ui.indicator.states]
+> The indicator shows the current state: recording (audio is being
+> captured and streamed), finalizing (waiting for the final transcript
+> from a previous session), or listening (a new session has started and
+> is capturing audio while the previous one finalizes).
 
-> h[ui.overlay.dismiss]
-> Overlay dismissal plays a brief animation before the panel is closed.
+> h[ui.indicator.tether]
+> In locked mode, if the user switches to a different app, the indicator
+> shows that recording is tethered to the original app.
 
 ## Session
 
@@ -262,7 +279,8 @@ this session.
 
 > h[capture.buffering]
 > While buffering, incoming audio samples are appended to the session's
-> capture buffer. RMS levels are computed for the overlay level indicator.
+> capture buffer. RMS levels are computed per buffer for the status
+> indicator.
 
 > h[capture.drain]
 > On commit or cancel, the capture layer enters draining mode. It monitors
@@ -347,6 +365,16 @@ affects the IME.
 > meaningful audio exists, a full-audio batch transcription runs as a
 > fallback. The longer result wins.
 
+> h[asr.chunk-size]
+> The streaming chunk size (how often audio is fed to the ASR) is
+> configurable. Smaller chunks give faster partial updates but use more
+> CPU. This is exposed as a user-facing setting.
+
+> h[asr.streaming-signals]
+> The ASR layer detects special voice commands in the transcript:
+> "Over" triggers a commit, "Over and out" triggers a commit and stops
+> recording. These allow hands-free control during locked mode.
+
 ### IME layer
 
 The IME layer manages text insertion via the harkInput InputMethodKit IME.
@@ -360,6 +388,11 @@ The IME layer manages text insertion via the harkInput InputMethodKit IME.
 > text. The text appears underlined in the input field to indicate it is
 > provisional. The full transcript (including checkpointed portions)
 > remains as marked text — checkpoints do not cause IME commits.
+
+> h[ime.typewriter]
+> New characters in marked text updates are revealed progressively
+> (typewriter effect) rather than appearing all at once. The delay per
+> character scales inversely with the generation speed.
 
 > h[ime.commit]
 > On session commit, the marked text is replaced with the final transcript
@@ -445,7 +478,87 @@ Language is always auto-detected. There are no overrides.
 ## History
 
 > h[history.paste-last]
-> RCmd+P pastes the last history entry into the current app.
+> ROpt then P (no other modifiers, while in Pending) pastes the last
+> history entry into the current app. The P is swallowed and the session
+> is aborted.
+
+## IME Safety
+
+The harkInput IME is a separate process. Hark switches to it at session
+start and away from it at session end. But things can go wrong: the app
+can crash, the user can quit, or the IME can end up selected with no
+active session. These cases must be handled gracefully.
+
+> h[ime.safety.restore-on-quit]
+> When Hark quits (cleanly), it MUST restore the previous input source
+> if harkInput is currently active.
+
+> h[ime.safety.restore-on-crash]
+> If Hark crashes while harkInput is the active input source, the IME
+> itself MUST detect that no session is active and switch away to the
+> previous input source.
+
+> h[ime.safety.no-session-typing]
+> If the user starts typing while harkInput is the active input source
+> but no session is active, the IME MUST immediately switch to the
+> previous input source and let the keystrokes pass through.
+
+## Sounds
+
+> h[sounds.recording-started]
+> A sound plays when recording is confirmed (transition from Pending to
+> PushToTalk or Locked). No sound plays if the activation is aborted.
+
+> h[sounds.commit]
+> A sound plays when a session commit completes (text has been inserted).
+
+> h[sounds.cancel]
+> A distinct sound plays when a session is cancelled.
+
+## Menu Bar
+
+Hark is a menu bar app. The menu bar icon and popover are the only
+persistent UI surface.
+
+> h[menubar.status]
+> The menu bar shows the current status: ready, recording, or finalizing.
+
+> h[menubar.history]
+> The menu bar popover shows recent transcription history. Clicking an
+> entry pastes it into the current app.
+
+> h[menubar.model]
+> The menu bar popover allows selecting, downloading, and deleting ASR
+> models.
+
+> h[menubar.input-device]
+> The menu bar popover shows the current input device and allows
+> selecting a different one.
+
+> h[menubar.warm-toggle]
+> The menu bar popover shows the warm/cold setting for the current
+> device and allows toggling it.
+
+> h[menubar.run-on-startup]
+> The menu bar popover allows toggling run-on-startup.
+
+> h[menubar.pause-media]
+> The menu bar popover allows toggling pause-media-while-dictating.
+
+> h[menubar.quit]
+> The menu bar popover has a quit button. Quitting MUST restore the
+> previous input source (see `ime.safety.restore-on-quit`).
+
+## Forensics
+
+> h[forensics.html-dump]
+> When enabled, each session generates an HTML timeline dump with
+> embedded audio players, event traces (Swift and Rust), and timing
+> data. Dumps are written to a local directory.
+
+> h[forensics.session-retention]
+> Old forensics sessions are automatically cleaned up. Only the most
+> recent N sessions are retained.
 
 ## Coordination
 
@@ -456,3 +569,58 @@ Language is always auto-detected. There are no overrides.
 > h[coord.reactivate-locked-app]
 > On commit in locked mode, if the user is in a different app, Hark
 > brings the original app to the front and waits before inserting text.
+
+## Deprecated Features (non-normative)
+
+The following features existed in the old app and are explicitly removed.
+This section is not normative — it exists to document what we're no longer
+doing and why.
+
+**Paste and AX insertion strategies.** The old app had three text insertion
+strategies (paste via clipboard + Cmd+V, direct AX text field manipulation,
+and IME). Each could be selected per-app. We now use IME exclusively. The
+paste strategy had clipboard corruption issues and timing-sensitive Cmd+V
+simulation. AX had fragile element capture that broke across app updates.
+IME is the only strategy that works with the text input system rather than
+against it.
+
+**Per-app settings.** The old app stored language, insertion strategy,
+auto-submit, and vocabulary prompt per application bundle ID. All of these
+are removed. Language is always auto-detected. There is no insertion
+strategy choice. Auto-submit is replaced by explicit Enter in locked mode.
+Vocabulary prompts are removed.
+
+**Configurable hotkey.** The old app supported arbitrary modifier+key
+combinations as the hotkey, with a capture UI in the menu bar. The hotkey
+is now always Right Option, hardcoded.
+
+**Shift submit-arm.** The old app let users press Shift during recording to
+toggle a submit-arm flag. Submit is now only triggered by Enter in locked
+mode.
+
+**Floating overlay panel.** The old app had a large floating overlay
+(540×210) showing the live transcript, a 6-band spectrum analyzer,
+contextual hint text, and connector lines to the focused element. This
+is replaced by a small status indicator at the IME cursor — the transcript
+itself is visible as IME marked text in the actual input field.
+
+**Complex overlay anchoring.** The old overlay had a 4-level fallback
+chain (caret → element frame → window frame → mouse), editor pane
+detection heuristics, focus highlight panels, connector line drawing, and
+a 60ms follow loop. The new status indicator simply sits at the IME cursor.
+
+**Accidental double-press detection.** The old app had a 0.5s ignore window
+after a very short press to prevent rapid re-triggers. This is superseded
+by the Pending state's ~300ms mode-determination window, which naturally
+absorbs accidental taps.
+
+**TranscriptionLogger.** The old app logged every transcription to a JSONL
+file for training data collection. This is removed from the app spec (it
+may live elsewhere in the pipeline).
+
+**Spectrum visualization.** The old overlay had a real-time 6-band FFT
+spectrum analyzer. This is removed along with the floating overlay.
+
+**XPC connection to IME.** The old app had both distributed notifications
+and an XPC mach service for communicating with the IME. XPC was unused.
+We keep distributed notifications only.
