@@ -66,7 +66,30 @@ final class BeeInputClient: Sendable {
         // TODO: create CGEvent for Return keyDown + keyUp, post to HID
     }
 
-    // MARK: - IME Discovery
+    // MARK: - IME Registration
+
+    @discardableResult
+    static func ensureIMERegistered() -> Bool {
+        // Check if already registered
+        if findBeeInputSource() != nil { return true }
+
+        // Look for ~/Library/Input Methods/bee-input.app
+        let inputMethodsDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Input Methods/bee-input.app")
+        guard FileManager.default.fileExists(atPath: inputMethodsDir.path) else {
+            return false
+        }
+
+        let status = TISRegisterInputSource(inputMethodsDir as CFURL)
+        guard status == noErr else { return false }
+
+        // Enable it
+        if let source = findBeeInputSource() {
+            TISEnableInputSource(source)
+            return true
+        }
+        return false
+    }
 
     static func restoreInputSourceIfNeeded() {
         if let previous = previousInputSource {

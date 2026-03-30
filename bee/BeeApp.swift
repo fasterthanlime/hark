@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct BeeApp: App {
     @State private var appState: AppState
+    @State private var hotkeyMonitor = HotkeyMonitor()
 
     init() {
         let audioEngine = AudioEngine()
@@ -18,6 +19,11 @@ struct BeeApp: App {
     var body: some Scene {
         MenuBarExtra {
             MenuBarView(appState: appState)
+                .onAppear {
+                    hotkeyMonitor.appState = appState
+                    hotkeyMonitor.start()
+                    BeeInputClient.ensureIMERegistered()
+                }
         } label: {
             Image("MenuBarIcon")
         }
