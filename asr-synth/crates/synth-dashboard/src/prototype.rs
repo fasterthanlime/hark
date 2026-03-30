@@ -165,10 +165,10 @@ pub struct AcousticSegment {
 }
 
 pub struct AcousticContext<'a> {
-    pub qwen_alignment: &'a [qwen3_asr::ForcedAlignItem],
-    pub qwen_word_confidence: &'a [Option<f32>],
+    pub transcript_alignment: &'a [qwen3_asr::ForcedAlignItem],
+    pub transcript_word_confidence: &'a [Option<f32>],
     pub zipa_segments: &'a [AcousticSegment],
-    pub zipa_by_qwen: &'a [Vec<String>],
+    pub zipa_by_transcript: &'a [Vec<String>],
 }
 
 fn span_parakeet_confidence(
@@ -178,8 +178,8 @@ fn span_parakeet_confidence(
 ) -> Option<f32> {
     let mut total = 0.0f32;
     let mut count = 0usize;
-    for idx in token_start..token_end.min(ctx.qwen_word_confidence.len()) {
-        if let Some(conf) = ctx.qwen_word_confidence[idx] {
+    for idx in token_start..token_end.min(ctx.transcript_word_confidence.len()) {
+        if let Some(conf) = ctx.transcript_word_confidence[idx] {
             total += conf;
             count += 1;
         }
@@ -738,12 +738,12 @@ fn token_span_for_time_window(
     start_sec: f64,
     end_sec: f64,
 ) -> Option<(usize, usize)> {
-    if ctx.qwen_alignment.is_empty() || tokens.is_empty() || start_sec >= end_sec {
+    if ctx.transcript_alignment.is_empty() || tokens.is_empty() || start_sec >= end_sec {
         return None;
     }
     let mut first = None;
     let mut last = None;
-    for (idx, item) in ctx.qwen_alignment.iter().enumerate() {
+    for (idx, item) in ctx.transcript_alignment.iter().enumerate() {
         if item.end_time > start_sec && item.start_time < end_sec {
             first.get_or_insert(idx);
             last = Some(idx);
@@ -1287,8 +1287,8 @@ fn acoustic_phones_for_span(
     token_start: usize,
     token_end: usize,
 ) -> Option<Vec<String>> {
-    if token_start < token_end && token_end <= ctx.zipa_by_qwen.len() {
-        let grouped = ctx.zipa_by_qwen[token_start..token_end]
+    if token_start < token_end && token_end <= ctx.zipa_by_transcript.len() {
+        let grouped = ctx.zipa_by_transcript[token_start..token_end]
             .iter()
             .flatten()
             .cloned()
@@ -1313,14 +1313,14 @@ fn acoustic_window_for_span(
     token_end: usize,
 ) -> Option<(f64, f64)> {
     if token_end == 0
-        || token_start >= ctx.qwen_alignment.len()
-        || token_end > ctx.qwen_alignment.len()
+        || token_start >= ctx.transcript_alignment.len()
+        || token_end > ctx.transcript_alignment.len()
         || token_start >= token_end
     {
         return None;
     }
-    let start = (ctx.qwen_alignment[token_start].start_time - 0.05).max(0.0);
-    let end = ctx.qwen_alignment[token_end - 1].end_time + 0.05;
+    let start = (ctx.transcript_alignment[token_start].start_time - 0.05).max(0.0);
+    let end = ctx.transcript_alignment[token_end - 1].end_time + 0.05;
     Some((start, end))
 }
 
@@ -2571,7 +2571,7 @@ mod tests {
         let tokens = tokenize_with_offsets(input);
         let vocab = vec![row_with_reviewed_ipa("bearcove", "bear cove", "b eə k əʊ v")];
         let lexicon = build_lexicon(&vocab, &HashMap::new(), &HashMap::new());
-        let qwen_alignment = vec![
+        let transcript_alignment = vec![
             qwen3_asr::ForcedAlignItem {
                 word: "from".to_string(),
                 start_time: 0.00,
@@ -2616,19 +2616,19 @@ mod tests {
             AcousticSegment { phone: "ə".to_string(), start_sec: 0.96, end_sec: 1.04 },
             AcousticSegment { phone: "m".to_string(), start_sec: 1.04, end_sec: 1.12 },
         ];
-        let zipa_by_qwen = vec![
+        let zipa_by_transcript = vec![
             vec!["f".to_string(), "ɹ".to_string(), "ə".to_string(), "m".to_string()],
             vec!["ð".to_string(), "ə".to_string()],
             vec!["b".to_string(), "ɛ".to_string(), "ɹ".to_string()],
             vec!["k".to_string(), "o".to_string(), "ʊ".to_string(), "v".to_string()],
             vec!["k".to_string(), "ə".to_string(), "m".to_string()],
         ];
-        let qwen_word_confidence = vec![Some(0.99); qwen_alignment.len()];
+        let transcript_word_confidence = vec![Some(0.99); transcript_alignment.len()];
         let acoustic = AcousticContext {
-            qwen_alignment: &qwen_alignment,
-            qwen_word_confidence: &qwen_word_confidence,
+            transcript_alignment: &transcript_alignment,
+            transcript_word_confidence: &transcript_word_confidence,
             zipa_segments: &zipa_segments,
-            zipa_by_qwen: &zipa_by_qwen,
+            zipa_by_transcript: &zipa_by_transcript,
         };
 
         let proposal = phone_led_rescue_proposal(
@@ -2684,7 +2684,7 @@ mod tests {
 
     #[test]
     fn span_parakeet_confidence_averages_mapped_words() {
-        let qwen_alignment = vec![
+        let transcript_alignment = vec![
             qwen3_asr::ForcedAlignItem {
                 word: "bear".to_string(),
                 start_time: 0.0,
@@ -2696,14 +2696,14 @@ mod tests {
                 end_time: 0.5,
             },
         ];
-        let qwen_word_confidence = vec![Some(0.80), Some(0.60)];
+        let transcript_word_confidence = vec![Some(0.80), Some(0.60)];
         let zipa_segments: Vec<AcousticSegment> = Vec::new();
-        let zipa_by_qwen: Vec<Vec<String>> = Vec::new();
+        let zipa_by_transcript: Vec<Vec<String>> = Vec::new();
         let acoustic = AcousticContext {
-            qwen_alignment: &qwen_alignment,
-            qwen_word_confidence: &qwen_word_confidence,
+            transcript_alignment: &transcript_alignment,
+            transcript_word_confidence: &transcript_word_confidence,
             zipa_segments: &zipa_segments,
-            zipa_by_qwen: &zipa_by_qwen,
+            zipa_by_transcript: &zipa_by_transcript,
         };
         let conf = span_parakeet_confidence(&acoustic, 0, 2).expect("span confidence");
         assert!((conf - 0.70).abs() < 1e-6, "{conf}");

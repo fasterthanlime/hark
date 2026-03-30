@@ -6,7 +6,8 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": {
-        target: "http://souffle.dropbear-piranha.ts.net:3456",
+        target: "https://souffle.dropbear-piranha.ts.net",
+        secure: true,
         changeOrigin: true,
       },
     },

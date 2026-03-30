@@ -1,0 +1,101 @@
+:root {
+  color-scheme: light dark;
+
+  --bg: light-dark(#f8f8f8, #1a1a2e);
+  --bg-surface: light-dark(#ffffff, #22223a);
+  --bg-surface-alt: light-dark(#f0f0f5, #2a2a45);
+  --bg-surface-hover: light-dark(#e8e8f0, #32325a);
+  --text: light-dark(#1a1a2e, #e8e8f0);
+  --text-muted: light-dark(#666680, #9999b0);
+  --text-dim: light-dark(#9999aa, #666680);
+  --border: light-dark(#d0d0dd, #3a3a55);
+  --border-focus: light-dark(#5577cc, #6688dd);
+  --accent: light-dark(#3366cc, #5588ee);
+  --accent-text: #ffffff;
+  --success: light-dark(#2d8a4e, #4ade80);
+  --danger: light-dark(#cc3333, #ef4444);
+  --warning: light-dark(#cc8800, #f59e0b);
+
+  /* timeline lane colors */
+  --lane-parakeet: light-dark(#3b8a3e, #4ade80);
+  --lane-parakeet-bg: light-dark(#d4edda, #1a3a2a);
+  --lane-espeak: light-dark(#6b5bcd, #a78bfa);
+  --lane-espeak-bg: light-dark(#e0d8f8, #2a2250);
+  --lane-zipa-espeak: light-dark(#6b5bcd, #c4b5fd);
+  --lane-zipa-espeak-bg: light-dark(#ede8fc, #252040);
+  --lane-zipa: light-dark(#5577cc, #93c5fd);
+  --lane-zipa-bg: light-dark(#dce8f8, #1a2540);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  cursor: pointer;
+  font: inherit;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text);
+  padding: 0.4em 0.8em;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+
+button:hover {
+  background: var(--bg-surface-hover);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+button.primary {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: transparent;
+}
+
+button.primary:hover {
+  opacity: 0.9;
+}
+
+button.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+input,
+select {
+  font: inherit;
+  background: var(--bg-surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4em 0.6em;
+}
+
+input:focus,
+select:focus {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -1px;
+}

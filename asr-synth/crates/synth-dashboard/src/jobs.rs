@@ -6832,12 +6832,12 @@ struct PrototypeBakeoffItem {
 
 #[derive(Clone)]
 struct AcousticInput {
-    qwen_alignment: Vec<qwen3_asr::ForcedAlignItem>,
-    qwen_word_confidence: Vec<Option<f32>>,
+    transcript_alignment: Vec<qwen3_asr::ForcedAlignItem>,
+    transcript_word_confidence: Vec<Option<f32>>,
     timing_source: String,
     zipa_trace: serde_json::Value,
     zipa_segments: Vec<crate::prototype::AcousticSegment>,
-    zipa_by_qwen: Vec<Vec<String>>,
+    zipa_by_transcript: Vec<Vec<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -6956,19 +6956,19 @@ fn combine_confidence(confidences: &[Option<f32>]) -> Option<f32> {
     }
 }
 
-fn parakeet_words_to_qwen_timing(
-    qwen_text: &str,
+fn parakeet_words_to_transcript_timing(
+    transcript_text: &str,
     parakeet_words: &[TimedWord],
 ) -> Option<(Vec<qwen3_asr::ForcedAlignItem>, Vec<Option<f32>>)> {
-    let qwen_words = tokenize_timing_words(qwen_text);
-    if qwen_words.is_empty() || parakeet_words.is_empty() {
+    let transcript_words = tokenize_timing_words(transcript_text);
+    if transcript_words.is_empty() || parakeet_words.is_empty() {
         return None;
     }
     let para_words = parakeet_words
         .iter()
         .map(|w| normalize_timing_word(&w.text))
         .collect::<Vec<_>>();
-    let n = qwen_words.len();
+    let n = transcript_words.len();
     let m = para_words.len();
     let inf = 1e9f32;
     let mut dp = vec![vec![inf; m + 1]; n + 1];
@@ -6981,7 +6981,7 @@ fn parakeet_words_to_qwen_timing(
                 continue;
             }
             if i < n && j < m {
-                let cost = cur + timing_match_cost(&qwen_words[i], &para_words[j]);
+                let cost = cur + timing_match_cost(&transcript_words[i], &para_words[j]);
                 if cost < dp[i + 1][j + 1] {
                     dp[i + 1][j + 1] = cost;
                     prev[i + 1][j + 1] = Some(TimingMapStep::Q1P1);
@@ -6989,14 +6989,14 @@ fn parakeet_words_to_qwen_timing(
             }
             if i < n && j + 1 < m {
                 let merged = format!("{}{}", para_words[j], para_words[j + 1]);
-                let cost = cur + timing_match_cost(&qwen_words[i], &merged) + 0.08;
+                let cost = cur + timing_match_cost(&transcript_words[i], &merged) + 0.08;
                 if cost < dp[i + 1][j + 2] {
                     dp[i + 1][j + 2] = cost;
                     prev[i + 1][j + 2] = Some(TimingMapStep::Q1P2);
                 }
             }
             if i + 1 < n && j < m {
-                let merged = format!("{}{}", qwen_words[i], qwen_words[i + 1]);
+                let merged = format!("{}{}", transcript_words[i], transcript_words[i + 1]);
                 let cost = cur + timing_match_cost(&merged, &para_words[j]) + 0.08;
                 if cost < dp[i + 2][j + 1] {
                     dp[i + 2][j + 1] = cost;
@@ -7049,8 +7049,8 @@ fn parakeet_words_to_qwen_timing(
             }
             TimingMapStep::Q2P1 => {
                 let pw = &parakeet_words[j - 1];
-                let left = compact_timing_word(&qwen_words[i - 2]).len();
-                let right = compact_timing_word(&qwen_words[i - 1]).len();
+                let left = compact_timing_word(&transcript_words[i - 2]).len();
+                let right = compact_timing_word(&transcript_words[i - 1]).len();
                 let (start, pivot, end) = split_window(pw.start, pw.end, left, right);
                 assigned[i - 2] = Some((start, pivot));
                 assigned[i - 1] = Some((pivot, end));
@@ -7072,11 +7072,11 @@ fn parakeet_words_to_qwen_timing(
         return None;
     }
     let mut out = Vec::with_capacity(n);
-    let mut qwen_confidence = Vec::with_capacity(n);
+    let mut transcript_confidence = Vec::with_capacity(n);
     let mut last_end = 0.0f64;
     let mut next_assigned = assigned.iter().enumerate().filter_map(|(idx, range)| range.map(|r| (idx, r)));
     let mut next_item = next_assigned.next();
-    for (idx, word) in qwen_words.iter().enumerate() {
+    for (idx, word) in transcript_words.iter().enumerate() {
         let (start, end) = if let Some((s, e)) = assigned[idx] {
             last_end = e;
             (s, e)
@@ -7098,9 +7098,9 @@ fn parakeet_words_to_qwen_timing(
             }
         }
         out.push(ai(word, start, end));
-        qwen_confidence.push(assigned_confidence[idx]);
+        transcript_confidence.push(assigned_confidence[idx]);
     }
-    Some((out, qwen_confidence))
+    Some((out, transcript_confidence))
 }
 
 fn zipa_segment_house_tokens(phone: &str) -> Vec<String> {
@@ -7136,24 +7136,24 @@ fn feature_insert_cost(phone: &str) -> u32 {
 }
 
 fn assigned_ranges_to_alignment(
-    qwen_words: &[String],
+    transcript_words: &[String],
     assigned: &[Option<(f64, f64)>],
 ) -> Option<Vec<qwen3_asr::ForcedAlignItem>> {
-    if qwen_words.is_empty() || assigned.len() != qwen_words.len() {
+    if transcript_words.is_empty() || assigned.len() != transcript_words.len() {
         return None;
     }
     let matched = assigned.iter().filter(|r| r.is_some()).count();
-    if matched * 2 < qwen_words.len() {
+    if matched * 2 < transcript_words.len() {
         return None;
     }
-    let mut out = Vec::with_capacity(qwen_words.len());
+    let mut out = Vec::with_capacity(transcript_words.len());
     let mut last_end = 0.0f64;
     let mut next_assigned = assigned
         .iter()
         .enumerate()
         .filter_map(|(idx, range)| range.map(|r| (idx, r)));
     let mut next_item = next_assigned.next();
-    for (idx, word) in qwen_words.iter().enumerate() {
+    for (idx, word) in transcript_words.iter().enumerate() {
         let (start, end) = if let Some((s, e)) = assigned[idx] {
             last_end = e;
             (s, e)
@@ -7179,17 +7179,20 @@ fn assigned_ranges_to_alignment(
     Some(out)
 }
 
-fn qwen_ipa_words_to_zipa_timing(
-    qwen_words: &[String],
-    qwen_ipa_words: &[Vec<String>],
+fn transcript_ipa_words_to_zipa_timing(
+    transcript_words: &[String],
+    transcript_ipa_words: &[Vec<String>],
     zipa_segments: &[crate::prototype::AcousticSegment],
 ) -> Option<Vec<qwen3_asr::ForcedAlignItem>> {
-    if qwen_words.is_empty() || qwen_words.len() != qwen_ipa_words.len() || zipa_segments.is_empty() {
+    if transcript_words.is_empty()
+        || transcript_words.len() != transcript_ipa_words.len()
+        || zipa_segments.is_empty()
+    {
         return None;
     }
 
     let mut q_features = Vec::<(String, usize)>::new();
-    for (word_idx, ipa_tokens) in qwen_ipa_words.iter().enumerate() {
+    for (word_idx, ipa_tokens) in transcript_ipa_words.iter().enumerate() {
         for feature in crate::prototype::house_ipa_to_feature_tokens(ipa_tokens) {
             q_features.push((feature, word_idx));
         }
@@ -7241,7 +7244,7 @@ fn qwen_ipa_words_to_zipa_timing(
         }
     }
 
-    let mut matched_seg_indices = vec![Vec::<usize>::new(); qwen_words.len()];
+    let mut matched_seg_indices = vec![Vec::<usize>::new(); transcript_words.len()];
     let mut i = m;
     let mut j = n;
     while i > 0 || j > 0 {
@@ -7280,7 +7283,7 @@ fn qwen_ipa_words_to_zipa_timing(
         .filter_map(|(idx, range)| range.map(|r| (idx, r)))
         .collect::<Vec<_>>();
     let last_seg_idx = zipa_segments.len().saturating_sub(1);
-    let mut assigned = vec![None; qwen_words.len()];
+    let mut assigned = vec![None; transcript_words.len()];
     for (pos, (word_idx, (first, last))) in anchored.iter().copied().enumerate() {
         let own_first = if pos == 0 {
             0
@@ -7300,20 +7303,20 @@ fn qwen_ipa_words_to_zipa_timing(
         ));
     }
 
-    assigned_ranges_to_alignment(qwen_words, &assigned)
+    assigned_ranges_to_alignment(transcript_words, &assigned)
 }
 
-fn espeak_words_to_qwen_zipa_timing(
-    qwen_text: &str,
+fn espeak_words_to_transcript_zipa_timing(
+    transcript_text: &str,
     zipa_segments: &[crate::prototype::AcousticSegment],
 ) -> Option<Vec<qwen3_asr::ForcedAlignItem>> {
-    let qwen_words = tokenize_timing_words(qwen_text);
-    if qwen_words.is_empty() || zipa_segments.is_empty() {
+    let transcript_words = tokenize_timing_words(transcript_text);
+    if transcript_words.is_empty() || zipa_segments.is_empty() {
         return None;
     }
     let data_dir = ensure_espeak_bundled_data_dir().ok()?;
     let engine = espeak_ng::EspeakNg::with_data_dir("en", &data_dir).ok()?;
-    let qwen_ipa_words = qwen_words
+    let transcript_ipa_words = transcript_words
         .iter()
         .map(|word| {
             let ipa = engine.text_to_phonemes(word).ok()?;
@@ -7321,18 +7324,19 @@ fn espeak_words_to_qwen_zipa_timing(
             (!phones.is_empty()).then_some(phones)
         })
         .collect::<Option<Vec<_>>>()?;
-    qwen_ipa_words_to_zipa_timing(&qwen_words, &qwen_ipa_words, zipa_segments)
+    transcript_ipa_words_to_zipa_timing(&transcript_words, &transcript_ipa_words, zipa_segments)
 }
 
 fn build_acoustic_input_from_samples_16k(
     state: &AppState,
     aligner: &crate::LazyAligner,
     samples_16k: &[f32],
-    qwen_text: &str,
+    transcript_text: &str,
 ) -> Option<AcousticInput> {
     let zipa_trace = decode_zipa_trace_from_16k_warm(state, samples_16k).ok()?;
     let zipa_segments = zipa_segments_from_trace(&zipa_trace);
-    let espeak_alignment = espeak_words_to_qwen_zipa_timing(qwen_text, &zipa_segments);
+    let transcript_alignment_from_espeak =
+        espeak_words_to_transcript_zipa_timing(transcript_text, &zipa_segments);
     let parakeet_alignment = state
         .parakeet
         .transcribe_samples(
@@ -7353,31 +7357,34 @@ fn build_acoustic_input_from_samples_16k(
                     confidence: token.confidence,
                 })
                 .collect::<Vec<_>>();
-            parakeet_words_to_qwen_timing(qwen_text, &words)
+            parakeet_words_to_transcript_timing(transcript_text, &words)
         });
-    let qwen_word_confidence = parakeet_alignment
+    let transcript_word_confidence = parakeet_alignment
         .as_ref()
         .map(|(_, confidence)| confidence.clone())
         .unwrap_or_default();
-    let (qwen_alignment, timing_source) = if let Some(alignment) = espeak_alignment {
+    let (transcript_alignment, timing_source) =
+        if let Some(alignment) = transcript_alignment_from_espeak {
         (alignment, "espeak_zipa_dp".to_string())
     } else if let Some((alignment, _)) = parakeet_alignment {
         (alignment, "parakeet_words".to_string())
     } else {
         (
-            aligner.align(samples_16k, qwen_text).ok()?,
+            aligner.align(samples_16k, transcript_text).ok()?,
             "forced_aligner_fallback".to_string(),
         )
     };
-    let zipa_by_qwen =
-        crate::prototype::zipa_grouped_arpabet_by_alignment(&qwen_alignment, &zipa_segments);
+    let zipa_by_transcript = crate::prototype::zipa_grouped_arpabet_by_alignment(
+        &transcript_alignment,
+        &zipa_segments,
+    );
     Some(AcousticInput {
-        qwen_alignment,
-        qwen_word_confidence,
+        transcript_alignment,
+        transcript_word_confidence,
         timing_source,
         zipa_trace,
         zipa_segments,
-        zipa_by_qwen,
+        zipa_by_transcript,
     })
 }
 
@@ -7481,10 +7488,10 @@ pub async fn api_correct_prototype(
         None
     };
     let acoustic_context = acoustic_input.as_ref().map(|input| crate::prototype::AcousticContext {
-        qwen_alignment: &input.qwen_alignment,
-        qwen_word_confidence: &input.qwen_word_confidence,
+        transcript_alignment: &input.transcript_alignment,
+        transcript_word_confidence: &input.transcript_word_confidence,
         zipa_segments: &input.zipa_segments,
-        zipa_by_qwen: &input.zipa_by_qwen,
+        zipa_by_transcript: &input.zipa_by_transcript,
     });
     let mut result = crate::prototype::prototype_correct_with_acoustics(
         &transcript,
@@ -7556,11 +7563,13 @@ pub async fn api_correct_prototype(
         "sentence_candidates": result.sentence_candidates,
         "alignments": acoustic_input.as_ref().map(|input| serde_json::json!({
             "timing_source": input.timing_source,
-            "espeak": fmt_alignment_json(&input.qwen_alignment),
-            "qwen": fmt_alignment_json(&input.qwen_alignment),
+            "transcript": fmt_alignment_json(&input.transcript_alignment),
+            "espeak": fmt_alignment_json(&input.transcript_alignment),
+            "qwen": fmt_alignment_json(&input.transcript_alignment),
             "zipa": phone_segments_to_alignment(&input.zipa_trace),
-            "zipa_espeak": crate::prototype::zipa_grouped_by_alignment_json(&input.qwen_alignment, &input.zipa_segments),
-            "zipa_qwen": crate::prototype::zipa_grouped_by_alignment_json(&input.qwen_alignment, &input.zipa_segments),
+            "zipa_transcript": crate::prototype::zipa_grouped_by_alignment_json(&input.transcript_alignment, &input.zipa_segments),
+            "zipa_espeak": crate::prototype::zipa_grouped_by_alignment_json(&input.transcript_alignment, &input.zipa_segments),
+            "zipa_qwen": crate::prototype::zipa_grouped_by_alignment_json(&input.transcript_alignment, &input.zipa_segments),
         })),
         "zipa_trace": acoustic_input.as_ref().map(|input| input.zipa_trace.clone()),
         "reranker": reranker,
@@ -7703,10 +7712,10 @@ pub async fn api_correct_prototype_bakeoff(
                         None
                     };
                     let acoustic_context = acoustic_input.as_ref().map(|input| crate::prototype::AcousticContext {
-                        qwen_alignment: &input.qwen_alignment,
-                        qwen_word_confidence: &input.qwen_word_confidence,
+                        transcript_alignment: &input.transcript_alignment,
+                        transcript_word_confidence: &input.transcript_word_confidence,
                         zipa_segments: &input.zipa_segments,
-                        zipa_by_qwen: &input.zipa_by_qwen,
+                        zipa_by_transcript: &input.zipa_by_transcript,
                     });
                     let mut result = crate::prototype::prototype_correct_with_acoustics(
                         &item.qwen,
@@ -8047,10 +8056,10 @@ pub async fn api_correct_prototype_bakeoff(
                     None
                 };
                 let acoustic_context = acoustic_input.as_ref().map(|input| crate::prototype::AcousticContext {
-                    qwen_alignment: &input.qwen_alignment,
-                    qwen_word_confidence: &input.qwen_word_confidence,
+                    transcript_alignment: &input.transcript_alignment,
+                    transcript_word_confidence: &input.transcript_word_confidence,
                     zipa_segments: &input.zipa_segments,
-                    zipa_by_qwen: &input.zipa_by_qwen,
+                    zipa_by_transcript: &input.zipa_by_transcript,
                 });
                 let mut result = crate::prototype::prototype_correct_with_acoustics(
                     &item.qwen,
@@ -8109,10 +8118,10 @@ pub async fn api_correct_prototype_bakeoff(
                     None
                 };
                 let acoustic_context = acoustic_input.as_ref().map(|input| crate::prototype::AcousticContext {
-                    qwen_alignment: &input.qwen_alignment,
-                    qwen_word_confidence: &input.qwen_word_confidence,
+                    transcript_alignment: &input.transcript_alignment,
+                    transcript_word_confidence: &input.transcript_word_confidence,
                     zipa_segments: &input.zipa_segments,
-                    zipa_by_qwen: &input.zipa_by_qwen,
+                    zipa_by_transcript: &input.zipa_by_transcript,
                 });
                 let result = crate::prototype::prototype_correct_with_acoustics(
                     &item.qwen,
