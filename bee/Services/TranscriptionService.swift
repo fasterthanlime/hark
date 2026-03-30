@@ -150,6 +150,30 @@ final class TranscriptionService: @unchecked Sendable {
         return text
     }
 
+    /// Single-shot transcription of raw 16kHz f32 samples (non-streaming).
+    func transcribeSamples(_ samples: [Float]) -> String? {
+        lock.lock()
+        guard let engine else { lock.unlock(); return nil }
+        lock.unlock()
+
+        var err: UnsafeMutablePointer<CChar>?
+        let result = samples.withUnsafeBufferPointer { buf in
+            asr_engine_transcribe_samples(engine, buf.baseAddress, buf.count, &err)
+        }
+
+        if let err {
+            let msg = String(cString: err, encoding: .utf8) ?? "unknown"
+            asr_string_free(err)
+            Self.logger.error("transcribeSamples error: \(msg, privacy: .public)")
+            return nil
+        }
+
+        guard let result else { return nil }
+        let text = String(cString: result)
+        asr_string_free(result)
+        return text
+    }
+
     func setLanguage(session: StreamingSession, language: String?) -> Bool {
         var err: UnsafeMutablePointer<CChar>?
         let success: Bool = {

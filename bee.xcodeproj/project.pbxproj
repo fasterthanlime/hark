@@ -9,7 +9,10 @@
 /* Begin PBXBuildFile section */
 		04DA33E6805211526E03587B /* BeeInputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB5FE976B1CF01CA031AF66 /* BeeInputController.swift */; };
 		16DED771E26A5CA7CBBDC636 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = C26401964247ABA42B4ADCA3 /* main.swift */; };
+		267F48ED7025F3C068F6D04A /* DebugOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CCEE7C20F26099D82D42387 /* DebugOverlay.swift */; };
 		2B877E72AFA9A4D05B9FDC0B /* Session.swift in Sources */ = {isa = PBXBuildFile; fileRef = 676164F78A7A1315DBA4D712 /* Session.swift */; };
+		36887C99C4A72623E8C07753 /* WavWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6951E22DA75EDA0015EF0D08 /* WavWriter.swift */; };
+		3C5A7E5CCBEA4AC62E33D88B /* DebugPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8597D72025F09D1E04C3B095 /* DebugPanel.swift */; };
 		3C5C473887772CFDAA7535EE /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F154B4296E76BCBEDD666C34 /* MenuBarView.swift */; };
 		4335D0C20A8824861A2AAA67 /* beeTemplate.tiff in Resources */ = {isa = PBXBuildFile; fileRef = 6AEB22F163C305E4983946FF /* beeTemplate.tiff */; };
 		4A7942D230B46253EF1197E9 /* TranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F7D08BD88D7C596EA782773 /* TranscriptionService.swift */; };
@@ -36,13 +39,16 @@
 		2A7D3D2469CBFB9FF5D9FD91 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		2F54E5F987731158C437D997 /* BeeInputAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeeInputAppDelegate.swift; sourceTree = "<group>"; };
 		2F7D08BD88D7C596EA782773 /* TranscriptionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionService.swift; sourceTree = "<group>"; };
+		3CCEE7C20F26099D82D42387 /* DebugOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugOverlay.swift; sourceTree = "<group>"; };
 		41126B678A8FDC75629B0B30 /* bee.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = bee.entitlements; sourceTree = "<group>"; };
 		44D01D1FC50FBE993FD0716F /* InputMethodKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = InputMethodKit.framework; path = System/Library/Frameworks/InputMethodKit.framework; sourceTree = SDKROOT; };
 		5639654E7D993F82C6C5ED91 /* STTModelDefinition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = STTModelDefinition.swift; sourceTree = "<group>"; };
 		5A35BE9759CA9C8519D87363 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		676164F78A7A1315DBA4D712 /* Session.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Session.swift; sourceTree = "<group>"; };
+		6951E22DA75EDA0015EF0D08 /* WavWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WavWriter.swift; sourceTree = "<group>"; };
 		6AEB22F163C305E4983946FF /* beeTemplate.tiff */ = {isa = PBXFileReference; lastKnownFileType = image.tiff; path = beeTemplate.tiff; sourceTree = "<group>"; };
 		7059CA841745C6E21DA830A3 /* BeeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeeApp.swift; sourceTree = "<group>"; };
+		8597D72025F09D1E04C3B095 /* DebugPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugPanel.swift; sourceTree = "<group>"; };
 		89A48B33C812878B9AC55B8D /* BeeXPCService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeeXPCService.swift; sourceTree = "<group>"; };
 		977266C3895F1E154E74F051 /* HotkeyMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyMonitor.swift; sourceTree = "<group>"; };
 		A4E52C13C56D37363BA384EF /* SoundEffects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoundEffects.swift; sourceTree = "<group>"; };
@@ -69,6 +75,8 @@
 		1A0961E2FC894633F169BD7D /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				3CCEE7C20F26099D82D42387 /* DebugOverlay.swift */,
+				8597D72025F09D1E04C3B095 /* DebugPanel.swift */,
 				F154B4296E76BCBEDD666C34 /* MenuBarView.swift */,
 			);
 			path = Views;
@@ -147,6 +155,7 @@
 			children = (
 				0AA018C194359C6E4CE7BA63 /* BeeInputClient.swift */,
 				2F7D08BD88D7C596EA782773 /* TranscriptionService.swift */,
+				6951E22DA75EDA0015EF0D08 /* WavWriter.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -257,6 +266,8 @@
 				599EE6A4E7B1CA2D6CE47107 /* AudioEngine.swift in Sources */,
 				EAD815EAA627296BFA0C4EA3 /* BeeApp.swift in Sources */,
 				66493E87798EF2D09BC1BC43 /* BeeInputClient.swift in Sources */,
+				267F48ED7025F3C068F6D04A /* DebugOverlay.swift in Sources */,
+				3C5A7E5CCBEA4AC62E33D88B /* DebugPanel.swift in Sources */,
 				D70AC6C318840E971BF24ADB /* HotkeyMonitor.swift in Sources */,
 				3C5C473887772CFDAA7535EE /* MenuBarView.swift in Sources */,
 				F93A846E10BB3E70003F07C6 /* STTModelDefinition.swift in Sources */,
@@ -264,6 +275,7 @@
 				89ADF5F490B96085E99E510C /* SoundEffects.swift in Sources */,
 				59A3A4BE607D2198DDD3609D /* TranscriptionHistoryItem.swift in Sources */,
 				4A7942D230B46253EF1197E9 /* TranscriptionService.swift in Sources */,
+				36887C99C4A72623E8C07753 /* WavWriter.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

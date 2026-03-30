@@ -32,6 +32,10 @@ final class AppState {
     // History
     var transcriptionHistory: [TranscriptionHistoryItem] = []
 
+    // Debug
+    var debugEnabled = false
+    var lastSessionDiag: SessionDiagnostics?
+
     struct InputDeviceInfo: Sendable {
         let uid: String
         let name: String
@@ -245,7 +249,12 @@ final class AppState {
         Task {
             await session.setOnComplete { [weak self] result in
                 Task { @MainActor in
-                    self?.handleSessionResult(result)
+                    guard let self else { return }
+                    // Capture diagnostics before handling result
+                    Task {
+                        self.lastSessionDiag = await session.diag
+                    }
+                    self.handleSessionResult(result)
                 }
             }
         }

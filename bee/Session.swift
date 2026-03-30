@@ -29,6 +29,9 @@ actor Session {
     private var onStreamingUpdate: (@Sendable (String) -> Void)?
     private var onComplete: (@Sendable (SessionResult) -> Void)?
 
+    /// Diagnostics — populated during the session lifecycle
+    private(set) var diag = SessionDiagnostics()
+
     func setOnComplete(_ handler: @Sendable @escaping (SessionResult) -> Void) {
         onComplete = handler
     }
@@ -69,6 +72,8 @@ actor Session {
 
         // Start capturing audio (copies pre-buffer)
         capture = .buffering
+        diag.startedAt = Date()
+        diag.nativeRate = audioEngine.nativeSampleRate
         audioEngine.startCapture(for: self.id)
 
         // Activate IME (TIS calls need main thread)
@@ -117,10 +122,13 @@ actor Session {
         logger.info("[\(self.id)] Cancelling")
 
         streamingTask?.cancel()
+        diag.endedAt = Date()
+        diag.ending = "cancel"
 
         capture = .draining
         let samples = audioEngine.stopCapture(for: self.id)
         capture = .delivered
+        diag.totalNativeSamples = samples.count
 
         // Clear marked text and deactivate IME
         inputClient.clearMarkedText()
@@ -138,10 +146,13 @@ actor Session {
         logger.info("[\(self.id)] Committing (submit=\(submit))")
 
         streamingTask?.cancel()
+        diag.endedAt = Date()
+        diag.ending = submit ? "commit+submit" : "commit"
 
         capture = .draining
         let samples = audioEngine.stopCapture(for: self.id)
         capture = .delivered
+        diag.totalNativeSamples = samples.count
 
         Task.detached { [self] in
             await self.finalize(samples: samples, insert: true, submit: submit)
@@ -183,6 +194,10 @@ actor Session {
             processedNativeCount = newNativeCount
             let resampled = AudioEngine.resample(nativeChunk, from: nativeRate)
 
+            diag.streamingFeeds += 1
+            diag.streamedNativeSamples = processedNativeCount
+            diag.streamedResampledSamples += resampled.count
+
             if let update = transcriptionService.feed(session: session, samples: resampled) {
                 partialTranscript = update.text
                 inputClient.setMarkedText(update.text)
@@ -207,8 +222,13 @@ actor Session {
             ? Array(samples[processedNativeCount...])
             : []
 
+        diag.remainingNativeSamples = remainingNative.count
+        diag.finalizeStartedAt = Date()
+
         if !remainingNative.isEmpty {
             var resampled = AudioEngine.resample(remainingNative, from: nativeRate)
+            diag.remainingResampledSamples = resampled.count
+
             // Add silence padding for trailing speech (100ms at 16kHz)
             let padSamples = Int(AudioEngine.targetSampleRate * 0.1)
             resampled.append(contentsOf: repeatElement(Float(0), count: padSamples))
@@ -232,6 +252,18 @@ actor Session {
 
         asr = .done
         asrSession = nil
+
+        diag.finalizeEndedAt = Date()
+        diag.finalText = finalText
+
+        // Save full audio as WAV for debugging
+        let allResampled = AudioEngine.resample(samples, from: nativeRate)
+        let debugDir = FileManager.default.temporaryDirectory.appendingPathComponent("bee-debug")
+        try? FileManager.default.createDirectory(at: debugDir, withIntermediateDirectories: true)
+        let wavURL = debugDir.appendingPathComponent("\(id.uuidString.prefix(8)).wav")
+        try? WavWriter.write(samples: allResampled, to: wavURL)
+        diag.audioWavPath = wavURL.path
+        logger.info("[\(self.id)] Saved audio to \(wavURL.path)")
 
         logger.info("[\(self.id)] Finalized: \"\(self.finalText.prefix(80))\"")
         await completeSession(insert: insert, submit: submit)
@@ -296,6 +328,49 @@ struct StreamingUpdate: Sendable {
     let text: String
     let committedUTF16Count: Int
     let detectedLanguage: String?
+}
+
+struct SessionDiagnostics: Sendable {
+    var startedAt: Date?
+    var endedAt: Date?
+    var ending: String = ""
+    var nativeRate: Double = 0
+
+    // Streaming
+    var streamingFeeds: Int = 0
+    var streamedNativeSamples: Int = 0
+    var streamedResampledSamples: Int = 0
+
+    // Capture totals
+    var totalNativeSamples: Int = 0
+
+    // Finalization
+    var remainingNativeSamples: Int = 0
+    var remainingResampledSamples: Int = 0
+    var finalizeStartedAt: Date?
+    var finalizeEndedAt: Date?
+    var finalText: String = ""
+    var audioWavPath: String = ""
+
+    var recordingDurationMs: Int {
+        guard let s = startedAt, let e = endedAt else { return 0 }
+        return Int((e.timeIntervalSince(s) * 1000).rounded())
+    }
+
+    var finalizeDurationMs: Int {
+        guard let s = finalizeStartedAt, let e = finalizeEndedAt else { return 0 }
+        return Int((e.timeIntervalSince(s) * 1000).rounded())
+    }
+
+    var totalNativeDurationMs: Int {
+        guard nativeRate > 0 else { return 0 }
+        return Int((Double(totalNativeSamples) / nativeRate * 1000).rounded())
+    }
+
+    var remainingNativeDurationMs: Int {
+        guard nativeRate > 0 else { return 0 }
+        return Int((Double(remainingNativeSamples) / nativeRate * 1000).rounded())
+    }
 }
 
 enum SessionResult: Sendable {
