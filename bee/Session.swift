@@ -201,7 +201,7 @@ actor Session {
         let minNativeChunk = Int(nativeRate * 0.05)
 
         while !Task.isCancelled {
-            // Check if capture is done (drain completed, samples collected)
+            // Check if capture is done (drain completed)
             if audioEngine.isDrained(for: self.id) {
                 // One final peek to get everything including drain tail
                 let allNative = audioEngine.peekCapture(for: self.id)
@@ -210,15 +210,20 @@ actor Session {
                     let chunk = Array(allNative[processedNativeCount...])
                     processedNativeCount = newCount
                     let resampled = AudioEngine.resample(chunk, from: nativeRate)
+                    let t0 = ProcessInfo.processInfo.systemUptime
+                    let update = transcriptionService.feed(session: session, samples: resampled)
+                    let feedMs = Int((ProcessInfo.processInfo.systemUptime - t0) * 1000)
                     diag.streamingFeeds += 1
                     diag.streamedNativeSamples = processedNativeCount
                     diag.streamedResampledSamples += resampled.count
-                    if let update = transcriptionService.feed(session: session, samples: resampled) {
+                    diag.lastFeedMs = feedMs
+                    diag.totalFeedMs += feedMs
+                    if let update {
                         partialTranscript = update.text
                         inputClient.setMarkedText(update.text)
                     }
                 }
-                break // drain complete — exit loop
+                break
             }
 
             let allNative = audioEngine.peekCapture(for: self.id)
@@ -233,11 +238,17 @@ actor Session {
             processedNativeCount = newCount
             let resampled = AudioEngine.resample(chunk, from: nativeRate)
 
+            let t0 = ProcessInfo.processInfo.systemUptime
+            let update = transcriptionService.feed(session: session, samples: resampled)
+            let feedMs = Int((ProcessInfo.processInfo.systemUptime - t0) * 1000)
+
             diag.streamingFeeds += 1
             diag.streamedNativeSamples = processedNativeCount
             diag.streamedResampledSamples += resampled.count
+            diag.lastFeedMs = feedMs
+            diag.totalFeedMs += feedMs
 
-            if let update = transcriptionService.feed(session: session, samples: resampled) {
+            if let update {
                 partialTranscript = update.text
                 inputClient.setMarkedText(update.text)
             }
@@ -376,6 +387,8 @@ struct SessionDiagnostics: Sendable {
     var streamingFeeds: Int = 0
     var streamedNativeSamples: Int = 0
     var streamedResampledSamples: Int = 0
+    var lastFeedMs: Int = 0
+    var totalFeedMs: Int = 0
 
     var totalNativeSamples: Int = 0
 

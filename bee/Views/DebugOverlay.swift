@@ -113,7 +113,7 @@ struct DiagnosticsView: View {
 
             Divider().padding(.vertical, 1)
 
-            row("feeds", "\(diag.streamingFeeds)")
+            row("feeds", "\(diag.streamingFeeds) (last \(diag.lastFeedMs)ms, total \(diag.totalFeedMs)ms)")
             row("streamed", "\(diag.streamedNativeSamples) nat → \(diag.streamedResampledSamples) @16k")
             row("total", "\(diag.totalNativeSamples) nat (\(diag.totalNativeDurationMs) ms)")
 
