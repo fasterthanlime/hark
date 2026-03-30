@@ -116,7 +116,8 @@ final class AudioRecorder: @unchecked Sendable {
         isWarm = true
         lock.unlock()
 
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: nativeFormat) { [weak self] buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: nativeFormat) {
+            [weak self] buffer, _ in
             self?.handleAudioBuffer(buffer)
         }
 
@@ -255,7 +256,8 @@ final class AudioRecorder: @unchecked Sendable {
         capturedSamples.removeAll()
         lock.unlock()
 
-        let stopElapsedMs = Int(((ProcessInfo.processInfo.systemUptime - stopRequestedAt) * 1000).rounded())
+        let stopElapsedMs = Int(
+            ((ProcessInfo.processInfo.systemUptime - stopRequestedAt) * 1000).rounded())
         Self.logger.warning(
             "[hark] stopCapture: reason=\(completionReason, privacy: .public) wait_ms=\(stopElapsedMs) max_wait_ms=\(configuredMaxWaitMs) start_rms=\(stopRequestedRms) captured_native=\(captured.count)"
         )
@@ -300,12 +302,12 @@ final class AudioRecorder: @unchecked Sendable {
 
         let bufferPointer = UnsafeBufferPointer(start: channelData[0], count: count)
 
-            // Compute RMS level
-            let rms = computeRMS(bufferPointer)
-            if let onLevel = self.onLevel {
-                let normalized = min(rms * 5.0, 1.0)
-                onLevel(normalized)
-            }
+        // Compute RMS level
+        let rms = computeRMS(bufferPointer)
+        if let onLevel = self.onLevel {
+            let normalized = min(rms * 5.0, 1.0)
+            onLevel(normalized)
+        }
 
         // Compute FFT spectrum
         if let onSpectrum = self.onSpectrum, let setup = fftSetup, count >= fftSize {
@@ -371,7 +373,9 @@ final class AudioRecorder: @unchecked Sendable {
         stopSignalToFire?.signal()
     }
 
-    private func computeSpectrum(_ samples: UnsafeBufferPointer<Float>, setup: vDSP_DFT_Setup) -> [Float] {
+    private func computeSpectrum(_ samples: UnsafeBufferPointer<Float>, setup: vDSP_DFT_Setup)
+        -> [Float]
+    {
         // Copy and window the samples
         var windowed = [Float](repeating: 0, count: fftSize)
         for i in 0..<min(samples.count, fftSize) {
@@ -422,7 +426,7 @@ final class AudioRecorder: @unchecked Sendable {
         // This handles the wide dynamic range of audio naturally.
         for i in 0..<bandCount {
             let db = 20.0 * log10f(max(bands[i], 1e-10))
-            bands[i] = max(0, min(1, (db + 50) / 40)) // map -50dB...-10dB → 0...1
+            bands[i] = max(0, min(1, (db + 50) / 40))  // map -50dB...-10dB → 0...1
         }
 
         // Temporal smoothing: fast attack, slow decay
@@ -449,24 +453,27 @@ final class AudioRecorder: @unchecked Sendable {
     }
 
     private func resample(_ samples: [Float], from srcRate: Double, to dstRate: Double) -> [Float] {
-        guard let srcFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: srcRate,
-            channels: 1,
-            interleaved: false
-        ),
-        let dstFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: dstRate,
-            channels: 1,
-            interleaved: false
-        ),
-        let converter = AVAudioConverter(from: srcFormat, to: dstFormat) else {
+        guard
+            let srcFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: srcRate,
+                channels: 1,
+                interleaved: false
+            ),
+            let dstFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: dstRate,
+                channels: 1,
+                interleaved: false
+            ),
+            let converter = AVAudioConverter(from: srcFormat, to: dstFormat)
+        else {
             return samples
         }
 
         let srcFrameCount = AVAudioFrameCount(samples.count)
-        guard let srcBuffer = AVAudioPCMBuffer(pcmFormat: srcFormat, frameCapacity: srcFrameCount) else {
+        guard let srcBuffer = AVAudioPCMBuffer(pcmFormat: srcFormat, frameCapacity: srcFrameCount)
+        else {
             return samples
         }
         srcBuffer.frameLength = srcFrameCount
@@ -478,7 +485,8 @@ final class AudioRecorder: @unchecked Sendable {
 
         let ratio = dstRate / srcRate
         let dstFrameCount = AVAudioFrameCount(Double(srcFrameCount) * ratio) + 1
-        guard let dstBuffer = AVAudioPCMBuffer(pcmFormat: dstFormat, frameCapacity: dstFrameCount) else {
+        guard let dstBuffer = AVAudioPCMBuffer(pcmFormat: dstFormat, frameCapacity: dstFrameCount)
+        else {
             return samples
         }
 
