@@ -7,8 +7,9 @@ private let logger = Logger(subsystem: "fasterthanlime.bee", category: "AudioEng
 /// Shared audio infrastructure. Runs continuously when warm, capturing audio
 /// into a circular pre-buffer that sessions tap into.
 ///
-/// Stores samples at the device's native sample rate internally. Resampling
-/// to 16kHz happens when samples are read out (peekCapture/stopCapture).
+/// Audio is resampled to 16kHz mono at capture time (in the audio callback).
+/// All buffers (pre-buffer, session captures) store 16kHz samples. This avoids
+/// resampling mismatches between peekCapture and stopCapture.
 final class AudioEngine: @unchecked Sendable {
     enum State {
         case cold
@@ -19,10 +20,11 @@ final class AudioEngine: @unchecked Sendable {
     private let lock = NSLock()
 
     private var engine: AVAudioEngine?
+    private var converter: AVAudioConverter?
     private var nativeSampleRate: Double = 0
     private let targetSampleRate: Double = 16_000
 
-    // Circular pre-buffer for warm mode (~200ms at native rate)
+    // Circular pre-buffer for warm mode (~200ms at 16kHz = 3200 samples)
     private let preBufferDuration: TimeInterval = 0.2
     private var preBuffer: [Float] = []
     private var preBufferWriteIndex = 0
@@ -30,14 +32,6 @@ final class AudioEngine: @unchecked Sendable {
 
     // Per-session capture state
     private var activeCaptures: [UUID: CaptureHandle] = [:]
-
-    // VAD parameters
-    private let vadFastWaitSeconds: TimeInterval = 0.12
-    private let vadSpeechWaitSeconds: TimeInterval = 0.28
-    private let vadRequiredSilenceSeconds: TimeInterval = 0.05
-    private let vadSpeechRmsThreshold: Float = 0.012
-    private let vadSilenceRmsThreshold: Float = 0.008
-    private let vadBoundaryTimeoutSeconds: TimeInterval = 0.55
 
     // Device management
     var selectedDeviceUID: String?
@@ -61,9 +55,28 @@ final class AudioEngine: @unchecked Sendable {
 
         let nativeRate = nativeFormat.sampleRate
 
+        // Set up resampler (native → 16kHz mono)
+        let targetFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: targetSampleRate,
+            channels: 1,
+            interleaved: false
+        )!
+
+        let srcFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: nativeRate,
+            channels: 1,
+            interleaved: false
+        )!
+
+        let conv = AVAudioConverter(from: srcFormat, to: targetFormat)
+
         lock.lock()
         self.nativeSampleRate = nativeRate
-        preBufferCapacity = Int(nativeRate * preBufferDuration)
+        self.converter = conv
+        // Pre-buffer at 16kHz
+        preBufferCapacity = Int(targetSampleRate * preBufferDuration)
         preBuffer = [Float](repeating: 0, count: preBufferCapacity)
         preBufferWriteIndex = 0
         state = .warm
@@ -76,7 +89,7 @@ final class AudioEngine: @unchecked Sendable {
 
         try engine.start()
         self.engine = engine
-        logger.info("Audio engine warm: native rate = \(nativeRate) Hz")
+        logger.info("Audio engine warm: native rate = \(nativeRate) Hz, resampling to 16kHz")
     }
 
     func coolDown() {
@@ -85,6 +98,7 @@ final class AudioEngine: @unchecked Sendable {
         preBuffer.removeAll()
         preBufferCapacity = 0
         preBufferWriteIndex = 0
+        converter = nil
         lock.unlock()
 
         engine?.inputNode.removeTap(onBus: 0)
@@ -106,7 +120,7 @@ final class AudioEngine: @unchecked Sendable {
 
         var handle = CaptureHandle()
 
-        // Copy pre-buffer (circular read)
+        // Copy pre-buffer (circular read) — already at 16kHz
         if preBufferCapacity > 0 {
             if preBufferWriteIndex >= preBufferCapacity {
                 let startIndex = preBufferWriteIndex % preBufferCapacity
@@ -121,62 +135,22 @@ final class AudioEngine: @unchecked Sendable {
         activeCaptures[sessionID] = handle
     }
 
-    /// Peek at current captured audio, resampled to 16kHz.
+    /// Peek at current captured audio. Already at 16kHz.
     func peekCapture(for sessionID: UUID) -> [Float] {
         lock.lock()
         let samples = activeCaptures[sessionID]?.samples ?? []
-        let nativeRate = nativeSampleRate
         lock.unlock()
-
-        guard !samples.isEmpty else { return [] }
-        if nativeRate == targetSampleRate { return samples }
-        return resample(samples, from: nativeRate, to: targetSampleRate)
+        return samples
     }
 
-    /// Stop capturing with VAD tail drain. Blocks until silence or timeout.
-    /// Returns samples resampled to 16kHz.
+    /// Stop capturing. Returns all samples at 16kHz. No VAD drain for now.
     func stopCapture(for sessionID: UUID) -> [Float] {
-        let signal = DispatchSemaphore(value: 0)
-
         lock.lock()
-        guard var handle = activeCaptures[sessionID], handle.isCapturing else {
-            let samples = activeCaptures.removeValue(forKey: sessionID)?.samples ?? []
-            let nativeRate = nativeSampleRate
-            lock.unlock()
-            if nativeRate == targetSampleRate { return samples }
-            return samples.isEmpty ? [] : resample(samples, from: nativeRate, to: targetSampleRate)
-        }
-
-        let lastRms = handle.lastRms
-        let maxWait = lastRms >= vadSpeechRmsThreshold ? vadSpeechWaitSeconds : vadFastWaitSeconds
-
-        handle.isCapturing = false
-        handle.isDraining = true
-        handle.drainSignal = signal
-        handle.drainSilenceSamples = 0
-        handle.drainSamplesUntilTimeout = max(1, Int((nativeSampleRate * maxWait).rounded()))
-        activeCaptures[sessionID] = handle
-        lock.unlock()
-
-        // Block until VAD says we're done
-        let waitResult = signal.wait(timeout: .now() + vadBoundaryTimeoutSeconds)
-
-        lock.lock()
-        if waitResult == .timedOut {
-            if var h = activeCaptures[sessionID] {
-                h.isDraining = false
-                activeCaptures[sessionID] = h
-            }
-        }
         let samples = activeCaptures.removeValue(forKey: sessionID)?.samples ?? []
-        let nativeRate = nativeSampleRate
         lock.unlock()
 
-        logger.info("stopCapture: \(samples.count) native samples, timeout=\(waitResult == .timedOut)")
-
-        guard !samples.isEmpty else { return [] }
-        if nativeRate == targetSampleRate { return samples }
-        return resample(samples, from: nativeRate, to: targetSampleRate)
+        logger.info("stopCapture: \(samples.count) samples at 16kHz")
+        return samples
     }
 
     /// Cancel capture, discard audio. Non-blocking.
@@ -193,89 +167,52 @@ final class AudioEngine: @unchecked Sendable {
         let count = Int(buffer.frameLength)
         guard count > 0 else { return }
 
-        let bufferPointer = UnsafeBufferPointer(start: channelData[0], count: count)
-        let rms = computeRMS(bufferPointer)
+        // Resample to 16kHz
+        let resampled: [Float]
+        if nativeSampleRate == targetSampleRate {
+            resampled = Array(UnsafeBufferPointer(start: channelData[0], count: count))
+        } else {
+            resampled = resampleBuffer(buffer)
+        }
 
-        var signalsToFire: [DispatchSemaphore] = []
+        guard !resampled.isEmpty else { return }
 
         lock.lock()
 
-        // Update active captures
+        // Append to all active captures
         for (id, var handle) in activeCaptures {
-            if handle.isCapturing || handle.isDraining {
-                handle.samples.append(contentsOf: bufferPointer)
-                handle.lastRms = rms
-
-                if handle.isDraining {
-                    if rms < vadSilenceRmsThreshold {
-                        handle.drainSilenceSamples += count
-                    } else {
-                        handle.drainSilenceSamples = 0
-                    }
-                    handle.drainSamplesUntilTimeout = max(0, handle.drainSamplesUntilTimeout - count)
-
-                    let requiredSilence = max(1, Int((nativeSampleRate * vadRequiredSilenceSeconds).rounded()))
-                    let reachedSilence = handle.drainSilenceSamples >= requiredSilence
-                    let reachedTimeout = handle.drainSamplesUntilTimeout == 0
-
-                    if reachedSilence || reachedTimeout {
-                        handle.isDraining = false
-                        if let sig = handle.drainSignal {
-                            signalsToFire.append(sig)
-                            handle.drainSignal = nil
-                        }
-                    }
-                }
-
+            if handle.isCapturing {
+                handle.samples.append(contentsOf: resampled)
                 activeCaptures[id] = handle
             }
         }
 
-        // Fill circular pre-buffer (when no capture is active, or always)
+        // Fill circular pre-buffer (always, when warm)
         if state == .warm && preBufferCapacity > 0 {
-            for sample in bufferPointer {
+            for sample in resampled {
                 preBuffer[preBufferWriteIndex % preBufferCapacity] = sample
                 preBufferWriteIndex += 1
             }
         }
 
         lock.unlock()
-
-        for sig in signalsToFire {
-            sig.signal()
-        }
     }
 
-    private func computeRMS(_ samples: UnsafeBufferPointer<Float>) -> Float {
-        guard !samples.isEmpty else { return 0 }
-        var sum: Float = 0
-        for s in samples { sum += s * s }
-        return sqrtf(sum / Float(samples.count))
-    }
+    /// Resample a native-rate buffer to 16kHz using the pre-created converter.
+    private func resampleBuffer(_ buffer: AVAudioPCMBuffer) -> [Float] {
+        guard let converter else { return [] }
 
-    // MARK: - Resampling
+        let srcCount = buffer.frameLength
+        let ratio = targetSampleRate / nativeSampleRate
+        let dstCount = AVAudioFrameCount(Double(srcCount) * ratio) + 1
 
-    private func resample(_ samples: [Float], from srcRate: Double, to dstRate: Double) -> [Float] {
-        guard let srcFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32, sampleRate: srcRate, channels: 1, interleaved: false
-        ), let dstFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32, sampleRate: dstRate, channels: 1, interleaved: false
-        ), let converter = AVAudioConverter(from: srcFormat, to: dstFormat) else {
-            return samples
-        }
-
-        let srcCount = AVAudioFrameCount(samples.count)
-        guard let srcBuffer = AVAudioPCMBuffer(pcmFormat: srcFormat, frameCapacity: srcCount) else {
-            return samples
-        }
-        srcBuffer.frameLength = srcCount
-        if let cd = srcBuffer.floatChannelData {
-            samples.withUnsafeBufferPointer { cd[0].update(from: $0.baseAddress!, count: samples.count) }
-        }
-
-        let dstCount = AVAudioFrameCount(Double(srcCount) * dstRate / srcRate) + 1
-        guard let dstBuffer = AVAudioPCMBuffer(pcmFormat: dstFormat, frameCapacity: dstCount) else {
-            return samples
+        guard let dstFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: targetSampleRate,
+            channels: 1,
+            interleaved: false
+        ), let dstBuffer = AVAudioPCMBuffer(pcmFormat: dstFormat, frameCapacity: dstCount) else {
+            return []
         }
 
         var consumed = false
@@ -283,10 +220,10 @@ final class AudioEngine: @unchecked Sendable {
             if consumed { outStatus.pointee = .endOfStream; return nil }
             consumed = true
             outStatus.pointee = .haveData
-            return srcBuffer
+            return buffer
         }
 
-        guard let cd = dstBuffer.floatChannelData else { return samples }
+        guard let cd = dstBuffer.floatChannelData else { return [] }
         return Array(UnsafeBufferPointer(start: cd[0], count: Int(dstBuffer.frameLength)))
     }
 
@@ -310,11 +247,6 @@ final class AudioEngine: @unchecked Sendable {
     private struct CaptureHandle {
         var samples: [Float] = []
         var isCapturing = false
-        var isDraining = false
-        var lastRms: Float = 0
-        var drainSignal: DispatchSemaphore?
-        var drainSilenceSamples = 0
-        var drainSamplesUntilTimeout = 0
     }
 }
 
