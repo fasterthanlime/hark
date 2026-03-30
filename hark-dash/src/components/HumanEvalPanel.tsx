@@ -31,44 +31,6 @@ export function HumanEvalPanel() {
     };
   }, []);
 
-  const handleRun = useCallback(async () => {
-    try {
-      setError(null);
-      setResult(null);
-      setSelectedEntry(null);
-      setInspectorData(null);
-      setStatus("Starting bakeoff...");
-
-      const { jobId } = await startBakeoff({ limit, trainId });
-      setStatus(`Job #${jobId} running...`);
-
-      // Poll
-      pollRef.current = setInterval(async () => {
-        try {
-          const job = await getJob(jobId);
-          if (job.status === "completed") {
-            clearInterval(pollRef.current);
-            const parsed = parseBakeoffResult(job);
-            setResult(parsed);
-            setStatus(null);
-          } else if (job.status === "failed") {
-            clearInterval(pollRef.current);
-            setError(`Job #${jobId} failed`);
-            setStatus(null);
-          }
-          // else still running
-        } catch (e) {
-          clearInterval(pollRef.current);
-          setError(e instanceof Error ? e.message : String(e));
-          setStatus(null);
-        }
-      }, POLL_INTERVAL);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setStatus(null);
-    }
-  }, [limit, trainId]);
-
   const handleSelectEntry = useCallback(
     async (entry: BakeoffEntry) => {
       setSelectedEntry(entry);
@@ -91,6 +53,48 @@ export function HumanEvalPanel() {
     },
     [trainId],
   );
+
+  const handleRun = useCallback(async () => {
+    try {
+      setError(null);
+      setResult(null);
+      setSelectedEntry(null);
+      setInspectorData(null);
+      setStatus("Starting bakeoff...");
+
+      const { jobId } = await startBakeoff({ limit, trainId });
+      setStatus(`Job #${jobId} running...`);
+
+      // Poll
+      pollRef.current = setInterval(async () => {
+        try {
+          const job = await getJob(jobId);
+          if (job.status === "completed") {
+            clearInterval(pollRef.current);
+            const parsed = parseBakeoffResult(job);
+            setResult(parsed);
+            setStatus(null);
+            // Auto-select first case
+            if (parsed?.entries.length) {
+              handleSelectEntry(parsed.entries[0]);
+            }
+          } else if (job.status === "failed") {
+            clearInterval(pollRef.current);
+            setError(`Job #${jobId} failed`);
+            setStatus(null);
+          }
+          // else still running
+        } catch (e) {
+          clearInterval(pollRef.current);
+          setError(e instanceof Error ? e.message : String(e));
+          setStatus(null);
+        }
+      }, POLL_INTERVAL);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setStatus(null);
+    }
+  }, [limit, trainId, handleSelectEntry]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>

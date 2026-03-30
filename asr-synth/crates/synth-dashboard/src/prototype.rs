@@ -57,6 +57,7 @@ pub struct AcceptedProposal {
     pub to_phonemes: Option<String>,
     pub via: String,
     pub score: f32,
+    pub phonetic_score: Option<f32>,
     pub acoustic_score: Option<f32>,
     pub acoustic_delta: Option<f32>,
 }
@@ -83,10 +84,22 @@ pub struct PrototypeTiming {
     pub lexicon_ms: u64,
     pub tokenize_ms: u64,
     pub span_proposals_ms: u64,
+    pub span_enumeration_ms: u64,
+    pub span_scoring_ms: u64,
+    pub span_phone_led_ms: u64,
+    pub span_finalize_ms: u64,
     pub edit_pool_ms: u64,
     pub sentence_candidates_ms: u64,
     pub best_pick_ms: u64,
     pub total_ms: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SpanProposalTiming {
+    enumeration_ms: u64,
+    scoring_ms: u64,
+    phone_led_ms: u64,
+    finalize_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -256,7 +269,8 @@ pub fn prototype_correct_with_acoustics_timed(
     let tokenize_ms = tokenize_started.elapsed().as_millis() as u64;
 
     let span_started = std::time::Instant::now();
-    let mut span_proposals = enumerate_span_proposals(input, &tokens, &lexicon, config, acoustic);
+    let (mut span_proposals, span_timing) =
+        enumerate_span_proposals(input, &tokens, &lexicon, config, acoustic);
     let span_proposals_ms = span_started.elapsed().as_millis() as u64;
 
     let edit_pool_started = std::time::Instant::now();
@@ -293,6 +307,10 @@ pub fn prototype_correct_with_acoustics_timed(
             lexicon_ms,
             tokenize_ms,
             span_proposals_ms,
+            span_enumeration_ms: span_timing.enumeration_ms,
+            span_scoring_ms: span_timing.scoring_ms,
+            span_phone_led_ms: span_timing.phone_led_ms,
+            span_finalize_ms: span_timing.finalize_ms,
             edit_pool_ms,
             sentence_candidates_ms,
             best_pick_ms,
@@ -422,16 +440,20 @@ fn enumerate_span_proposals(
     lexicon: &[LexiconTerm],
     config: PrototypeConfig,
     acoustic: Option<&AcousticContext<'_>>,
-) -> Vec<PrototypeSpanProposal> {
+) -> (Vec<PrototypeSpanProposal>, SpanProposalTiming) {
     let max_span = if acoustic.is_some() {
         config.max_span_tokens.max(6)
     } else {
         config.max_span_tokens.max(1)
     };
     let mut proposals = Vec::new();
+    let mut enumeration_ms = 0u64;
+    let mut scoring_ms = 0u64;
+    let mut phone_led_ms = 0u64;
     for start in 0..tokens.len() {
         let end_limit = (start + max_span).min(tokens.len());
         for end in start + 1..=end_limit {
+            let enumeration_started = std::time::Instant::now();
             let char_start = tokens[start].start;
             let char_end = tokens[end - 1].end;
             let raw_text = input[char_start..char_end].to_string();
@@ -442,6 +464,7 @@ fn enumerate_span_proposals(
                 .join(" ");
             let span_compact = compact_key(&normalized);
             if span_compact.len() < 2 {
+                enumeration_ms += enumeration_started.elapsed().as_millis() as u64;
                 continue;
             }
             let acoustic_window = acoustic.and_then(|ctx| acoustic_window_for_span(ctx, start, end));
@@ -451,20 +474,23 @@ fn enumerate_span_proposals(
             let phone_led_bias = phone_led_bias_from_confidence(parakeet_confidence);
             let span_observed = observed_phonemes_for_span(&raw_text, acoustic_phones.clone());
             if span_compact.len() < 2 && acoustic_phone_count < 2 {
+                enumeration_ms += enumeration_started.elapsed().as_millis() as u64;
                 continue;
             }
             let observed_acoustic_score = match span_observed.kind {
-                PhonemeKind::Ipa => acoustic_phones.as_ref().map(|_| 1.0),
+                PhonemeKind::Ipa => None,
                 PhonemeKind::Arpabet => acoustic_phones
                     .as_deref()
                     .and_then(|phones| phoneme_similarity(phones, &span_observed.phones)),
             };
             let acoustic_trustworthy = match span_observed.kind {
-                PhonemeKind::Ipa => acoustic_phones.is_some(),
+                PhonemeKind::Ipa => acoustic_phones.as_ref().map(|phones| !phones.is_empty()).unwrap_or(false),
                 PhonemeKind::Arpabet => observed_acoustic_score
                     .map(|score| score >= 0.45)
                     .unwrap_or(false),
             };
+            enumeration_ms += enumeration_started.elapsed().as_millis() as u64;
+            let scoring_started = std::time::Instant::now();
             let mut candidates = lexicon
                 .iter()
                 .filter_map(|term| {
@@ -477,6 +503,8 @@ fn enumerate_span_proposals(
                     )
                 })
                 .collect::<Vec<_>>();
+            scoring_ms += scoring_started.elapsed().as_millis() as u64;
+            let phone_led_started = std::time::Instant::now();
             if let Some(phones) = acoustic_phones.as_deref().filter(|phones| !phones.is_empty()) {
                 candidates.extend(phone_led_candidates_for_span(phones, lexicon, phone_led_bias));
             }
@@ -497,6 +525,7 @@ fn enumerate_span_proposals(
                     }
                 }
             }
+            phone_led_ms += phone_led_started.elapsed().as_millis() as u64;
             if candidates.is_empty() {
                 continue;
             }
@@ -559,6 +588,7 @@ fn enumerate_span_proposals(
             });
         }
     }
+    let finalize_started = std::time::Instant::now();
     proposals.sort_by(|a, b| {
         let a_score = a.candidates.first().map(|c| c.score).unwrap_or_default();
         let b_score = b.candidates.first().map(|c| c.score).unwrap_or_default();
@@ -567,7 +597,15 @@ fn enumerate_span_proposals(
             .then_with(|| (b.token_end - b.token_start).cmp(&(a.token_end - a.token_start)))
     });
     dedupe_span_proposals(&mut proposals);
-    proposals
+    (
+        proposals,
+        SpanProposalTiming {
+            enumeration_ms,
+            scoring_ms,
+            phone_led_ms,
+            finalize_ms: finalize_started.elapsed().as_millis() as u64,
+        },
+    )
 }
 
 fn dedupe_span_proposals(proposals: &mut Vec<PrototypeSpanProposal>) {
@@ -655,9 +693,9 @@ fn phone_led_rescue_proposal(
                 prefix_ratio: None,
                 length_ratio: None,
                 phonetic_score: Some(phon),
-                observed_acoustic_score: Some(1.0),
+                observed_acoustic_score: None,
                 acoustic_score: Some(phon),
-                acoustic_delta: Some(phon - 1.0),
+                acoustic_delta: None,
                 phonemes: form.phonemes.clone(),
                 exact_words: false,
                 exact_compact: false,
@@ -714,7 +752,7 @@ fn phone_led_rescue_proposal(
         phonemes: phoneme_string(&span_observed.phones),
         acoustic_phonemes: phoneme_string(&acoustic_phones),
         parakeet_confidence: span_parakeet_confidence(ctx, token_start, token_end),
-        observed_acoustic_score: Some(1.0),
+        observed_acoustic_score: None,
         acoustic_trustworthy: true,
         acoustic_window_start_sec: acoustic_window.map(|(start, _)| start),
         acoustic_window_end_sec: acoustic_window.map(|(_, end)| end),
@@ -860,9 +898,9 @@ fn phone_led_candidates_for_span(
                 prefix_ratio: None,
                 length_ratio: None,
                 phonetic_score,
-                observed_acoustic_score: Some(1.0),
+                observed_acoustic_score: None,
                 acoustic_score: Some(phon),
-                acoustic_delta: Some(phon - 1.0),
+                acoustic_delta: None,
                 phonemes: form.phonemes.clone(),
                 exact_words: false,
                 exact_compact: false,
@@ -905,17 +943,20 @@ fn score_term(
             &form.phonemes,
             &form.phoneme_kind,
         );
-        let observed_acoustic_score = acoustic_phones.and_then(|phones| {
-            phoneme_similarity_if_compatible(
-                phones,
-                &PhonemeKind::Ipa,
-                &span_observed.phones,
-                &span_observed.kind,
-            )
-        });
+        let observed_acoustic_score = match span_observed.kind {
+            PhonemeKind::Ipa => None,
+            _ => acoustic_phones.and_then(|phones| {
+                phoneme_similarity_if_compatible(
+                    phones,
+                    &PhonemeKind::Ipa,
+                    &span_observed.phones,
+                    &span_observed.kind,
+                )
+            }),
+        };
         let acoustic_is_trustworthy = observed_acoustic_score
             .map(|score| score >= 0.45)
-            .unwrap_or(false);
+            .unwrap_or_else(|| acoustic_phones.map(|phones| !phones.is_empty()).unwrap_or(false));
         let raw_acoustic_score = acoustic_phones.and_then(|phones| {
             phoneme_similarity_if_compatible(
                 phones,
@@ -926,7 +967,7 @@ fn score_term(
         });
         let acoustic_hint = raw_acoustic_score.unwrap_or(0.0);
         let acoustic_score = acoustic_is_trustworthy.then_some(raw_acoustic_score).flatten();
-        let acoustic_delta = if acoustic_is_trustworthy {
+        let acoustic_delta = if acoustic_is_trustworthy && observed_acoustic_score.is_some() {
             acoustic_delta(raw_acoustic_score, observed_acoustic_score)
         } else {
             None
@@ -1120,6 +1161,7 @@ fn build_edit_pool(spans: &[PrototypeSpanProposal]) -> Vec<AcceptedProposal> {
             let acoustically_supported = candidate
                 .acoustic_delta
                 .map(|delta| delta >= 0.03)
+                .or_else(|| candidate.acoustic_score.map(|score| score >= 0.74))
                 .unwrap_or(false);
             let phonetic_support = candidate.phonetic_score.unwrap_or(0.0);
             let via_threshold = match candidate.via.as_str() {
@@ -1161,6 +1203,7 @@ fn build_edit_pool(spans: &[PrototypeSpanProposal]) -> Vec<AcceptedProposal> {
                 to_phonemes: candidate.term_preview_phonemes.clone(),
                 via: candidate.via.clone(),
                 score: candidate.score,
+                phonetic_score: candidate.phonetic_score,
                 acoustic_score: candidate.acoustic_score,
                 acoustic_delta: candidate.acoustic_delta,
             });
@@ -2226,6 +2269,7 @@ mod tests {
                 to_phonemes: None,
                 via: "spoken".to_string(),
                 score: 1.35,
+                phonetic_score: None,
                 acoustic_score: None,
                 acoustic_delta: None,
             },
@@ -2241,6 +2285,7 @@ mod tests {
                 to_phonemes: None,
                 via: "spoken".to_string(),
                 score: 0.98,
+                phonetic_score: None,
                 acoustic_score: None,
                 acoustic_delta: None,
             },
@@ -2418,6 +2463,7 @@ mod tests {
             to_phonemes: Some("S ER D EH JH EY Z AH N".to_string()),
             via: "spoken".to_string(),
             score: 0.69,
+            phonetic_score: Some(0.78),
             acoustic_score: Some(0.65),
             acoustic_delta: Some(0.04),
         };
@@ -2604,6 +2650,22 @@ mod tests {
         assert_eq!(candidate.term, "QEMU");
         assert!(candidate.phonetic_score.unwrap_or(0.0) >= 0.95, "{candidate:#?}");
         assert!(candidate.score >= 0.85, "{candidate:#?}");
+    }
+
+    #[test]
+    fn acoustic_ipa_scoring_does_not_use_self_similarity_baseline() {
+        let vocab = vec![row_with_reviewed_ipa("SQLite", "sequelite", "s i k w l aɪ t")];
+        let lexicon = build_lexicon(&vocab, &HashMap::new(), &HashMap::new());
+        let phones = parse_reviewed_ipa("s i k l aɪ t");
+        let observed = ObservedPhonemes {
+            phones: phones.clone(),
+            kind: PhonemeKind::Ipa,
+        };
+        let candidate = score_term("Secrite", "secrite", &observed, Some(&phones), &lexicon[0])
+            .expect("candidate should score");
+        assert_eq!(candidate.observed_acoustic_score, None, "{candidate:#?}");
+        assert_eq!(candidate.acoustic_delta, None, "{candidate:#?}");
+        assert_eq!(candidate.phonetic_score, candidate.acoustic_score, "{candidate:#?}");
     }
 
     #[test]

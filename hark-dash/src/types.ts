@@ -24,8 +24,7 @@ export type ProposalCandidate = {
   source: string;
   matchedForm?: string;
   rank: number;
-  ipa: number;
-  delta: number;
+  similarity?: number | null;
   phonemes?: string;
 };
 
@@ -50,9 +49,12 @@ export type CandidateEdit = {
   charEnd: number;
   from: string;
   matchedForm: string;
+  fromPhonemes?: string | null;
   to: string;
+  toPhonemes?: string | null;
   via: string;
   score: number;
+  phoneticScore?: number | null;
   acousticScore?: number | null;
   acousticDelta?: number | null;
 };

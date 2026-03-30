@@ -115,6 +115,7 @@ fn prototype_trace_excerpt(
                 "to_preview_phonemes": to_preview_phonemes,
                 "via": edit.via,
                 "score": edit.score,
+                "phonetic_score": edit.phonetic_score,
                 "acoustic_score": edit.acoustic_score,
                 "acoustic_delta": edit.acoustic_delta,
             })
@@ -160,6 +161,7 @@ fn prototype_trace_excerpt(
                     "to": edit.to,
                     "via": edit.via,
                     "score": edit.score,
+                    "phonetic_score": edit.phonetic_score,
                     "acoustic_score": edit.acoustic_score,
                     "acoustic_delta": edit.acoustic_delta,
                 })).collect::<Vec<_>>(),
@@ -7441,9 +7443,38 @@ fn build_acoustic_input_from_samples_16k(
     transcript_text: &str,
 ) -> Option<AcousticInput> {
     let total_started = std::time::Instant::now();
-    let zipa_started = std::time::Instant::now();
-    let zipa_trace = decode_zipa_trace_from_16k_warm(state, samples_16k).ok()?;
-    let zipa_decode_ms = zipa_started.elapsed().as_millis() as u64;
+    let (zipa_trace_result, zipa_decode_ms, parakeet_result, parakeet_transcribe_ms) =
+        std::thread::scope(|scope| {
+            let zipa_task = scope.spawn(|| {
+                let started = std::time::Instant::now();
+                (
+                    decode_zipa_trace_from_16k_warm(state, samples_16k),
+                    started.elapsed().as_millis() as u64,
+                )
+            });
+            let parakeet_task = scope.spawn(|| {
+                let started = std::time::Instant::now();
+                (
+                    state.parakeet.transcribe_samples(
+                        samples_16k.to_vec(),
+                        16000,
+                        1,
+                        Some(parakeet_rs::TimestampMode::Words),
+                    ),
+                    started.elapsed().as_millis() as u64,
+                )
+            });
+            let (zipa_trace, zipa_decode_ms) = zipa_task.join().expect("zipa task panicked");
+            let (parakeet_result, parakeet_transcribe_ms) =
+                parakeet_task.join().expect("parakeet task panicked");
+            (
+                zipa_trace,
+                zipa_decode_ms,
+                parakeet_result,
+                parakeet_transcribe_ms,
+            )
+        });
+    let zipa_trace = zipa_trace_result.ok()?;
 
     let zipa_segments_started = std::time::Instant::now();
     let zipa_segments = zipa_segments_from_trace(&zipa_trace);
@@ -7454,14 +7485,6 @@ fn build_acoustic_input_from_samples_16k(
         espeak_words_to_transcript_zipa_timing(transcript_text, &zipa_segments);
     let espeak_align_ms = espeak_started.elapsed().as_millis() as u64;
 
-    let parakeet_started = std::time::Instant::now();
-    let parakeet_result = state.parakeet.transcribe_samples(
-        samples_16k.to_vec(),
-        16000,
-        1,
-        Some(parakeet_rs::TimestampMode::Words),
-    );
-    let parakeet_transcribe_ms = parakeet_started.elapsed().as_millis() as u64;
     let parakeet_map_started = std::time::Instant::now();
     let parakeet_alignment = parakeet_result.ok().and_then(|result| {
         let words = result
@@ -8435,6 +8458,7 @@ pub async fn api_correct_prototype_bakeoff(
                             "from": edit.from,
                             "to": edit.to,
                             "score": edit.score,
+                            "phonetic_score": edit.phonetic_score,
                             "via": edit.via,
                             "acoustic_score": edit.acoustic_score,
                             "acoustic_delta": edit.acoustic_delta,
@@ -8851,6 +8875,7 @@ pub async fn api_correct_prototype_bakeoff(
                     "from": edit.from,
                     "to": edit.to,
                     "score": edit.score,
+                    "phonetic_score": edit.phonetic_score,
                     "via": edit.via,
                     "acoustic_score": edit.acoustic_score,
                     "acoustic_delta": edit.acoustic_delta,
@@ -11232,6 +11257,7 @@ mod tests {
             to_phonemes: None,
             via: "spoken".to_string(),
             score: 0.8,
+            phonetic_score: Some(0.9),
             acoustic_score: None,
             acoustic_delta: None,
         });

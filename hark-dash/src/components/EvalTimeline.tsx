@@ -1,7 +1,15 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import type { PrototypeAlignments, TimedToken, SentenceCandidate, Reranker } from "../types";
 
-type LaneToken = TimedToken & { dim?: boolean };
+type LaneToken = TimedToken & {
+  dim?: boolean;
+  editFrom?: string;
+  editFromPhonemes?: string | null;
+  editToPhonemes?: string | null;
+  editVia?: string;
+  editRank?: number;
+  editSimilarity?: number | null;
+};
 
 type Lane = {
   label: string;
@@ -11,30 +19,18 @@ type Lane = {
 };
 
 /**
- * Build a full corrected lane: all transcript words with edits applied.
- * Unchanged words are marked dim; edited spans show the replacement.
+ * Build a corrected token lane from transcript tokens + a set of edits.
+ * Unchanged words are dim; edited spans show the replacement.
  */
-function buildCorrectedLane(
+function applyCandidateEdits(
   transcriptTokens: TimedToken[],
-  sentenceCandidates: SentenceCandidate[],
-  reranker: Reranker | null | undefined,
+  edits: SentenceCandidate["edits"],
 ): LaneToken[] {
   if (!transcriptTokens?.length) return [];
 
-  // Find the chosen candidate's edits
-  let edits: SentenceCandidate["edits"] = [];
-  if (reranker?.chosenIndex != null && sentenceCandidates[reranker.chosenIndex]?.edits?.length) {
-    edits = sentenceCandidates[reranker.chosenIndex].edits;
-  }
-
-  // Build a map: token index → edit (for the start of each edit span)
   const editByStart = new Map<number, (typeof edits)[0]>();
-  const editCovered = new Set<number>();
   for (const edit of edits) {
     editByStart.set(edit.tokenStart, edit);
-    for (let i = edit.tokenStart; i < edit.tokenEnd; i++) {
-      editCovered.add(i);
-    }
   }
 
   const tokens: LaneToken[] = [];
@@ -42,7 +38,6 @@ function buildCorrectedLane(
   while (i < transcriptTokens.length) {
     const edit = editByStart.get(i);
     if (edit) {
-      // Edited span: show replacement
       const startToken = transcriptTokens[edit.tokenStart];
       const endIdx = Math.min(edit.tokenEnd - 1, transcriptTokens.length - 1);
       const endToken = transcriptTokens[endIdx];
@@ -52,15 +47,17 @@ function buildCorrectedLane(
           s: startToken.s,
           e: endToken.e,
           dim: false,
+          editFrom: edit.from,
+          editFromPhonemes: edit.fromPhonemes,
+          editToPhonemes: edit.toPhonemes,
+          editVia: edit.via,
+          editRank: edit.score,
+          editSimilarity: edit.phoneticScore,
         });
       }
       i = edit.tokenEnd;
     } else {
-      // Unchanged word
-      tokens.push({
-        ...transcriptTokens[i],
-        dim: true,
-      });
+      tokens.push({ ...transcriptTokens[i], dim: true });
       i++;
     }
   }
@@ -74,6 +71,43 @@ function buildLanes(
   reranker?: Reranker | null,
 ): Lane[] {
   const lanes: Lane[] = [];
+  const transcriptBase = alignments.transcript ?? alignments.espeak ?? [];
+  const candidates = sentenceCandidates ?? [];
+  const chosenIdx = reranker?.chosenIndex;
+
+  // Candidate lanes: one per sentence candidate, chosen first
+  if (candidates.length > 0 && transcriptBase.length > 0) {
+    // Find reranker scores for each candidate
+    const rerankerCandidates = reranker?.candidates;
+
+    // Sort: chosen first, then by yesProb descending
+    const indices = candidates.map((_, i) => i);
+    indices.sort((a, b) => {
+      if (a === chosenIdx) return -1;
+      if (b === chosenIdx) return 1;
+      const aProb = rerankerCandidates?.[a]?.yesProb ?? 0;
+      const bProb = rerankerCandidates?.[b]?.yesProb ?? 0;
+      return bProb - aProb;
+    });
+
+    for (const idx of indices) {
+      const candidate = candidates[idx];
+      const rc = rerankerCandidates?.[idx];
+      const isChosen = idx === chosenIdx;
+      const tokens = applyCandidateEdits(transcriptBase, candidate.edits);
+      if (tokens.length === 0) continue;
+
+      const pct = rc ? `${(rc.yesProb * 100).toFixed(0)}%` : "";
+      const label = isChosen ? `✓ ${pct}` : `#${idx} ${pct}`;
+
+      lanes.push({
+        label,
+        tokens,
+        color: isChosen ? "var(--lane-reranker)" : "var(--text-dim)",
+        bg: isChosen ? "var(--lane-reranker-bg)" : "transparent",
+      });
+    }
+  }
 
   if (parakeetAlignment.length > 0) {
     lanes.push({
@@ -108,22 +142,6 @@ function buildLanes(
       tokens: alignments.zipa,
       color: "var(--lane-zipa)",
       bg: "var(--lane-zipa-bg)",
-    });
-  }
-
-  // Corrected lane: all transcript words with reranker edits applied
-  const transcriptBase = alignments.transcript ?? alignments.espeak ?? [];
-  const correctedTokens = buildCorrectedLane(
-    transcriptBase,
-    sentenceCandidates ?? [],
-    reranker,
-  );
-  if (correctedTokens.length > 0) {
-    lanes.push({
-      label: "Corrected",
-      tokens: correctedTokens,
-      color: "var(--lane-reranker)",
-      bg: "var(--lane-reranker-bg)",
     });
   }
 
@@ -164,6 +182,7 @@ export function EvalTimeline({
   const pxPerSec = 120 * zoom;
 
   const [selection, setSelection] = useState<Selection>(null);
+  const [hover, setHover] = useState<{ laneIdx: number; tokenIdx: number; x: number; y: number } | null>(null);
 
   // Total width covers at least the audio duration and all alignment data
   let maxEnd = duration;
@@ -401,10 +420,15 @@ export function EvalTimeline({
                 const width = Math.max((token.e - token.s) * pxPerSec, 2);
                 const isPlaying = currentTime >= token.s && currentTime < token.e;
                 const isSelected = selection?.laneIdx === laneIdx && selection?.tokenIdx === ti;
+                const isDim = !!(token as LaneToken).dim;
                 return (
                   <div
                     key={ti}
-                    title={`${token.w} (${token.s.toFixed(2)}s–${token.e.toFixed(2)}s${token.c != null ? `, conf ${token.c.toFixed(2)}` : ""})`}
+                    onMouseEnter={(e) => {
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      setHover({ laneIdx, tokenIdx: ti, x: rect.left + rect.width / 2, y: rect.bottom + 4 });
+                    }}
+                    onMouseLeave={() => setHover(null)}
                     onClick={(e) => {
                       e.stopPropagation();
                       selectAndPlay(laneIdx, ti);
@@ -419,19 +443,25 @@ export function EvalTimeline({
                         ? lane.color + "60"
                         : isPlaying
                           ? lane.color + "40"
-                          : lane.bg,
-                      border: `2px solid ${isSelected ? lane.color : isPlaying ? lane.color + "80" : lane.color + "40"}`,
+                          : isDim
+                            ? "transparent"
+                            : lane.bg,
+                      border: isDim && !isSelected && !isPlaying
+                        ? "1px dashed var(--border)"
+                        : `2px solid ${isSelected ? lane.color : isPlaying ? lane.color + "80" : lane.color + "60"}`,
                       borderRadius: 3,
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      fontSize: "0.7rem",
-                      color: lane.color,
+                      fontSize: isDim ? "0.65rem" : "0.7rem",
+                      fontWeight: isDim ? 400 : 600,
+                      color: isDim ? "var(--text-muted)" : lane.color,
                       overflow: "hidden",
                       whiteSpace: "nowrap",
                       textOverflow: "ellipsis",
                       padding: "0 2px",
                       cursor: "pointer",
+                      opacity: isDim ? 0.7 : 1,
                       outline: isSelected ? `1px solid ${lane.color}` : "none",
                       outlineOffset: 1,
                     }}
@@ -458,6 +488,82 @@ export function EvalTimeline({
           }}
         />
       </div>
+
+      {/* Hover popover */}
+      {hover && (() => {
+        const token = lanes[hover.laneIdx]?.tokens[hover.tokenIdx] as LaneToken | undefined;
+        if (!token) return null;
+        return (
+          <div
+            style={{
+              position: "fixed",
+              left: hover.x,
+              top: hover.y,
+              transform: "translateX(-50%)",
+              zIndex: 100,
+              background: "var(--bg-surface)",
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              padding: "0.5rem 0.75rem",
+              fontSize: "0.8rem",
+              lineHeight: 1.6,
+              boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
+              pointerEvents: "none",
+              maxWidth: 360,
+              whiteSpace: "nowrap",
+            }}
+          >
+            <div style={{ fontWeight: 600, color: "var(--text)", marginBottom: 2 }}>
+              {token.w} <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>{token.s.toFixed(2)}s – {token.e.toFixed(2)}s</span>
+            </div>
+            {token.c != null && (
+              <div style={{ color: "var(--text-muted)" }}>conf {token.c.toFixed(3)}</div>
+            )}
+            {token.editFrom && (
+              <>
+                <div style={{ marginTop: 4, borderTop: "1px solid var(--border)", paddingTop: 4 }}>
+                  <table style={{ borderCollapse: "collapse", fontSize: "0.8rem", width: "100%" }}>
+                    <tbody>
+                      <tr>
+                        <td style={{ color: "var(--text-muted)", paddingRight: 8, verticalAlign: "top" }}>from</td>
+                        <td>
+                          <span style={{ color: "var(--danger)", fontWeight: 600 }}>{token.editFrom}</span>
+                          {token.editFromPhonemes && <span style={{ color: "var(--text-dim)", marginLeft: 6, fontStyle: "italic" }}>/{token.editFromPhonemes}/</span>}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style={{ color: "var(--text-muted)", paddingRight: 8, verticalAlign: "top" }}>to</td>
+                        <td>
+                          <span style={{ color: "var(--success)", fontWeight: 600 }}>{token.w}</span>
+                          {token.editToPhonemes && <span style={{ color: "var(--text-dim)", marginLeft: 6, fontStyle: "italic" }}>/{token.editToPhonemes}/</span>}
+                        </td>
+                      </tr>
+                      {token.editVia && (
+                        <tr>
+                          <td style={{ color: "var(--text-muted)", paddingRight: 8 }}>via</td>
+                          <td>{token.editVia}</td>
+                        </tr>
+                      )}
+                      {token.editSimilarity != null && (
+                        <tr>
+                          <td style={{ color: "var(--text-muted)", paddingRight: 8 }}>similarity</td>
+                          <td style={{ fontVariantNumeric: "tabular-nums" }}>{token.editSimilarity.toFixed(3)}</td>
+                        </tr>
+                      )}
+                      {token.editRank != null && (
+                        <tr>
+                          <td style={{ color: "var(--text-muted)", paddingRight: 8 }}>rank</td>
+                          <td style={{ fontVariantNumeric: "tabular-nums" }}>{token.editRank.toFixed(3)}</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }

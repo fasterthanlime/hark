@@ -6,6 +6,7 @@ echo "=== Dry run ==="
 rsync -avn --delete \
   --exclude target/ \
   --exclude build/ \
+  --exclude build-bee-release/ \
   --exclude .git/ \
   --exclude '*.xcodeproj/' \
   --exclude '*.profraw' \
@@ -26,6 +27,7 @@ echo ""
 rsync -av --delete \
   --exclude target/ \
   --exclude build/ \
+  --exclude build-bee-release/ \
   --exclude .git/ \
   --exclude '*.xcodeproj/' \
   --exclude '*.profraw' \
