@@ -14,6 +14,9 @@ class HarkInputController: IMKInputController {
 
     /// The current marked (provisional) text, if any.
     private var currentMarkedText: String = ""
+    /// Text that was auto-committed by the app during a focus switch.
+    /// Stripped from the next setMarkedText to avoid duplication.
+    private var autoCommittedPrefix: String = ""
 
     // MARK: - Lifecycle
 
@@ -27,17 +30,13 @@ class HarkInputController: IMKInputController {
     override func deactivateServer(_ sender: Any!) {
         let hadMarkedText = !currentMarkedText.isEmpty
 
-        // If we have marked text during an active dictation, clear it before
-        // super.deactivateServer — otherwise IMK auto-commits it as real text,
-        // causing duplication when the user switches back.
-        if hadMarkedText, let client = self.client() {
-            currentMarkedText = ""
-            client.setMarkedText(
-                "",
-                selectionRange: NSRange(location: 0, length: 0),
-                replacementRange: NSRange(location: NSNotFound, length: 0)
-            )
+        // If the app is going to auto-commit our marked text on focus loss,
+        // remember it so we can strip the prefix when streaming resumes.
+        if hadMarkedText && HarkXPCService.shared.isDictating {
+            autoCommittedPrefix = currentMarkedText
+            Self.logger.warning("Saving auto-committed prefix (\(self.autoCommittedPrefix.count) chars)")
         }
+        currentMarkedText = ""
 
         if !hadMarkedText {
             if HarkXPCService.shared.activeController === self {
@@ -98,18 +97,34 @@ class HarkInputController: IMKInputController {
             return
         }
 
-        currentMarkedText = text
+        // If the app auto-committed text on focus loss, strip that prefix
+        // to avoid duplication.
+        var displayText = text
+        if !autoCommittedPrefix.isEmpty {
+            if text.hasPrefix(autoCommittedPrefix) {
+                displayText = String(text.dropFirst(autoCommittedPrefix.count))
+                // Trim leading whitespace from the remainder
+                displayText = String(displayText.drop(while: { $0 == " " }))
+                Self.logger.warning("Stripped auto-committed prefix, showing \(displayText.count) chars")
+            } else {
+                // Text diverged from what was committed — clear the prefix
+                Self.logger.warning("Auto-committed prefix no longer matches, clearing")
+            }
+            autoCommittedPrefix = ""
+        }
+
+        currentMarkedText = displayText
 
         // Create attributed string with underline to indicate provisional text
         let attrs: [NSAttributedString.Key: Any] = [
             .underlineStyle: NSUnderlineStyle.single.rawValue,
             .underlineColor: NSColor.systemBlue.withAlphaComponent(0.5),
         ]
-        let attributed = NSAttributedString(string: text, attributes: attrs)
+        let attributed = NSAttributedString(string: displayText, attributes: attrs)
 
         client.setMarkedText(
             attributed,
-            selectionRange: NSRange(location: text.utf16.count, length: 0),
+            selectionRange: NSRange(location: displayText.utf16.count, length: 0),
             replacementRange: NSRange(location: NSNotFound, length: 0)
         )
     }
@@ -121,9 +136,19 @@ class HarkInputController: IMKInputController {
             return
         }
 
+        // Strip auto-committed prefix from final text too
+        var finalText = text
+        if !autoCommittedPrefix.isEmpty {
+            if text.hasPrefix(autoCommittedPrefix) {
+                finalText = String(text.dropFirst(autoCommittedPrefix.count))
+                finalText = String(finalText.drop(while: { $0 == " " }))
+            }
+            autoCommittedPrefix = ""
+        }
+
         currentMarkedText = ""
         client.insertText(
-            text + " ",
+            finalText + " ",
             replacementRange: NSRange(location: NSNotFound, length: 0)
         )
     }

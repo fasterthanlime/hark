@@ -1,23 +1,28 @@
 import AppKit
 import CoreAudio
+import os
 
 /// Pauses/resumes system media playback during dictation.
 @MainActor
 struct MediaController {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "hark",
+        category: "MediaController"
+    )
     private static var didPauseMedia = false
 
-    /// Pause system media if any process (other than ourselves) is driving audio output.
+    /// Pause system media if any process (other than ourselves / system services) is driving audio output.
     static func pauseIfPlaying() {
         didPauseMedia = false
 
         let myPID = ProcessInfo.processInfo.processIdentifier
         let (active, bundle, pid) = findActiveAudioOutput(excludingPID: myPID)
-        print("[media] Audio output active: \(active)\(active ? " (pid=\(pid) bundle=\(bundle ?? "?"))" : "")")
+        logger.warning("[media] Audio output active: \(active) pid=\(pid) bundle=\(bundle ?? "?", privacy: .public)")
 
         guard active else { return }
         mediaRemoteSendCommand(1) // kMRPause
         didPauseMedia = true
-        print("[media] Sent pause command")
+        logger.warning("[media] Sent pause command")
     }
 
     /// If we paused media earlier, resume it.
@@ -25,7 +30,7 @@ struct MediaController {
         guard didPauseMedia else { return }
         mediaRemoteSendCommand(0) // kMRPlay
         didPauseMedia = false
-        print("[media] Sent play command")
+        logger.warning("[media] Sent play command")
     }
 
     /// Setting stored in UserDefaults.
@@ -36,13 +41,21 @@ struct MediaController {
 
     // MARK: - Core Audio Process Detection
 
-    /// Check if any process (excluding the given PID) is currently producing audio output.
+    /// Bundles to ignore when checking for active audio output.
+    private static let ignoredBundles: Set<String> = [
+        "com.apple.CoreSpeech",
+    ]
+
+    /// Check if any process (excluding the given PID and ignored bundles) is currently producing audio output.
     private static func findActiveAudioOutput(excludingPID: pid_t) -> (active: Bool, bundle: String?, pid: pid_t) {
         for obj in getProcessObjects() {
             let pid = getProcessPID(obj)
             guard pid != excludingPID else { continue }
+            let bundle = getProcessBundleID(obj)
+            if let bundle, ignoredBundles.contains(bundle) { continue }
             if isProcessRunningOutput(obj) {
-                return (true, getProcessBundleID(obj), pid)
+                logger.warning("[media] Found active audio output: pid=\(pid) bundle=\(bundle ?? "?", privacy: .public)")
+                return (true, bundle, pid)
             }
         }
         return (false, nil, 0)
@@ -113,11 +126,11 @@ struct MediaController {
     private static func mediaRemoteSendCommand(_ command: UInt32) {
         guard let handle = mrHandle,
               let sym = dlsym(handle, "MRMediaRemoteSendCommand") else {
-            print("[media] sendCommand: no handle or sym")
+            logger.warning("[media] sendCommand: no handle or sym")
             return
         }
         typealias Fn = @convention(c) (UInt32, UnsafeRawPointer?) -> Bool
         let ok = unsafeBitCast(sym, to: Fn.self)(command, nil)
-        print("[media] sendCommand(\(command)) returned \(ok)")
+        logger.warning("[media] sendCommand(\(command)) returned \(ok)")
     }
 }
