@@ -1,6 +1,7 @@
 import Foundation
+import os
 
-// MARK: - Session
+private let logger = Logger(subsystem: "fasterthanlime.bee", category: "Session")
 
 /// A Session is a self-contained unit of work for a single dictation attempt.
 /// It owns three layers — Capture, ASR, and IME — each with its own state.
@@ -19,19 +20,22 @@ actor Session {
     private let transcriptionService: TranscriptionService
     private let inputClient: BeeInputClient
 
-    private var capturedSamples: [Float] = []
     private var processedSampleCount: Int = 0
-    private var asrSession: OpaquePointer?
+    private var asrSession: StreamingSession?
     private var streamingTask: Task<Void, Never>?
     private var finalText: String = ""
     private var partialTranscript: String = ""
 
-    /// Called on every streaming update (on the actor).
-    /// The UI layer observes this to update the status indicator.
-    var onStreamingUpdate: ((StreamingUpdate) -> Void)?
+    private var onStreamingUpdate: (@Sendable (String) -> Void)?
+    private var onComplete: (@Sendable (SessionResult) -> Void)?
 
-    /// Called when the session reaches a terminal state.
-    var onComplete: ((SessionResult) -> Void)?
+    func setOnComplete(_ handler: @Sendable @escaping (SessionResult) -> Void) {
+        onComplete = handler
+    }
+
+    func setOnStreamingUpdate(_ handler: @Sendable @escaping (String) -> Void) {
+        onStreamingUpdate = handler
+    }
 
     init(
         audioEngine: AudioEngine,
@@ -50,22 +54,37 @@ actor Session {
     // MARK: - Starting
 
     func start(language: String?) async {
-        // Copy pre-buffer from audio engine and begin accumulating
-        capture = .buffering
-        audioEngine.startCapture(for: self)
+        logger.info("[\(self.id)] Session starting")
 
-        // Activate IME
-        inputClient.activate()
-        ime = .active
+        // Warm up engine if cold
+        if !audioEngine.isWarm {
+            do {
+                try audioEngine.warmUp()
+            } catch {
+                logger.error("[\(self.id)] Failed to warm up audio engine: \(error)")
+                onComplete?(.aborted(id: id))
+                return
+            }
+        }
+
+        // Start capturing audio (copies pre-buffer)
+        capture = .buffering
+        audioEngine.startCapture(for: self.id)
 
         // Create ASR session
-        asr = .streaming
-        // TODO: actual FFI call to create session with language
+        asrSession = transcriptionService.createSession(language: language)
+        if asrSession != nil {
+            asr = .streaming
+        } else {
+            logger.error("[\(self.id)] Failed to create ASR session")
+        }
 
         // Start the streaming loop
         streamingTask = Task { [weak self] in
             await self?.streamingLoop()
         }
+
+        logger.info("[\(self.id)] Session started, streaming")
     }
 
     // MARK: - Ending
@@ -73,34 +92,31 @@ actor Session {
     /// Immediate teardown. No finalization, no history, no trace.
     func abort() async {
         guard !isTerminal else { return }
-
-        // Discard audio — no drain
-        audioEngine.cancelCapture(for: self)
-        capture = .discarded
-
-        // Drop ASR session
-        asr = .done
-
-        inputClient.deactivate()
-        ime = .tornDown
+        logger.info("[\(self.id)] Aborting")
 
         streamingTask?.cancel()
+        audioEngine.cancelCapture(for: self.id)
+        capture = .discarded
+        asrSession = nil
+        asr = .done
+        ime = .tornDown
+
         onComplete?(.aborted(id: id))
     }
 
     /// Finalize in background, create history entry, but don't insert text.
     func cancel() async {
         guard !isTerminal else { return }
+        logger.info("[\(self.id)] Cancelling")
+
+        streamingTask?.cancel()
 
         capture = .draining
-        let samples = await drainAudio()
+        let samples = audioEngine.stopCapture(for: self.id)
         capture = .delivered
 
-        inputClient.clearMarkedText()
-        inputClient.deactivate()
         ime = .cleared
 
-        // Finalize ASR in background
         Task.detached { [self] in
             await self.finalize(samples: samples, insert: false, submit: false)
         }
@@ -109,12 +125,14 @@ actor Session {
     /// Finalize and insert text. If submit, simulate Return after insertion.
     func commit(submit: Bool) async {
         guard !isTerminal else { return }
+        logger.info("[\(self.id)] Committing (submit=\(submit))")
+
+        streamingTask?.cancel()
 
         capture = .draining
-        let samples = await drainAudio()
+        let samples = audioEngine.stopCapture(for: self.id)
         capture = .delivered
 
-        // Finalize ASR in background, then commit IME
         Task.detached { [self] in
             await self.finalize(samples: samples, insert: true, submit: submit)
         }
@@ -123,19 +141,26 @@ actor Session {
     // MARK: - Internal
 
     private var isTerminal: Bool {
-        switch (capture, asr, ime) {
-        case (.discarded, _, _): return true
-        case (_, .done, .committed): return true
-        case (_, .done, .cleared): return true
-        case (_, .done, .tornDown): return true
+        switch capture {
+        case .discarded: return true
+        default: break
+        }
+        switch (asr, ime) {
+        case (.done, .committed): return true
+        case (.done, .cleared): return true
+        case (.done, .tornDown): return true
         default: return false
         }
     }
 
     private func streamingLoop() async {
+        guard let session = asrSession else { return }
+
         while !Task.isCancelled && capture == .buffering {
-            let allSamples = audioEngine.peekCapture(for: self)
+            let allSamples = audioEngine.peekCapture(for: self.id)
             let newCount = allSamples.count
+
+            // Need at least 800 new samples (~50ms at 16kHz) before feeding
             guard newCount > processedSampleCount + 800 else {
                 try? await Task.sleep(for: .milliseconds(30))
                 continue
@@ -144,50 +169,59 @@ actor Session {
             let chunk = Array(allSamples[processedSampleCount...])
             processedSampleCount = newCount
 
-            // TODO: feed chunk to ASR session, get update
-            // let update = transcriptionService.feed(session: asrSession, samples: chunk)
-            // if let update {
-            //     partialTranscript = update.text
-            //     inputClient.setMarkedText(update.text)
-            //     onStreamingUpdate?(StreamingUpdate(text: update.text, ...))
-            // }
+            if let update = transcriptionService.feed(session: session, samples: chunk) {
+                partialTranscript = update.text
+                onStreamingUpdate?(update.text)
+            }
         }
-    }
-
-    private func drainAudio() async -> [Float] {
-        streamingTask?.cancel()
-        await streamingTask?.value
-        let samples = audioEngine.stopCapture(for: self)
-        return samples
     }
 
     private func finalize(samples: [Float], insert: Bool, submit: Bool) async {
         asr = .finalizing
 
-        // Feed remaining samples to ASR
+        guard let session = asrSession else {
+            asr = .done
+            finalText = partialTranscript
+            completeSession(insert: insert, submit: submit)
+            return
+        }
+
+        // Feed remaining unprocessed samples
         let remaining = samples.count > processedSampleCount
             ? Array(samples[processedSampleCount...])
             : []
-        // TODO: transcriptionService.feedFinalizing(session: asrSession, samples: remaining)
-        // TODO: let text = transcriptionService.finish(session: asrSession)
-        let text = partialTranscript // placeholder
 
-        asr = .done
-        finalText = text
+        if !remaining.isEmpty {
+            // Add silence padding for trailing speech
+            var finalChunk = remaining
+            let padSamples = Int(16_000 * 0.1) // 100ms padding
+            finalChunk.append(contentsOf: repeatElement(Float(0), count: padSamples))
 
-        if insert && !text.isEmpty {
-            inputClient.commitText(text)
-            inputClient.deactivate()
-            ime = .committed
-
-            if submit {
-                try? await Task.sleep(for: .milliseconds(50))
-                inputClient.simulateReturn()
+            if let update = transcriptionService.feedFinalizing(session: session, samples: finalChunk) {
+                partialTranscript = update.text
             }
-        } else if !insert {
-            // Cancel path — IME already cleared above
         }
 
+        // Run final inference
+        if let text = transcriptionService.finish(session: session) {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                finalText = trimmed
+            } else {
+                finalText = partialTranscript
+            }
+        } else {
+            finalText = partialTranscript
+        }
+
+        asr = .done
+        asrSession = nil
+
+        logger.info("[\(self.id)] Finalized: \"\(self.finalText.prefix(80))\"")
+        completeSession(insert: insert, submit: submit)
+    }
+
+    private func completeSession(insert: Bool, submit: Bool) {
         if insert {
             onComplete?(.committed(id: id, text: finalText, submitted: submit))
         } else {

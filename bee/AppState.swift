@@ -235,12 +235,45 @@ final class AppState {
 
     private func createSession() -> Session {
         let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        return Session(
+        let session = Session(
             audioEngine: audioEngine,
             transcriptionService: transcriptionService,
             inputClient: inputClient,
             targetBundleID: bundleID
         )
+
+        Task {
+            await session.setOnComplete { [weak self] result in
+                Task { @MainActor in
+                    self?.handleSessionResult(result)
+                }
+            }
+        }
+
+        return session
+    }
+
+    private func handleSessionResult(_ result: SessionResult) {
+        switch result {
+        case .aborted:
+            break // no trace
+        case .cancelled(_, let text):
+            if !text.isEmpty {
+                addHistoryEntry(text: text)
+            }
+        case .committed(_, let text, _):
+            if !text.isEmpty {
+                addHistoryEntry(text: text)
+            }
+        }
+    }
+
+    private func addHistoryEntry(text: String) {
+        let item = TranscriptionHistoryItem(text: text)
+        transcriptionHistory.insert(item, at: 0)
+        if transcriptionHistory.count > 20 {
+            transcriptionHistory = Array(transcriptionHistory.prefix(20))
+        }
     }
 
     // MARK: - Model Loading
@@ -253,11 +286,23 @@ final class AppState {
         modelStatus = .loading
 
         Task {
+            // Request mic permission
+            let micGranted = await AudioEngine.requestPermission()
+            if !micGranted {
+                await MainActor.run {
+                    self.modelStatus = .error("Microphone permission denied")
+                }
+                return
+            }
+
             do {
                 try await transcriptionService.loadModel(
                     model: model,
                     cacheDir: STTModelDefinition.cacheDirectory
                 )
+                // Warm up audio engine after model loads
+                try audioEngine.warmUp()
+
                 await MainActor.run {
                     self.modelStatus = .loaded
                 }
