@@ -27,6 +27,9 @@ pub struct ThinkerConfig {
     pub audio_end_token_id: i64,
     #[serde(default = "default_audio_token_id")]
     pub audio_token_id: i64,
+    /// Number of timestamp classification buckets (ForcedAligner only).
+    #[serde(default)]
+    pub classify_num: Option<usize>,
 }
 
 fn default_audio_start_token_id() -> i64 {

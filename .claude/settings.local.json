@@ -27,7 +27,10 @@
       "Bash(.venv/bin/python3 -c \":*)",
       "Bash(./target/release/transcribe --streaming=accumulate ~/Library/Caches/qwen3-asr/mlx-community--Qwen3-ASR-1.7B-4bit ../qwen3-asr-rs/tests/fixtures/audio/sample1.wav)",
       "Bash(./target/release/transcribe --streaming=overlap ~/Library/Caches/qwen3-asr/mlx-community--Qwen3-ASR-1.7B-4bit ../qwen3-asr-rs/tests/fixtures/audio/sample4.wav)",
-      "Bash(RUST_LOG=info ./target/release/transcribe --streaming=rotate ~/Library/Caches/qwen3-asr/mlx-community--Qwen3-ASR-1.7B-4bit ../qwen3-asr-rs/tests/fixtures/audio/sample4.wav)"
+      "Bash(RUST_LOG=info ./target/release/transcribe --streaming=rotate ~/Library/Caches/qwen3-asr/mlx-community--Qwen3-ASR-1.7B-4bit ../qwen3-asr-rs/tests/fixtures/audio/sample4.wav)",
+      "Bash(python3 -m json.tool)",
+      "Bash(python3 -c \":*)",
+      "Bash(RUST_LOG=info ./target/release/transcribe --align ~/Library/Caches/qwen3-asr/mlx-community--Qwen3-ASR-1.7B-4bit ../qwen3-asr-rs/tests/fixtures/audio/sample1.wav)"
     ]
   }
 }

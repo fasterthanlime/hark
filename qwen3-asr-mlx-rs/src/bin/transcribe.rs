@@ -42,6 +42,7 @@ fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     let args: Vec<String> = std::env::args().collect();
+    let align_mode = args.iter().any(|a| a == "--align");
     let streaming_mode = args.iter().find_map(|a| {
         if a == "--streaming" || a == "--streaming=accumulate" {
             Some(StreamingMode::Accumulate)
@@ -106,7 +107,9 @@ fn main() -> anyhow::Result<()> {
     let tokenizer = find_tokenizer(model_dir)
         .ok_or_else(|| anyhow::anyhow!("no tokenizer.json found"))?;
 
-    if let Some(mode) = streaming_mode {
+    if align_mode {
+        run_align(&samples, &tokenizer, model_dir)?;
+    } else if let Some(mode) = streaming_mode {
         run_streaming(&mut model, &samples, tokenizer, mode)?;
     } else {
         run_batch(&mut model, &samples, &tokenizer)?;
@@ -158,6 +161,42 @@ fn run_streaming(
     println!("\nFinish: {:.0}ms", finish_ms);
     println!("Total streaming: {:.0}ms", total_ms);
     println!("\nTranscription: {}", final_text);
+
+    Ok(())
+}
+
+fn run_align(
+    samples: &[f32],
+    tokenizer: &tokenizers::Tokenizer,
+    _asr_model_dir: &Path,
+) -> anyhow::Result<()> {
+    // For alignment, we need the aligner model, not the ASR model
+    let aligner_dir = dirs::home_dir()
+        .unwrap()
+        .join("Library/Caches/qwen3-asr/Qwen--Qwen3-ForcedAligner-0.6B");
+    if !aligner_dir.exists() {
+        anyhow::bail!("Aligner model not found at {}", aligner_dir.display());
+    }
+
+    println!("\nLoading forced aligner...");
+    let t0 = Instant::now();
+    let mut aligner = qwen3_asr_mlx::forced_aligner::ForcedAligner::load(
+        &aligner_dir,
+        tokenizer.clone(),
+    )?;
+    println!("Aligner loaded in {:.0}ms", t0.elapsed().as_millis());
+
+    // Use a known transcription for testing
+    let text = "The quick brown fox jumps over the lazy dog.";
+    println!("Aligning: {:?}", text);
+
+    let t0 = Instant::now();
+    let items = aligner.align(samples, text)?;
+    println!("Aligned in {:.0}ms\n", t0.elapsed().as_millis());
+
+    for item in &items {
+        println!("  [{:.3}s - {:.3}s] {}", item.start_time, item.end_time, item.word);
+    }
 
     Ok(())
 }

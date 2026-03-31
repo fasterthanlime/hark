@@ -2,6 +2,7 @@ pub mod config;
 pub mod decoder;
 pub mod encoder;
 pub mod error;
+pub mod forced_aligner;
 pub mod generate;
 pub mod load;
 pub mod mel;
