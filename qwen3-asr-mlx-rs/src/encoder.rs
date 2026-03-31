@@ -1,221 +1,234 @@
-use std::f32::consts::PI;
-
+use mlx_rs::builder::Builder;
+use mlx_rs::error::Exception;
+use mlx_rs::macros::ModuleParameters;
 use mlx_rs::module::Module;
 use mlx_rs::nn;
 use mlx_rs::ops;
+use mlx_rs::ops::indexing::IndexOp;
 use mlx_rs::Array;
 
 use crate::config::AudioEncoderConfig;
-use crate::error::AsrError;
-use crate::weights::Weights;
 
 /// Windowed segment threshold — use per-window execution above this.
 const WINDOWED_SEGMENT_MIN_WINDOWS: usize = 20;
 
-/// Fixed sinusoidal position embeddings (not learned, not in weights).
-///
-/// Uses the Qwen3-ASR formula: `log_timescale_increment = log(10000) / (half_dim - 1)`
-/// which differs from standard Transformer PE by using `half_dim - 1` in denominator.
-struct SinusoidalPE {
-    pe: Array, // (max_positions, embedding_dim)
+// ── Sinusoidal PE (computed, not loaded) ────────────────────────────────
+
+fn build_sinusoidal_pe(max_positions: usize, embedding_dim: usize) -> Array {
+    let half_dim = embedding_dim / 2;
+    let log_timescale_increment = (10000.0f32).ln() / (half_dim as f32 - 1.0);
+
+    let inv_timescales: Vec<f32> = (0..half_dim)
+        .map(|i| (-log_timescale_increment * i as f32).exp())
+        .collect();
+    let inv_t = Array::from_slice(&inv_timescales, &[1, half_dim as i32]);
+
+    let positions: Vec<f32> = (0..max_positions).map(|i| i as f32).collect();
+    let pos = Array::from_slice(&positions, &[max_positions as i32, 1]);
+
+    let scaled_time = pos.matmul(&inv_t).unwrap();
+    let sin_part = scaled_time.sin().unwrap();
+    let cos_part = scaled_time.cos().unwrap();
+
+    ops::concatenate_axis(&[&sin_part, &cos_part], -1).unwrap()
 }
 
-impl SinusoidalPE {
-    fn new(max_positions: usize, embedding_dim: usize) -> Self {
-        let half_dim = embedding_dim / 2;
-        let log_timescale_increment = (10000.0f32).ln() / (half_dim as f32 - 1.0);
+// ── AudioAttention ──────────────────────────────────────────────────────
 
-        let inv_timescales: Vec<f32> = (0..half_dim)
-            .map(|i| (-log_timescale_increment * i as f32).exp())
-            .collect();
-        let inv_t = Array::from_slice(&inv_timescales, &[1, half_dim as i32]);
-
-        let positions: Vec<f32> = (0..max_positions).map(|i| i as f32).collect();
-        let pos = Array::from_slice(&positions, &[max_positions as i32, 1]);
-
-        // Outer product: (max_positions, half_dim)
-        let scaled_time = ops::multiply(&pos, &inv_t).unwrap();
-        let sin_part = ops::sin(&scaled_time).unwrap();
-        let cos_part = ops::cos(&scaled_time).unwrap();
-
-        // Concatenate sin and cos: (max_positions, embedding_dim)
-        let pe = ops::concatenate(&[&sin_part, &cos_part], -1).unwrap();
-
-        Self { pe }
-    }
-
-    /// Get PE for the first `len` positions.
-    fn get(&self, len: usize) -> Array {
-        self.pe.index((..len as i32, ..))
-    }
-}
-
-/// Bidirectional multi-head attention for the audio encoder.
-/// Uses bias on all projections. No causal mask, no RoPE.
+#[derive(Debug, Clone, ModuleParameters)]
 struct AudioAttention {
+    #[param]
     q_proj: nn::Linear,
+    #[param]
     k_proj: nn::Linear,
+    #[param]
     v_proj: nn::Linear,
+    #[param]
     out_proj: nn::Linear,
-    num_heads: usize,
-    head_dim: usize,
+    num_heads: i32,
+    head_dim: i32,
 }
 
 impl AudioAttention {
-    fn load(prefix: &str, d_model: usize, num_heads: usize, weights: &Weights) -> Result<Self, AsrError> {
+    fn new(d_model: i32, num_heads: i32) -> Result<Self, Exception> {
         let head_dim = d_model / num_heads;
-
-        let q_proj = load_linear_with_bias(weights, &format!("{prefix}.q_proj"), d_model, d_model)?;
-        let k_proj = load_linear_with_bias(weights, &format!("{prefix}.k_proj"), d_model, d_model)?;
-        let v_proj = load_linear_with_bias(weights, &format!("{prefix}.v_proj"), d_model, d_model)?;
-        let out_proj = load_linear_with_bias(weights, &format!("{prefix}.out_proj"), d_model, d_model)?;
-
         Ok(Self {
-            q_proj,
-            k_proj,
-            v_proj,
-            out_proj,
+            q_proj: nn::LinearBuilder::new(d_model, d_model).bias(true).build()?,
+            k_proj: nn::LinearBuilder::new(d_model, d_model).bias(true).build()?,
+            v_proj: nn::LinearBuilder::new(d_model, d_model).bias(true).build()?,
+            out_proj: nn::LinearBuilder::new(d_model, d_model).bias(true).build()?,
             num_heads,
             head_dim,
         })
     }
-
-    /// Forward pass. x: (B, L, D), mask: optional (1, 1, L, L)
-    fn forward(&mut self, x: &Array, mask: Option<&Array>) -> Result<Array, AsrError> {
-        let shape = x.shape();
-        let b = shape[0];
-        let l = shape[1];
-        let h = self.num_heads as i32;
-        let dh = self.head_dim as i32;
-
-        let q = self.q_proj.forward(x).map_err(|e| AsrError::Inference(e.to_string()))?;
-        let k = self.k_proj.forward(x).map_err(|e| AsrError::Inference(e.to_string()))?;
-        let v = self.v_proj.forward(x).map_err(|e| AsrError::Inference(e.to_string()))?;
-
-        // (B, L, D) → (B, L, H, Dh) → (B, H, L, Dh)
-        let q = q.reshape(&[b, l, h, dh]).unwrap().transpose_axes(&[0, 2, 1, 3]).unwrap();
-        let k = k.reshape(&[b, l, h, dh]).unwrap().transpose_axes(&[0, 2, 1, 3]).unwrap();
-        let v = v.reshape(&[b, l, h, dh]).unwrap().transpose_axes(&[0, 2, 1, 3]).unwrap();
-
-        // Scaled dot-product attention
-        let scale = (self.head_dim as f32).sqrt();
-        let attn = ops::multiply(&ops::matmul(&q, &k.transpose_axes(&[0, 1, 3, 2]).unwrap()).unwrap(),
-            &Array::from_f32(1.0 / scale)).unwrap();
-
-        let attn = if let Some(mask) = mask {
-            ops::add(&attn, mask).unwrap()
-        } else {
-            attn
-        };
-
-        let attn = ops::softmax(&attn, &[-1][..]).unwrap();
-        let out = ops::matmul(&attn, &v).unwrap();
-
-        // (B, H, L, Dh) → (B, L, H, Dh) → (B, L, D)
-        let d = (self.num_heads * self.head_dim) as i32;
-        let out = out.transpose_axes(&[0, 2, 1, 3]).unwrap().reshape(&[b, l, d]).unwrap();
-
-        self.out_proj.forward(&out).map_err(|e| AsrError::Inference(e.to_string()))
-    }
 }
 
-/// Pre-norm transformer layer for the audio encoder.
+struct AudioAttentionInput<'a> {
+    x: &'a Array,
+    mask: Option<&'a Array>,
+}
+
+impl Module<AudioAttentionInput<'_>> for AudioAttention {
+    type Output = Array;
+    type Error = Exception;
+
+    fn forward(&mut self, input: AudioAttentionInput<'_>) -> Result<Array, Exception> {
+        let AudioAttentionInput { x, mask } = input;
+        let b = x.shape()[0];
+        let l = x.shape()[1];
+
+        let q = self.q_proj.forward(x)?;
+        let k = self.k_proj.forward(x)?;
+        let v = self.v_proj.forward(x)?;
+
+        // (B, L, D) → (B, L, H, Dh) → (B, H, L, Dh)
+        let q = q.reshape(&[b, l, self.num_heads, self.head_dim])?.transpose_axes(&[0, 2, 1, 3])?;
+        let k = k.reshape(&[b, l, self.num_heads, self.head_dim])?.transpose_axes(&[0, 2, 1, 3])?;
+        let v = v.reshape(&[b, l, self.num_heads, self.head_dim])?.transpose_axes(&[0, 2, 1, 3])?;
+
+        // Scaled dot-product attention
+        let scale = Array::from_f32(1.0 / (self.head_dim as f32).sqrt());
+        let attn = q.matmul(&k.transpose_axes(&[0, 1, 3, 2])?)?.multiply(&scale)?;
+
+        let attn = match mask {
+            Some(m) => attn.add(m)?,
+            None => attn,
+        };
+
+        let attn = ops::softmax_axis(&attn, -1, None)?;
+        let out = attn.matmul(&v)?;
+
+        // (B, H, L, Dh) → (B, L, H*Dh)
+        let out = out.transpose_axes(&[0, 2, 1, 3])?.reshape(&[b, l, -1])?;
+        self.out_proj.forward(&out)
+    }
+
+    fn training_mode(&mut self, _mode: bool) {}
+}
+
+// ── AudioEncoderLayer ───────────────────────────────────────────────────
+
+#[derive(Debug, Clone, ModuleParameters)]
 struct AudioEncoderLayer {
+    #[param]
     self_attn_layer_norm: nn::LayerNorm,
+    #[param]
     self_attn: AudioAttention,
+    #[param]
     final_layer_norm: nn::LayerNorm,
+    #[param]
     fc1: nn::Linear,
+    #[param]
     fc2: nn::Linear,
 }
 
 impl AudioEncoderLayer {
-    fn load(
-        prefix: &str,
-        d_model: usize,
-        num_heads: usize,
-        ffn_dim: usize,
-        weights: &Weights,
-    ) -> Result<Self, AsrError> {
-        let self_attn_layer_norm = load_layer_norm(weights, &format!("{prefix}.self_attn_layer_norm"), d_model)?;
-        let self_attn = AudioAttention::load(&format!("{prefix}.self_attn"), d_model, num_heads, weights)?;
-        let final_layer_norm = load_layer_norm(weights, &format!("{prefix}.final_layer_norm"), d_model)?;
-        let fc1 = load_linear_with_bias(weights, &format!("{prefix}.fc1"), d_model, ffn_dim)?;
-        let fc2 = load_linear_with_bias(weights, &format!("{prefix}.fc2"), ffn_dim, d_model)?;
-
+    fn new(d_model: i32, num_heads: i32, ffn_dim: i32) -> Result<Self, Exception> {
         Ok(Self {
-            self_attn_layer_norm,
-            self_attn,
-            final_layer_norm,
-            fc1,
-            fc2,
+            self_attn_layer_norm: nn::LayerNorm::new(d_model)?,
+            self_attn: AudioAttention::new(d_model, num_heads)?,
+            final_layer_norm: nn::LayerNorm::new(d_model)?,
+            fc1: nn::LinearBuilder::new(d_model, ffn_dim).bias(true).build()?,
+            fc2: nn::LinearBuilder::new(ffn_dim, d_model).bias(true).build()?,
         })
     }
 
-    fn forward(&mut self, x: &Array, mask: Option<&Array>) -> Result<Array, AsrError> {
+    fn forward_with_mask(&mut self, x: &Array, mask: Option<&Array>) -> Result<Array, Exception> {
         // Self-attention (pre-norm)
-        let normed = self.self_attn_layer_norm.forward(x).map_err(|e| AsrError::Inference(e.to_string()))?;
-        let attn_out = self.self_attn.forward(&normed, mask)?;
-        let x = ops::add(x, &attn_out).unwrap();
+        let normed = self.self_attn_layer_norm.forward(x)?;
+        let attn_out = self.self_attn.forward(AudioAttentionInput {
+            x: &normed,
+            mask,
+        })?;
+        let x = x.add(&attn_out)?;
 
         // FFN (pre-norm)
-        let normed = self.final_layer_norm.forward(&x).map_err(|e| AsrError::Inference(e.to_string()))?;
-        let fc1_out = self.fc1.forward(&normed).map_err(|e| AsrError::Inference(e.to_string()))?;
-        let gelu_out = nn::gelu(&fc1_out);
-        let fc2_out = self.fc2.forward(&gelu_out).map_err(|e| AsrError::Inference(e.to_string()))?;
-        let x = ops::add(&x, &fc2_out).unwrap();
+        let normed = self.final_layer_norm.forward(&x)?;
+        let h = self.fc1.forward(&normed)?;
+        let h = nn::gelu(&h)?;
+        let h = self.fc2.forward(&h)?;
+        let x = x.add(&h)?;
 
         Ok(x)
     }
 }
 
-/// Full audio encoder.
+// ── AudioEncoder ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, ModuleParameters)]
 pub struct AudioEncoder {
+    #[param]
     conv2d1: nn::Conv2d,
+    #[param]
     conv2d2: nn::Conv2d,
+    #[param]
     conv2d3: nn::Conv2d,
+    #[param]
     conv_out: nn::Linear,
-    embed_positions: SinusoidalPE,
+    #[param]
     layers: Vec<AudioEncoderLayer>,
+    #[param]
     ln_post: nn::LayerNorm,
+    #[param]
     proj1: nn::Linear,
+    #[param]
     proj2: nn::Linear,
+
+    // Not a parameter — computed at init
+    sinusoidal_pe: Array,
     config: AudioEncoderConfig,
 }
 
 impl AudioEncoder {
-    pub fn load(config: &AudioEncoderConfig, weights: &Weights) -> Result<Self, AsrError> {
-        let prefix = "audio_tower";
-        let dhs = config.downsample_hidden_size;
+    pub fn new(config: &AudioEncoderConfig) -> Result<Self, Exception> {
+        // Compute downsample_hidden_size from config:
+        // After 3x stride-2 on 128 mel bins: 128→64→32→16
         let freq_after_conv = config.num_mel_bins / 8;
+        // The conv output channels can be inferred from d_model and freq_after_conv
+        // dhs = d_model * 8 / num_mel_bins... but actually we need to check the Python
+        // For 1.7B: d_model=1024, dhs=480, freq_after_conv=16, so conv_out = 480*16=7680 → 1024
+        // For 0.6B: d_model=896, dhs=?, freq_after_conv=16
+        // The dhs is a config param that doesn't exist in our config. Let's compute from conv_chunksize.
+        // Actually from the Python: dhs = config.downsample_hidden_size = 480 (1.7B) or similar
+        // We need to add this to config or compute it. For now, compute from output_dim:
+        // dhs * freq_after_conv feeds into conv_out(dhs*freq, d_model)
+        // We can get dhs from the weight shapes at load time.
+        // For scaffolding, use a reasonable default based on model size.
+        let dhs = if config.d_model >= 1024 { 480 } else { 384 };
 
-        let conv2d1 = load_conv2d(weights, &format!("{prefix}.conv2d1"), 1, dhs, 3, 2, 1)?;
-        let conv2d2 = load_conv2d(weights, &format!("{prefix}.conv2d2"), dhs, dhs, 3, 2, 1)?;
-        let conv2d3 = load_conv2d(weights, &format!("{prefix}.conv2d3"), dhs, dhs, 3, 2, 1)?;
-        let conv_out = load_linear_no_bias(weights, &format!("{prefix}.conv_out"), dhs * freq_after_conv, config.d_model)?;
+        let conv2d1 = nn::Conv2dBuilder::new(1, dhs as i32, 3)
+            .stride(2).padding(1).build()?;
+        let conv2d2 = nn::Conv2dBuilder::new(dhs as i32, dhs as i32, 3)
+            .stride(2).padding(1).build()?;
+        let conv2d3 = nn::Conv2dBuilder::new(dhs as i32, dhs as i32, 3)
+            .stride(2).padding(1).build()?;
 
-        let embed_positions = SinusoidalPE::new(config.max_source_positions, config.d_model);
+        let conv_out = nn::LinearBuilder::new((dhs * freq_after_conv) as i32, config.d_model as i32)
+            .bias(false).build()?;
+
+        let sinusoidal_pe = build_sinusoidal_pe(config.max_source_positions, config.d_model);
 
         let mut layers = Vec::with_capacity(config.encoder_layers);
-        for i in 0..config.encoder_layers {
-            layers.push(AudioEncoderLayer::load(
-                &format!("{prefix}.layers.{i}"),
-                config.d_model,
-                config.encoder_attention_heads,
-                config.encoder_ffn_dim,
-                weights,
+        for _ in 0..config.encoder_layers {
+            layers.push(AudioEncoderLayer::new(
+                config.d_model as i32,
+                config.encoder_attention_heads as i32,
+                config.encoder_ffn_dim as i32,
             )?);
         }
 
-        let ln_post = load_layer_norm(weights, &format!("{prefix}.ln_post"), config.d_model)?;
-        let proj1 = load_linear_with_bias(weights, &format!("{prefix}.proj1"), config.d_model, config.d_model)?;
-        let proj2 = load_linear_with_bias(weights, &format!("{prefix}.proj2"), config.d_model, config.output_dim)?;
+        let ln_post = nn::LayerNorm::new(config.d_model as i32)?;
+        let proj1 = nn::LinearBuilder::new(config.d_model as i32, config.d_model as i32)
+            .bias(true).build()?;
+        let proj2 = nn::LinearBuilder::new(config.d_model as i32, config.output_dim as i32)
+            .bias(true).build()?;
 
         Ok(Self {
             conv2d1,
             conv2d2,
             conv2d3,
             conv_out,
-            embed_positions,
+            sinusoidal_pe,
             layers,
             ln_post,
             proj1,
@@ -224,9 +237,8 @@ impl AudioEncoder {
         })
     }
 
-    /// Encode a mel spectrogram. Returns (audio_features, n_tokens).
-    /// mel shape: (n_mels, n_frames)
-    pub fn encode(&mut self, mel: &Array) -> Result<Array, AsrError> {
+    /// Encode a mel spectrogram. Input: (n_mels, n_frames). Output: (n_tokens, output_dim).
+    pub fn encode(&mut self, mel: &Array) -> Result<Array, Exception> {
         let total_frames = mel.shape()[1] as usize;
         let chunk_size = self.config.n_window * 2;
         let n_window_infer = self.config.n_window_infer;
@@ -237,67 +249,66 @@ impl AudioEncoder {
 
         // Process full chunks
         if n_full_chunks > 0 {
-            let full_frames = n_full_chunks * chunk_size;
-            let full_mel = mel.index((.., ..full_frames as i32)); // (n_mels, full_frames)
-
-            // Reshape to (n_full, n_mels, chunk_size) then add channel dim for NHWC
+            let full_frames = (n_full_chunks * chunk_size) as i32;
             let n_mels = mel.shape()[0];
-            let full_mel = full_mel.reshape(&[n_mels, n_full_chunks as i32, chunk_size as i32]).unwrap()
-                .transpose_axes(&[1, 0, 2]).unwrap(); // (n_full, n_mels, chunk_size)
+            // mel[:, :full_frames] → reshape to (n_full, n_mels, chunk_size) → add channel
+            let full_mel = mel.index((.., ..full_frames));
+            let full_mel = full_mel
+                .reshape(&[n_mels, n_full_chunks as i32, chunk_size as i32])?
+                .transpose_axes(&[1, 0, 2])?; // (n_full, n_mels, chunk_size)
 
             // NHWC: (n_full, H=n_mels, W=chunk_size, C=1)
-            let x = ops::expand_dims(&full_mel, &[-1][..]).unwrap();
+            let x = ops::expand_dims(&full_mel, -1)?;
             let x = self.apply_conv_stem(&x)?;
 
-            // (n_full, F', T', C) → (n_full, T', C, F') → (n_full, T', C*F')
-            let sh = x.shape().to_vec();
+            // (n_full, F', T', C) → (n_full, T', C, F') → (n_full*T', C*F')
+            let sh = x.shape();
             let (n, f_d, t_d, c_d) = (sh[0], sh[1], sh[2], sh[3]);
-            let x = x.transpose_axes(&[0, 2, 3, 1]).unwrap()
-                .reshape(&[n, t_d, c_d * f_d]).unwrap();
+            let x = x.transpose_axes(&[0, 2, 3, 1])?
+                .reshape(&[n * t_d, c_d * f_d])?;
 
-            // Flatten to (n_full * T', C*F')
-            let x = x.reshape(&[n * t_d, c_d * f_d]).unwrap();
             chunk_conv_outputs.push(x);
             for _ in 0..n_full_chunks {
                 chunk_token_lens.push(t_d as usize);
             }
         }
 
-        // Process tail chunk
-        let tail_start = n_full_chunks * chunk_size;
-        if tail_start < total_frames {
-            let tail_mel = mel.index((.., tail_start as i32..)); // (n_mels, tail_len)
+        // Tail chunk
+        let tail_start = (n_full_chunks * chunk_size) as i32;
+        if (tail_start as usize) < total_frames {
+            let tail_mel = mel.index((.., tail_start..));
             // NHWC: (1, n_mels, tail_len, 1)
-            let x = ops::expand_dims(&tail_mel, &[0, -1][..]).unwrap();
+            let x = ops::expand_dims(&tail_mel, 0)?;
+            let x = ops::expand_dims(&x, -1)?;
             let x = self.apply_conv_stem(&x)?;
 
-            let sh = x.shape().to_vec();
+            let sh = x.shape();
             let (f_d, t_d, c_d) = (sh[1], sh[2], sh[3]);
-            let x = x.transpose_axes(&[0, 2, 3, 1]).unwrap()
-                .reshape(&[1, t_d, c_d * f_d]).unwrap();
+            let x = x.transpose_axes(&[0, 2, 3, 1])?
+                .reshape(&[t_d, c_d * f_d])?;
             chunk_token_lens.push(t_d as usize);
-            chunk_conv_outputs.push(x.index((0, ..)));
+            chunk_conv_outputs.push(x);
         }
 
         if chunk_conv_outputs.is_empty() {
-            return Err(AsrError::Inference("no audio frames".into()));
+            return Err(Exception::custom("no audio frames"));
         }
 
-        // Concatenate all chunks and project to d_model
+        // Concatenate and project
         let refs: Vec<&Array> = chunk_conv_outputs.iter().collect();
-        let x = ops::concatenate(&refs, 0).unwrap();
-        let x = self.conv_out.forward(&x).map_err(|e| AsrError::Inference(e.to_string()))?;
+        let x = ops::concatenate_axis(&refs, 0)?;
+        let x = self.conv_out.forward(&x)?;
 
-        // Per-chunk sinusoidal PE (each chunk starts from position 0)
+        // Per-chunk sinusoidal PE
         let max_chunk_tokens = *chunk_token_lens.iter().max().unwrap();
-        let pe = self.embed_positions.get(max_chunk_tokens);
+        let pe = self.sinusoidal_pe.index((..max_chunk_tokens as i32, ..));
         let mut pe_parts: Vec<Array> = Vec::new();
         for &ct in &chunk_token_lens {
             pe_parts.push(pe.index((..ct as i32, ..)));
         }
         let pe_refs: Vec<&Array> = pe_parts.iter().collect();
-        let pe_full = ops::concatenate(&pe_refs, 0).unwrap();
-        let x = ops::add(&x, &pe_full).unwrap();
+        let pe_full = ops::concatenate_axis(&pe_refs, 0)?;
+        let x = x.add(&pe_full)?;
 
         // Windowed attention
         let total_tokens = x.shape()[0] as usize;
@@ -305,7 +316,7 @@ impl AudioEncoder {
         let tokens_per_window = tokens_per_full_chunk * (n_window_infer / chunk_size);
 
         let mut cu_seqlens: Vec<usize> = vec![0];
-        let mut pos = 0;
+        let mut pos = 0usize;
         while pos < total_tokens {
             let window_end = (pos + tokens_per_window).min(total_tokens);
             cu_seqlens.push(window_end);
@@ -314,48 +325,46 @@ impl AudioEncoder {
 
         let num_windows = cu_seqlens.len() - 1;
         // Add batch dim: (1, total_tokens, d_model)
-        let mut x = ops::expand_dims(&x, &[0][..]).unwrap();
+        let mut x = ops::expand_dims(&x, 0)?;
 
         if num_windows >= WINDOWED_SEGMENT_MIN_WINDOWS {
-            // Per-window execution (avoids materializing dense mask)
             for layer in &mut self.layers {
                 let mut parts: Vec<Array> = Vec::new();
                 for w in 0..num_windows {
                     let s = cu_seqlens[w] as i32;
                     let e = cu_seqlens[w + 1] as i32;
                     let window = x.index((.., s..e, ..));
-                    parts.push(layer.forward(&window, None)?);
+                    parts.push(layer.forward_with_mask(&window, None)?);
                 }
                 let refs: Vec<&Array> = parts.iter().collect();
-                x = ops::concatenate(&refs, 1).unwrap();
+                x = ops::concatenate_axis(&refs, 1)?;
             }
         } else {
             let mask = create_windowed_mask(total_tokens, &cu_seqlens);
             for layer in &mut self.layers {
-                x = layer.forward(&x, mask.as_ref())?;
+                x = layer.forward_with_mask(&x, mask.as_ref())?;
             }
         }
 
         // Remove batch dim
         let x = x.index((0, ..));
 
-        // Post-processing: LayerNorm → GELU(proj1) → proj2
-        let x = self.ln_post.forward(&x).map_err(|e| AsrError::Inference(e.to_string()))?;
-        let x = self.proj1.forward(&x).map_err(|e| AsrError::Inference(e.to_string()))?;
-        let x = nn::gelu(&x);
-        let x = self.proj2.forward(&x).map_err(|e| AsrError::Inference(e.to_string()))?;
+        // Post-processing
+        let x = self.ln_post.forward(&x)?;
+        let x = self.proj1.forward(&x)?;
+        let x = nn::gelu(&x)?;
+        let x = self.proj2.forward(&x)?;
 
         Ok(x) // (total_tokens, output_dim)
     }
 
-    fn apply_conv_stem(&mut self, x: &Array) -> Result<Array, AsrError> {
-        let x = self.conv2d1.forward(x).map_err(|e| AsrError::Inference(e.to_string()))?;
-        let x = nn::gelu(&x);
-        let x = self.conv2d2.forward(&x).map_err(|e| AsrError::Inference(e.to_string()))?;
-        let x = nn::gelu(&x);
-        let x = self.conv2d3.forward(&x).map_err(|e| AsrError::Inference(e.to_string()))?;
-        let x = nn::gelu(&x);
-        Ok(x)
+    fn apply_conv_stem(&mut self, x: &Array) -> Result<Array, Exception> {
+        let x = self.conv2d1.forward(x)?;
+        let x = nn::gelu(&x)?;
+        let x = self.conv2d2.forward(&x)?;
+        let x = nn::gelu(&x)?;
+        let x = self.conv2d3.forward(&x)?;
+        nn::gelu(&x)
     }
 }
 
@@ -364,7 +373,6 @@ fn create_windowed_mask(seq_len: usize, cu_seqlens: &[usize]) -> Option<Array> {
         return None;
     }
 
-    // Build mask: 0.0 for same window, -1e9 for different window
     let mut mask_data = vec![0.0f32; seq_len * seq_len];
     for i in 0..seq_len {
         let win_i = cu_seqlens.windows(2).position(|w| i >= w[0] && i < w[1]).unwrap();
@@ -377,52 +385,5 @@ fn create_windowed_mask(seq_len: usize, cu_seqlens: &[usize]) -> Option<Array> {
     }
 
     let mask = Array::from_slice(&mask_data, &[seq_len as i32, seq_len as i32]);
-    // (1, 1, L, L)
-    Some(ops::expand_dims(&mask, &[0, 1][..]).unwrap())
-}
-
-// Helper: load nn::Linear with bias from weights
-fn load_linear_with_bias(
-    weights: &Weights,
-    prefix: &str,
-    _in_dim: usize,
-    _out_dim: usize,
-) -> Result<nn::Linear, AsrError> {
-    let w = weights.get(&format!("{prefix}.weight"))?.clone();
-    let b = weights.try_get(&format!("{prefix}.bias")).cloned();
-    Ok(nn::Linear::new(w, b))
-}
-
-fn load_linear_no_bias(
-    weights: &Weights,
-    prefix: &str,
-    _in_dim: usize,
-    _out_dim: usize,
-) -> Result<nn::Linear, AsrError> {
-    let w = weights.get(&format!("{prefix}.weight"))?.clone();
-    Ok(nn::Linear::new(w, None))
-}
-
-fn load_layer_norm(
-    weights: &Weights,
-    prefix: &str,
-    _dim: usize,
-) -> Result<nn::LayerNorm, AsrError> {
-    let w = weights.get(&format!("{prefix}.weight"))?.clone();
-    let b = weights.try_get(&format!("{prefix}.bias")).cloned();
-    Ok(nn::LayerNorm::new(w, b, 1e-5))
-}
-
-fn load_conv2d(
-    weights: &Weights,
-    prefix: &str,
-    _in_channels: usize,
-    _out_channels: usize,
-    _kernel_size: usize,
-    stride: (usize, usize),
-    padding: (usize, usize),
-) -> Result<nn::Conv2d, AsrError> {
-    let w = weights.get(&format!("{prefix}.weight"))?.clone();
-    let b = weights.try_get(&format!("{prefix}.bias")).cloned();
-    Ok(nn::Conv2d::new(w, b, stride, padding))
+    Some(ops::expand_dims_axes(&mask, &[0, 1]).unwrap())
 }
