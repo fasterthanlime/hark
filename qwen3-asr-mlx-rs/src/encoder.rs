@@ -380,6 +380,193 @@ impl AudioEncoder {
     }
 }
 
+// ── EncoderCache ────────────────────────────────────────────────────
+
+/// Cached encoder state for incremental (streaming) encoding.
+///
+/// Stores the post-projection output of fully-completed attention windows.
+/// Since windowed attention makes each window independent, completed windows
+/// never change and can be reused across streaming steps.
+pub struct EncoderCache {
+    /// Post-projection outputs for completed windows, each (window_tokens, output_dim).
+    pub completed_windows: Vec<Array>,
+    /// Number of full mel-frame chunks already committed to completed windows.
+    pub committed_chunks: usize,
+}
+
+impl EncoderCache {
+    pub fn new() -> Self {
+        Self {
+            completed_windows: Vec::new(),
+            committed_chunks: 0,
+        }
+    }
+
+    pub fn cached_tokens(&self) -> usize {
+        self.completed_windows.iter().map(|a| a.shape()[0] as usize).sum()
+    }
+}
+
+impl Default for EncoderCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AudioEncoder {
+    /// Incremental encoding for streaming: reuses cached completed windows,
+    /// only re-encodes the current (incomplete) window.
+    /// Returns (total_tokens, output_dim).
+    pub fn encode_incremental(
+        &mut self,
+        mel: &Array,
+        cache: &mut EncoderCache,
+    ) -> Result<Array, Exception> {
+        // For streaming incremental encoding, we use the same full encode() path
+        // but cache completed window outputs. Since windowed attention makes each
+        // window independent, we can skip re-encoding cached windows.
+        //
+        // Strategy: run the full encode pipeline but intercept at the window level.
+        // For simplicity and correctness, we reuse the existing encode() logic
+        // and just cache/reuse window-level outputs.
+
+        let num_frames = mel.shape()[1] as usize;
+        let chunk_size = self.config.n_window * 2;
+        let n_window_infer = self.config.n_window_infer;
+
+        let n_full_chunks = num_frames / chunk_size;
+        let chunks_per_window = n_window_infer / chunk_size;
+
+        // How many complete windows from full chunks?
+        let num_complete_windows = n_full_chunks / chunks_per_window;
+        let committed_windows = cache.completed_windows.len();
+
+        // Encode newly completed windows
+        for win_idx in committed_windows..num_complete_windows {
+            let window_output = self.encode_window(mel, chunk_size, win_idx, chunks_per_window)?;
+            cache.completed_windows.push(window_output);
+        }
+        cache.committed_chunks = num_complete_windows * chunks_per_window;
+
+        // Encode the partial (remaining) section — everything after complete windows
+        let partial_start_frame = num_complete_windows * chunks_per_window * chunk_size;
+        let remaining_frames = num_frames - partial_start_frame;
+
+        let partial_output = if remaining_frames > 0 {
+            let partial_mel = mel.index((.., partial_start_frame as i32..));
+            // Use the same encode() logic for the partial section
+            Some(self.encode_section(&partial_mel)?)
+        } else {
+            None
+        };
+
+        // Concatenate cached windows + partial
+        let mut all_parts: Vec<&Array> = cache.completed_windows.iter().collect();
+        if let Some(ref partial) = partial_output {
+            all_parts.push(partial);
+        }
+
+        if all_parts.is_empty() {
+            return Err(Exception::custom("no audio tokens produced"));
+        }
+
+        ops::concatenate_axis(&all_parts, 0).map_err(Into::into)
+    }
+
+    /// Encode a single complete attention window (chunks_per_window full chunks).
+    /// Returns (window_tokens, output_dim) with output projection applied.
+    fn encode_window(
+        &mut self,
+        mel: &Array,
+        chunk_size: usize,
+        win_idx: usize,
+        chunks_per_window: usize,
+    ) -> Result<Array, Exception> {
+        let start_frame = win_idx * chunks_per_window * chunk_size;
+        let end_frame = start_frame + chunks_per_window * chunk_size;
+        let window_mel = mel.index((.., start_frame as i32..end_frame as i32));
+        self.encode_section(&window_mel)
+    }
+
+    /// Encode a section of mel spectrogram through the full pipeline:
+    /// conv stem → conv_out → sinusoidal PE → transformer → output projection.
+    /// Input: (n_mels, n_frames). Output: (n_tokens, output_dim).
+    fn encode_section(&mut self, mel: &Array) -> Result<Array, Exception> {
+        let total_frames = mel.shape()[1] as usize;
+        let chunk_size = self.config.n_window * 2;
+
+        let n_full_chunks = total_frames / chunk_size;
+        let mut chunk_token_lens: Vec<usize> = Vec::new();
+        let mut chunk_conv_outputs: Vec<Array> = Vec::new();
+
+        let n_mels = mel.shape()[0];
+
+        // Full chunks
+        if n_full_chunks > 0 {
+            let full_frames = (n_full_chunks * chunk_size) as i32;
+            let full_mel = mel.index((.., ..full_frames));
+            let full_mel = full_mel
+                .reshape(&[n_mels, n_full_chunks as i32, chunk_size as i32])?
+                .transpose_axes(&[1, 0, 2])?;
+            let x = ops::expand_dims(&full_mel, -1)?;
+            let x = self.apply_conv_stem(&x)?;
+            let sh = x.shape();
+            let (n, _f_d, t_d, c_d) = (sh[0], sh[1], sh[2], sh[3]);
+            let x = x.transpose_axes(&[0, 2, 3, 1])?.reshape(&[n * t_d, c_d * _f_d])?;
+            chunk_conv_outputs.push(x);
+            for _ in 0..n_full_chunks {
+                chunk_token_lens.push(t_d as usize);
+            }
+        }
+
+        // Tail chunk
+        let tail_start = (n_full_chunks * chunk_size) as i32;
+        if (tail_start as usize) < total_frames {
+            let tail_mel = mel.index((.., tail_start..));
+            let x = ops::expand_dims(&tail_mel, 0)?;
+            let x = ops::expand_dims(&x, -1)?;
+            let x = self.apply_conv_stem(&x)?;
+            let sh = x.shape();
+            let (_f_d, t_d, c_d) = (sh[1], sh[2], sh[3]);
+            let x = x.transpose_axes(&[0, 2, 3, 1])?.reshape(&[t_d, c_d * _f_d])?;
+            chunk_token_lens.push(t_d as usize);
+            chunk_conv_outputs.push(x);
+        }
+
+        if chunk_conv_outputs.is_empty() {
+            return Err(Exception::custom("no audio in section"));
+        }
+
+        let refs: Vec<&Array> = chunk_conv_outputs.iter().collect();
+        let x = ops::concatenate_axis(&refs, 0)?;
+        let x = self.conv_out.forward(&x)?;
+
+        // Per-chunk sinusoidal PE
+        let max_chunk_tokens = *chunk_token_lens.iter().max().unwrap();
+        let pe = self.sinusoidal_pe.index((..max_chunk_tokens as i32, ..));
+        let mut pe_parts: Vec<Array> = Vec::new();
+        for &ct in &chunk_token_lens {
+            pe_parts.push(pe.index((..ct as i32, ..)));
+        }
+        let pe_refs: Vec<&Array> = pe_parts.iter().collect();
+        let pe_full = ops::concatenate_axis(&pe_refs, 0)?;
+        let x = x.add(&pe_full)?;
+
+        // Transformer (no windowed mask — this is a single section)
+        let mut x = ops::expand_dims(&x, 0)?;
+        for layer in &mut self.layers {
+            x = layer.forward_with_mask(&x, None)?;
+        }
+        let x = x.index((0, ..));
+
+        // Output projection
+        let x = self.ln_post.forward(&x)?;
+        let x = self.proj1.forward(&x)?;
+        let x = nn::gelu(&x)?;
+        self.proj2.forward(&x)
+    }
+}
+
 fn create_windowed_mask(seq_len: usize, cu_seqlens: &[usize]) -> Option<Array> {
     if cu_seqlens.len() <= 2 {
         return None;

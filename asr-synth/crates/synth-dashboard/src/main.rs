@@ -1293,21 +1293,10 @@ async fn api_asr_dual(
             .unwrap_or_default();
 
         let parakeet_error = parakeet_result.err().map(|e| e.to_string());
-        let correction_input = if !parakeet.trim().is_empty() {
-            "parakeet"
-        } else {
-            ""
-        };
-
         Ok(serde_json::json!({
-            "qwen": "",
             "parakeet": parakeet,
-            "cohere": "",
             "parakeet_alignment": parakeet_alignment,
-            "qwen_error": serde_json::Value::Null,
             "parakeet_error": parakeet_error,
-            "cohere_error": serde_json::Value::Null,
-            "correction_input": correction_input,
         }))
     })
     .await
@@ -1485,6 +1474,9 @@ async fn api_job_detail(
 
 #[derive(clap::Parser)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
 
@@ -1536,6 +1528,17 @@ struct Cli {
     lean_startup: bool,
 }
 
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Score two IPA strings with the current phonetic similarity metric.
+    PhoneticScore {
+        /// Observed IPA, usually from ZIPA / aligned acoustic phones.
+        observed: String,
+        /// Candidate/target IPA to compare against the observed phones.
+        candidate: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     use clap::Parser;
@@ -1548,6 +1551,12 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    if let Some(Command::PhoneticScore { observed, candidate }) = &cli.command {
+        let debug = prototype::debug_phonetic_similarity_from_text(observed, candidate);
+        println!("{}", serde_json::to_string_pretty(&debug)?);
+        return Ok(());
+    }
 
     let log_path = cli
         .log

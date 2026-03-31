@@ -163,7 +163,7 @@ export function EvalInspector({
       />
 
       {/* Scrollable detail area */}
-      <div style={{ flex: 1, overflow: "auto", padding: "1rem" }}>
+      <div style={{ flex: 1, overflow: "auto", padding: "1rem", minHeight: "12em" }}>
         {data.elapsedMs != null && (
           <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: "0.75rem" }}>
             {(data.elapsedMs / 1000).toFixed(2)}s total

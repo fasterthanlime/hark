@@ -33,3 +33,4 @@ pedantic = "warn"
 
 [patch.crates-io]
 parakeet-rs = { path = "vendor/parakeet-rs" }
+rspanphon = { path = "vendor/rspanphon" }

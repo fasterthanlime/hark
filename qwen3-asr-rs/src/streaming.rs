@@ -388,16 +388,28 @@ fn encode_audio_incremental(
     inner: &AsrInferenceInner,
     state: &mut StreamingState,
 ) -> Result<Tensor> {
+    use std::time::Instant;
+
+    let t0 = Instant::now();
     let (mel_data, n_mels, n_frames) = inner.mel_extractor.extract(&state.audio_accum)?;
-    debug!("Mel: {}×{} frames (incremental)", n_mels, n_frames);
+    let t_mel = t0.elapsed();
+
     let mel = Tensor::from_vec(mel_data, (n_mels, n_frames), &inner.device)?;
+
+    let t1 = Instant::now();
     let audio_embeds = inner
         .audio_encoder
         .forward_incremental(&mel, &mut state.encoder_cache)?;
+    let t_enc = t1.elapsed();
+
     info!(
-        "Audio tokens (incremental): {} (cached: {})",
+        "Encode: mel={:.1}ms ({}×{} frames, {:.1}s audio) encoder={:.1}ms | tokens={} cached={}",
+        t_mel.as_secs_f64() * 1000.0,
+        n_mels, n_frames,
+        state.audio_accum.len() as f64 / 16000.0,
+        t_enc.as_secs_f64() * 1000.0,
         audio_embeds.dims()[0],
-        state.encoder_cache.cached_tokens()
+        state.encoder_cache.cached_tokens(),
     );
     Ok(audio_embeds)
 }
@@ -407,17 +419,16 @@ fn run_streaming_step(
     inner: &AsrInferenceInner,
     state: &mut StreamingState,
 ) -> Result<TranscribeResult> {
+    use std::time::Instant;
+
+    let t_start = Instant::now();
+
     // Use incremental encoder to avoid re-encoding completed windows
     let audio_embeds = encode_audio_incremental(inner, state)?;
+    let t_encode = t_start.elapsed();
 
     let prefix = build_prefix(inner, state);
-
-    info!(
-        "Streaming step: chunk_id={}, accum_samples={}, prefix={:?}",
-        state.chunk_id,
-        state.audio_accum.len(),
-        prefix.as_deref().unwrap_or("(none)"),
-    );
+    let t_prefix = t_start.elapsed();
 
     let generated_ids = inner.generate(
         &audio_embeds,
@@ -425,10 +436,25 @@ fn run_streaming_step(
         prefix.as_deref(),
         state.options.max_new_tokens_streaming,
     )?;
+    let t_generate = t_start.elapsed();
 
     let full_ids = combine_prefix_and_generated(state, &prefix, &generated_ids);
 
     let result = inner.decode_result(&full_ids, state.options.language.as_deref())?;
+    let t_decode = t_start.elapsed();
+
+    info!(
+        "Step chunk_id={} accum={}s | encode={:.1}ms prefix={:.1}ms generate={:.1}ms decode={:.1}ms total={:.1}ms | tokens={} cached_windows={}",
+        state.chunk_id,
+        state.audio_accum.len() as f64 / 16000.0,
+        t_encode.as_secs_f64() * 1000.0,
+        (t_prefix - t_encode).as_secs_f64() * 1000.0,
+        (t_generate - t_prefix).as_secs_f64() * 1000.0,
+        (t_decode - t_generate).as_secs_f64() * 1000.0,
+        t_decode.as_secs_f64() * 1000.0,
+        audio_embeds.dims()[0],
+        state.encoder_cache.cached_tokens(),
+    );
 
     // Update state
     state.raw_token_ids = full_ids;

@@ -13,7 +13,6 @@ export type PrototypeAlignments = {
   transcript?: TimedToken[];
   expected?: TimedToken[];
   espeak?: TimedToken[];
-  current?: TimedToken[];
   prototype?: TimedToken[];
   zipa?: TimedToken[];
   zipaEspeak?: TimedToken[];
@@ -55,8 +54,6 @@ export type CandidateEdit = {
   via: string;
   score: number;
   phoneticScore?: number | null;
-  acousticScore?: number | null;
-  acousticDelta?: number | null;
 };
 
 export type SentenceCandidate = {
@@ -97,7 +94,6 @@ export type EvalInspectorData = {
   transcriptSource: EvalTranscriptSource;
   expected?: string;
   parakeetAlignment: TimedToken[];
-  correctionInput: string;
   elapsedMs?: number | null;
   alignments: PrototypeAlignments;
   zipaTrace?: unknown;

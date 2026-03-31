@@ -16,6 +16,7 @@ const POLL_INTERVAL = 2000;
 export function HumanEvalPanel() {
   const [trainId] = useState<number>(DEFAULT_TRAIN_ID);
   const [limit, setLimit] = useState(DEFAULT_LIMIT);
+  const [caseIdsInput, setCaseIdsInput] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BakeoffResult | null>(null);
@@ -62,7 +63,17 @@ export function HumanEvalPanel() {
       setInspectorData(null);
       setStatus("Starting bakeoff...");
 
-      const { jobId } = await startBakeoff({ limit, trainId });
+      const caseIds = caseIdsInput
+        .split(/[,\s]+/)
+        .map((value) => value.trim())
+        .filter(Boolean);
+
+      const { jobId } = await startBakeoff({
+        limit,
+        trainId,
+        caseIds: caseIds.length ? caseIds : undefined,
+        randomize: caseIds.length ? false : true,
+      });
       setStatus(`Job #${jobId} running...`);
 
       // Poll
@@ -94,7 +105,7 @@ export function HumanEvalPanel() {
       setError(e instanceof Error ? e.message : String(e));
       setStatus(null);
     }
-  }, [limit, trainId, handleSelectEntry]);
+  }, [caseIdsInput, limit, trainId, handleSelectEntry]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
@@ -123,6 +134,17 @@ export function HumanEvalPanel() {
             value={limit}
             onChange={(e) => setLimit(parseInt(e.target.value) || 5)}
             style={{ width: 60 }}
+          />
+        </label>
+
+        <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.85rem" }}>
+          Case IDs:
+          <input
+            type="text"
+            value={caseIdsInput}
+            onChange={(e) => setCaseIdsInput(e.target.value)}
+            placeholder="hum-183 or hum-183,hum-205"
+            style={{ width: 260 }}
           />
         </label>
 

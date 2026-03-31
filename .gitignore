@@ -45,3 +45,5 @@ asr-synth/training/adapters/
 asr-synth/scripts/__pycache__/
 build-release/
 build-bee-release/
+.venv/
+venv/

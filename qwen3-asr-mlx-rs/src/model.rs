@@ -109,6 +109,15 @@ impl Qwen3ASRModel {
     pub fn create_cache(&self) -> KVCache {
         KVCache::new(self.model.num_layers())
     }
+
+    /// Incremental audio encoding for streaming (uses encoder cache).
+    pub fn encode_incremental(
+        &mut self,
+        mel: &Array,
+        cache: &mut crate::encoder::EncoderCache,
+    ) -> Result<Array, Exception> {
+        self.audio_tower.encode_incremental(mel, cache)
+    }
 }
 
 /// Replace audio placeholder positions with encoded audio features.

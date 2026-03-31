@@ -7,6 +7,8 @@ rsync -avn --delete \
   --exclude target/ \
   --exclude build/ \
   --exclude build-bee-release/ \
+  --exclude .venv/ \
+  --exclude venv/ \
   --exclude .git/ \
   --exclude '*.xcodeproj/' \
   --exclude '*.profraw' \
@@ -28,6 +30,8 @@ rsync -av --delete \
   --exclude target/ \
   --exclude build/ \
   --exclude build-bee-release/ \
+  --exclude .venv/ \
+  --exclude venv/ \
   --exclude .git/ \
   --exclude '*.xcodeproj/' \
   --exclude '*.profraw' \

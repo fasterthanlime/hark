@@ -3,7 +3,21 @@
     "allow": [
       "Bash(xcodebuild:*)",
       "Bash(./install.sh 2>&1)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git rm:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(ls /Users/amos/bearcove/hark/vendor/mlx-qwen3-asr/*.py)",
+      "Bash(cargo build:*)",
+      "Bash(./target/release/examples/bench ~/Library/Caches/qwen3-asr/Alkd--qwen3-asr-gguf--qwen3_asr_1_7b_q8_0_gguf tests/fixtures/audio/sample1.wav)",
+      "Bash(./target/release/transcribe ~/Library/Caches/qwen3-asr/mlx-community--Qwen3-ASR-1.7B-4bit ../qwen3-asr-rs/tests/fixtures/audio/sample1.wav)",
+      "Bash(./target/release/transcribe ~/Library/Caches/qwen3-asr/mlx-community--Qwen3-ASR-1.7B-8bit ../qwen3-asr-rs/tests/fixtures/audio/sample1.wav)",
+      "Bash(./target/release/transcribe ~/Library/Caches/qwen3-asr/Qwen--Qwen3-ASR-1.7B ../qwen3-asr-rs/tests/fixtures/audio/sample1.wav)",
+      "Bash(.venv/bin/python scripts/benchmark_asr.py --model-path ~/Library/Caches/qwen3-asr/mlx-community--Qwen3-ASR-1.7B-4bit --audio ../../qwen3-asr-rs/tests/fixtures/audio/sample1.wav --runs 3)",
+      "Bash(.venv/bin/python scripts/benchmark_asr.py --model mlx-community/Qwen3-ASR-1.7B-4bit --runs 3 ../../qwen3-asr-rs/tests/fixtures/audio/sample1.wav)",
+      "Bash(.venv/bin/python scripts/benchmark_asr.py --model Qwen/Qwen3-ASR-1.7B --runs 3 ../../qwen3-asr-rs/tests/fixtures/audio/sample1.wav)",
+      "Bash(.venv/bin/python scripts/benchmark_asr.py --model mlx-community/Qwen3-ASR-1.7B-8bit --runs 3 ../../qwen3-asr-rs/tests/fixtures/audio/sample1.wav)",
+      "Bash(./target/release/examples/bench ~/Library/Caches/qwen3-asr/Alkd--qwen3-asr-gguf--qwen3_asr_1_7b_q4_k_gguf tests/fixtures/audio/sample1.wav)"
     ]
   }
 }

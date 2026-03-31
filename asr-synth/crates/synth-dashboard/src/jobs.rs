@@ -143,6 +143,7 @@ fn prototype_trace_excerpt(
                     "prefix_ratio": candidate.prefix_ratio,
                     "length_ratio": candidate.length_ratio,
                     "phonetic_score": candidate.phonetic_score,
+                    "phonetic_debug": candidate.phonetic_debug,
                     "observed_acoustic_score": candidate.observed_acoustic_score,
                     "acoustic_score": candidate.acoustic_score,
                     "acoustic_delta": candidate.acoustic_delta,
@@ -651,6 +652,7 @@ fn load_human_prototype_items(
     db: &crate::db::Db,
     alt_spellings: &HashMap<String, Vec<String>>,
     limit: usize,
+    requested_recording_ids: Option<&[i64]>,
     randomize: bool,
     sample_seed: u64,
 ) -> anyhow::Result<Vec<PrototypeBakeoffItem>> {
@@ -658,7 +660,18 @@ fn load_human_prototype_items(
     use rand::SeedableRng;
 
     let mut selected = Vec::new();
+    let requested_positions = requested_recording_ids.map(|ids| {
+        ids.iter()
+            .enumerate()
+            .map(|(idx, id)| (*id, idx))
+            .collect::<HashMap<_, _>>()
+    });
     for rec in db.authored_sentence_recordings_for_eval()? {
+        if let Some(requested_positions) = requested_positions.as_ref() {
+            if !requested_positions.contains_key(&rec.id) {
+                continue;
+            }
+        }
         let expected_fragment = rec
             .surface_form
             .as_deref()
@@ -675,7 +688,9 @@ fn load_human_prototype_items(
         }
         selected.push((rec, expected_fragment));
     }
-    if randomize {
+    if let Some(requested_positions) = requested_positions.as_ref() {
+        selected.sort_by_key(|(rec, _)| requested_positions.get(&rec.id).copied().unwrap_or(usize::MAX));
+    } else if randomize {
         let mut rng = rand::rngs::StdRng::seed_from_u64(sample_seed);
         selected.shuffle(&mut rng);
     }
@@ -733,6 +748,28 @@ fn prototype_bakeoff_case_id(
     qwen.hash(&mut hasher);
     expected.hash(&mut hasher);
     format!("{prefix}-{:016x}", hasher.finish())
+}
+
+fn parse_human_case_ids(case_ids: &[String]) -> anyhow::Result<Vec<i64>> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for raw in case_ids {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let id_text = trimmed
+            .strip_prefix("hum-")
+            .or_else(|| trimmed.strip_prefix("HUM-"))
+            .unwrap_or(trimmed);
+        let id = id_text
+            .parse::<i64>()
+            .map_err(|_| anyhow::anyhow!("invalid human case id: {trimmed}"))?;
+        if seen.insert(id) {
+            out.push(id);
+        }
+    }
+    Ok(out)
 }
 
 fn shuffle_human_bakeoff_items(items: &mut [PrototypeBakeoffItem], seed: u64) {
@@ -6842,7 +6879,6 @@ pub struct CorrectionBody {
 #[derive(Deserialize)]
 pub struct PrototypeCorrectionBody {
     pub transcript: Option<String>,
-    pub qwen: Option<String>,
     pub audio_wav_base64: Option<String>,
     pub max_span_tokens: Option<usize>,
     pub max_span_proposals: Option<usize>,
@@ -6858,6 +6894,7 @@ pub struct PrototypeCorrectionBody {
 pub struct PrototypeBakeoffBody {
     pub source: Option<String>,
     pub limit: Option<usize>,
+    pub case_ids: Option<Vec<String>>,
     pub randomize: Option<bool>,
     pub sample_seed: Option<u64>,
     pub use_model_reranker: Option<bool>,
@@ -6870,7 +6907,6 @@ pub struct PrototypeBakeoffBody {
 #[derive(Deserialize)]
 pub struct PrototypeAlignmentDebugBody {
     pub transcript: Option<String>,
-    pub qwen: Option<String>,
     pub recording_id: Option<i64>,
     pub audio_wav_base64: Option<String>,
 }
@@ -6894,9 +6930,7 @@ pub struct PrototypeBakeoffDetailBody {
     pub source: Option<String>,
     pub recording_id: Option<i64>,
     pub transcript: Option<String>,
-    pub qwen: Option<String>,
     pub expected: String,
-    pub current: String,
     pub prototype: String,
     pub use_model_reranker: Option<bool>,
     pub use_prototype_adapters: Option<bool>,
@@ -6947,6 +6981,69 @@ struct ZipaHostTiming {
     sidecar_start_ms: u64,
     sidecar_roundtrip_ms: u64,
     total_ms: u64,
+}
+
+#[derive(Clone, Default, Serialize)]
+struct BakeoffRowTiming {
+    audio_prepare_ms: u64,
+    prototype_ms: u64,
+    reranker_ms: u64,
+    total_ms: u64,
+    acoustic: Option<AcousticTiming>,
+    prototype: crate::prototype::PrototypeTiming,
+}
+
+#[derive(Clone, Default, Serialize)]
+struct BakeoffTimingSummary {
+    wall_ms: u64,
+    row_count: usize,
+    row_total_ms: u64,
+    row_avg_ms: u64,
+    row_max_ms: u64,
+    audio_prepare_total_ms: u64,
+    audio_prepare_avg_ms: u64,
+    prototype_total_ms: u64,
+    prototype_avg_ms: u64,
+    reranker_total_ms: u64,
+    reranker_avg_ms: u64,
+}
+
+#[derive(Clone, Default)]
+struct BakeoffTimingAccumulator {
+    row_total_ms: u64,
+    row_max_ms: u64,
+    audio_prepare_total_ms: u64,
+    prototype_total_ms: u64,
+    reranker_total_ms: u64,
+    rows: usize,
+}
+
+impl BakeoffTimingAccumulator {
+    fn record(&mut self, timing: &BakeoffRowTiming) {
+        self.rows += 1;
+        self.row_total_ms += timing.total_ms;
+        self.row_max_ms = self.row_max_ms.max(timing.total_ms);
+        self.audio_prepare_total_ms += timing.audio_prepare_ms;
+        self.prototype_total_ms += timing.prototype_ms;
+        self.reranker_total_ms += timing.reranker_ms;
+    }
+
+    fn snapshot(&self, wall_ms: u64) -> BakeoffTimingSummary {
+        let rows = self.rows.max(1) as u64;
+        BakeoffTimingSummary {
+            wall_ms,
+            row_count: self.rows,
+            row_total_ms: self.row_total_ms,
+            row_avg_ms: self.row_total_ms / rows,
+            row_max_ms: self.row_max_ms,
+            audio_prepare_total_ms: self.audio_prepare_total_ms,
+            audio_prepare_avg_ms: self.audio_prepare_total_ms / rows,
+            prototype_total_ms: self.prototype_total_ms,
+            prototype_avg_ms: self.prototype_total_ms / rows,
+            reranker_total_ms: self.reranker_total_ms,
+            reranker_avg_ms: self.reranker_total_ms / rows,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -7564,11 +7661,8 @@ fn acoustic_alignments_json(input: &AcousticInput) -> serde_json::Value {
         "timing_source": input.timing_source.clone(),
         "transcript": fmt_alignment_json(&input.transcript_alignment),
         "espeak": fmt_alignment_json(&input.transcript_alignment),
-        "qwen": fmt_alignment_json(&input.transcript_alignment),
         "zipa": phone_segments_to_alignment(&input.zipa_trace),
-        "zipa_transcript": crate::prototype::zipa_grouped_by_alignment_json(&input.transcript_alignment, &input.zipa_segments),
         "zipa_espeak": crate::prototype::zipa_grouped_by_alignment_json(&input.transcript_alignment, &input.zipa_segments),
-        "zipa_qwen": crate::prototype::zipa_grouped_by_alignment_json(&input.transcript_alignment, &input.zipa_segments),
     })
 }
 
@@ -7766,11 +7860,7 @@ pub async fn api_correct_prototype(
 ) -> Result<Response, AppError> {
     let total_started = std::time::Instant::now();
     let db_started = std::time::Instant::now();
-    let transcript = body
-        .transcript
-        .clone()
-        .or(body.qwen.clone())
-        .unwrap_or_default();
+    let transcript = body.transcript.clone().unwrap_or_default();
     let (vocab, alt_spellings, confusion_forms) = {
         let db = state.db.lock().unwrap();
         (
@@ -7831,46 +7921,38 @@ pub async fn api_correct_prototype(
     );
     let reranker_started = std::time::Instant::now();
     let reranker = if reranker_mode != PrototypeRerankerMode::Off
-        && should_run_prototype_reranker(&result.sentence_candidates)
+        && !result.edit_pool.is_empty()
     {
-        let candidates = result
-            .sentence_candidates
-            .iter()
-            .take(8)
-            .cloned()
-            .collect::<Vec<_>>();
-        let reranker_candidates = candidates.clone();
         let state2 = state.clone();
-        let rerank_value =
-            tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
-                match reranker_mode {
-                    PrototypeRerankerMode::Off => Ok(serde_json::json!(null)),
-                    PrototypeRerankerMode::Trained => run_prototype_reranker(
-                        state2.as_ref(),
-                        &transcript,
-                        &reranker_candidates,
-                        true,
-                        prototype_reranker_train_id,
-                    ),
-                    PrototypeRerankerMode::OfficialQwen3 => run_official_qwen3_reranker(
-                        state2.as_ref(),
-                        &transcript,
-                        &reranker_candidates,
-                    ),
-                }
-            })
-            .await
-            .map_err(err)?
-            .map_err(err)?;
-
-        let chosen_index = rerank_value.get("chosen_index").and_then(|v| v.as_u64()).map(|v| v as usize);
-        if let Some(idx) = chosen_index {
-            if let Some(candidate) = candidates.get(idx) {
-                result.corrected = candidate.text.clone();
-                result.accepted = candidate.edits.clone();
-            }
-        }
-        Some(rerank_value)
+        let transcript2 = transcript.clone();
+        let edit_pool = result.edit_pool.clone();
+        let rerank_value = tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
+            let (corrected, accepted, summary) = rerank_edit_regions(
+                state2.as_ref(),
+                reranker_mode,
+                &transcript2,
+                &edit_pool,
+                prototype_reranker_train_id,
+            )?;
+            Ok(serde_json::json!({
+                "corrected": corrected,
+                "accepted": accepted,
+                "summary": summary,
+            }))
+        })
+        .await
+        .map_err(err)?
+        .map_err(err)?;
+        result.corrected = rerank_value
+            .get("corrected")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&result.corrected)
+            .to_string();
+        result.accepted = rerank_value
+            .get("accepted")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_else(|| result.accepted.clone());
+        Some(rerank_value.get("summary").cloned().unwrap_or(serde_json::json!(null)))
     } else {
         None
     };
@@ -7908,7 +7990,7 @@ pub async fn api_correct_prototype_alignment_debug(
     let state2 = state.clone();
     let value = tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
         let total_started = std::time::Instant::now();
-        let mut transcript = body.transcript.or(body.qwen).unwrap_or_default();
+        let mut transcript = body.transcript.unwrap_or_default();
         let mut transcript_label = if transcript.trim().is_empty() {
             "Parakeet".to_string()
         } else {
@@ -8227,7 +8309,20 @@ pub async fn api_correct_prototype_bakeoff(
         .unwrap_or("human")
         .trim()
         .to_ascii_lowercase();
-    let randomize = body.randomize.unwrap_or(source == "human");
+    let requested_human_case_ids = if source == "human" {
+        body.case_ids
+            .as_ref()
+            .map(|case_ids| parse_human_case_ids(case_ids))
+            .transpose()
+            .map_err(err)?
+    } else {
+        None
+    };
+    let randomize = if requested_human_case_ids.is_some() {
+        false
+    } else {
+        body.randomize.unwrap_or(source == "human")
+    };
     let sample_seed = body.sample_seed.unwrap_or_else(rand::random::<u64>);
     let use_model_reranker = body.use_model_reranker.unwrap_or(true);
     let use_current_adapters = body.use_current_adapters.unwrap_or(true);
@@ -8249,6 +8344,7 @@ pub async fn api_correct_prototype_bakeoff(
                     &serde_json::json!({
                         "source": source,
                         "limit": limit,
+                        "case_ids": body.case_ids,
                         "randomize": randomize,
                         "sample_seed": sample_seed,
                         "reranker_mode": body.reranker_mode,
@@ -8301,6 +8397,7 @@ pub async fn api_correct_prototype_bakeoff(
                             &db,
                             &alt_spellings,
                             limit,
+                            requested_human_case_ids.as_deref(),
                             randomize,
                             sample_seed,
                         )?
@@ -8321,12 +8418,14 @@ pub async fn api_correct_prototype_bakeoff(
                 };
                 items.truncate(limit);
 
+                let batch_started = std::time::Instant::now();
                 let total = items.len();
                 let prototype_config = crate::prototype::PrototypeConfig::default();
                 let mut baseline_ok = 0usize;
                 let mut baseline_target_ok = 0usize;
                 let mut prototype_ok = 0usize;
                 let mut failure_buckets = PrototypeEvalFailureBuckets::default();
+                let mut timing_acc = BakeoffTimingAccumulator::default();
                 let mut entries = Vec::with_capacity(total);
 
                 for (idx, item) in items.iter().enumerate() {
@@ -8337,6 +8436,7 @@ pub async fn api_correct_prototype_bakeoff(
                         break;
                     }
 
+                    let audio_prepare_started = std::time::Instant::now();
                     let acoustic_input = if source == "human" {
                         item.wav_path.as_deref().and_then(|wav_path| {
                             let samples_16k = load_authored_recording_16k(wav_path).ok()?;
@@ -8350,13 +8450,15 @@ pub async fn api_correct_prototype_bakeoff(
                     } else {
                         None
                     };
+                    let audio_prepare_ms = audio_prepare_started.elapsed().as_millis() as u64;
                     let acoustic_context = acoustic_input.as_ref().map(|input| crate::prototype::AcousticContext {
                         transcript_alignment: &input.transcript_alignment,
                         transcript_word_confidence: &input.transcript_word_confidence,
                         zipa_segments: &input.zipa_segments,
                         zipa_by_transcript: &input.zipa_by_transcript,
                     });
-                    let mut result = crate::prototype::prototype_correct_with_acoustics(
+                    let prototype_started = std::time::Instant::now();
+                    let (mut result, prototype_timing) = crate::prototype::prototype_correct_with_acoustics_timed(
                         &item.qwen,
                         &vocab,
                         &alt_spellings,
@@ -8364,43 +8466,33 @@ pub async fn api_correct_prototype_bakeoff(
                         prototype_config,
                         acoustic_context.as_ref(),
                     );
+                    let prototype_ms = prototype_started.elapsed().as_millis() as u64;
+                    let reranker_started = std::time::Instant::now();
                     let mut reranker_summary = None;
                     if reranker_mode != PrototypeRerankerMode::Off
-                        && should_run_prototype_reranker(&result.sentence_candidates)
+                        && !result.edit_pool.is_empty()
                     {
-                        let candidates = result
-                            .sentence_candidates
-                            .iter()
-                            .take(8)
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        let reranker = match reranker_mode {
-                            PrototypeRerankerMode::Off => serde_json::json!(null),
-                            PrototypeRerankerMode::Trained => {
-                                run_prototype_reranker(
-                                    state3.as_ref(),
-                                    &item.qwen,
-                                    &candidates,
-                                    true,
-                                    prototype_reranker_train_id,
-                                )?
-                            }
-                            PrototypeRerankerMode::OfficialQwen3 => {
-                                run_official_qwen3_reranker(state3.as_ref(), &item.qwen, &candidates)?
-                            }
-                        };
-                        if let Some(chosen) = reranker
-                            .get("chosen_index")
-                            .and_then(|v| v.as_u64())
-                            .map(|v| v as usize)
-                        {
-                            if let Some(candidate) = candidates.get(chosen) {
-                                result.corrected = candidate.text.clone();
-                                result.accepted = candidate.edits.clone();
-                            }
-                        }
+                        let (corrected, accepted, reranker) = rerank_edit_regions(
+                            state3.as_ref(),
+                            reranker_mode,
+                            &item.qwen,
+                            &result.edit_pool,
+                            prototype_reranker_train_id,
+                        )?;
+                        result.corrected = corrected;
+                        result.accepted = accepted;
                         reranker_summary = Some(reranker);
                     }
+                    let reranker_ms = reranker_started.elapsed().as_millis() as u64;
+                    let row_timing = BakeoffRowTiming {
+                        audio_prepare_ms,
+                        prototype_ms,
+                        reranker_ms,
+                        total_ms: row_started.elapsed().as_millis() as u64,
+                        acoustic: acoustic_input.as_ref().map(|input| input.timing.clone()),
+                        prototype: prototype_timing,
+                    };
+                    timing_acc.record(&row_timing);
 
                     let prototype_text = result.corrected.clone();
                     let baseline_hit = normalized_compare_eq(&item.qwen, &item.expected);
@@ -8436,7 +8528,6 @@ pub async fn api_correct_prototype_bakeoff(
                         "transcript": item.qwen,
                         "transcript_error": serde_json::Value::Null,
                         "expected": item.expected,
-                        "qwen": item.qwen,
                         "recording_id": item.recording_id,
                         "template_sentence": item.template_sentence,
                         "expected_fragment": item.expected_fragment,
@@ -8447,24 +8538,11 @@ pub async fn api_correct_prototype_bakeoff(
                         "hit_count": item.hit_count,
                         "baseline_ok": baseline_hit,
                         "baseline_target_ok": baseline_target_hit,
-                        "current": item.qwen,
-                        "current_ok": baseline_hit,
-                        "current_target_ok": baseline_target_hit,
                         "prototype": prototype_text,
                         "prototype_ok": prototype_hit,
                         "prototype_target_ok": analysis.target_ok,
-                        "elapsed_ms": row_started.elapsed().as_millis() as u64,
-                        "prototype_accepted": result.accepted.iter().map(|edit| serde_json::json!({
-                            "from": edit.from,
-                            "to": edit.to,
-                            "score": edit.score,
-                            "phonetic_score": edit.phonetic_score,
-                            "via": edit.via,
-                            "acoustic_score": edit.acoustic_score,
-                            "acoustic_delta": edit.acoustic_delta,
-                            "from_phonemes": crate::prototype::phonetic_preview(&edit.from),
-                            "to_phonemes": vocab_preview(&vocab, &edit.to).1,
-                        })).collect::<Vec<_>>(),
+                        "elapsed_ms": row_timing.total_ms,
+                        "timing": serde_json::to_value(&row_timing).unwrap_or(serde_json::json!({})),
                         "analysis": {
                             "failure_reason": analysis.failure_reason,
                             "target_proposed": analysis.target_proposed,
@@ -8479,6 +8557,7 @@ pub async fn api_correct_prototype_bakeoff(
                     let snapshot = serde_json::json!({
                         "source": source,
                         "limit": limit,
+                        "case_ids": body.case_ids,
                         "randomize": source == "human" && randomize,
                         "sample_seed": sample_seed,
                         "prototype_only_eval": true,
@@ -8491,6 +8570,7 @@ pub async fn api_correct_prototype_bakeoff(
                             "prototype_wrong": (idx + 1).saturating_sub(prototype_ok),
                         },
                         "failure_buckets": failure_buckets.to_json(),
+                        "timing": serde_json::to_value(timing_acc.snapshot(batch_started.elapsed().as_millis() as u64)).unwrap_or(serde_json::json!({})),
                         "target_summary": {
                             "n": total,
                             "baseline": baseline_target_ok,
@@ -8529,6 +8609,7 @@ pub async fn api_correct_prototype_bakeoff(
                         "prototype_wrong": total.saturating_sub(prototype_ok),
                     },
                     "failure_buckets": failure_buckets.to_json(),
+                    "timing": serde_json::to_value(timing_acc.snapshot(batch_started.elapsed().as_millis() as u64)).unwrap_or(serde_json::json!({})),
                     "target_summary": {
                         "n": total,
                         "baseline": baseline_target_ok,
@@ -8561,6 +8642,7 @@ pub async fn api_correct_prototype_bakeoff(
     }
     let state2 = state.clone();
     let value = tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
+        let batch_started = std::time::Instant::now();
         let (mut items, vocab, alt_spellings, confusion_forms) = {
             let db = state2.db.lock().unwrap();
             let vocab = db.list_reviewed_vocab()?;
@@ -8630,6 +8712,7 @@ pub async fn api_correct_prototype_bakeoff(
                     &db,
                     &alt_spellings,
                     limit,
+                    requested_human_case_ids.as_deref(),
                     randomize,
                     sample_seed,
                 )?
@@ -8680,8 +8763,11 @@ pub async fn api_correct_prototype_bakeoff(
 
         let prototype_config = crate::prototype::PrototypeConfig::default();
         let mut prototype_results = Vec::with_capacity(items.len());
+        let mut row_timings = Vec::with_capacity(items.len());
         if reranker_mode != PrototypeRerankerMode::Off {
             for item in &items {
+                let row_started = std::time::Instant::now();
+                let audio_prepare_started = std::time::Instant::now();
                 let acoustic_input = if source == "human" {
                     item.wav_path.as_deref().and_then(|wav_path| {
                         let samples_16k = load_authored_recording_16k(wav_path).ok()?;
@@ -8695,13 +8781,15 @@ pub async fn api_correct_prototype_bakeoff(
                 } else {
                     None
                 };
+                let audio_prepare_ms = audio_prepare_started.elapsed().as_millis() as u64;
                 let acoustic_context = acoustic_input.as_ref().map(|input| crate::prototype::AcousticContext {
                     transcript_alignment: &input.transcript_alignment,
                     transcript_word_confidence: &input.transcript_word_confidence,
                     zipa_segments: &input.zipa_segments,
                     zipa_by_transcript: &input.zipa_by_transcript,
                 });
-                let mut result = crate::prototype::prototype_correct_with_acoustics(
+                let prototype_started = std::time::Instant::now();
+                let (mut result, prototype_timing) = crate::prototype::prototype_correct_with_acoustics_timed(
                     &item.qwen,
                     &vocab,
                     &alt_spellings,
@@ -8709,41 +8797,35 @@ pub async fn api_correct_prototype_bakeoff(
                     prototype_config,
                     acoustic_context.as_ref(),
                 );
+                let prototype_ms = prototype_started.elapsed().as_millis() as u64;
+                let reranker_started = std::time::Instant::now();
                 let mut reranker_summary = None;
-                if should_run_prototype_reranker(&result.sentence_candidates) {
-                    let candidates = result
-                        .sentence_candidates
-                        .iter()
-                        .take(8)
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    let reranker = match reranker_mode {
-                        PrototypeRerankerMode::Off => serde_json::json!(null),
-                        PrototypeRerankerMode::Trained => run_prototype_reranker(
-                            state2.as_ref(),
-                            &item.qwen,
-                            &candidates,
-                            true,
-                            prototype_reranker_train_id,
-                        )?,
-                        PrototypeRerankerMode::OfficialQwen3 => run_official_qwen3_reranker(
-                            state2.as_ref(),
-                            &item.qwen,
-                            &candidates,
-                        )?,
-                    };
-                    if let Some(idx) = reranker.get("chosen_index").and_then(|v| v.as_u64()).map(|v| v as usize) {
-                        if let Some(candidate) = candidates.get(idx) {
-                            result.corrected = candidate.text.clone();
-                            result.accepted = candidate.edits.clone();
-                        }
-                    }
+                if !result.edit_pool.is_empty() {
+                    let (corrected, accepted, reranker) = rerank_edit_regions(
+                        state2.as_ref(),
+                        reranker_mode,
+                        &item.qwen,
+                        &result.edit_pool,
+                        prototype_reranker_train_id,
+                    )?;
+                    result.corrected = corrected;
+                    result.accepted = accepted;
                     reranker_summary = Some(reranker);
                 }
                 prototype_results.push((result, reranker_summary));
+                row_timings.push(BakeoffRowTiming {
+                    audio_prepare_ms,
+                    prototype_ms,
+                    reranker_ms: reranker_started.elapsed().as_millis() as u64,
+                    total_ms: row_started.elapsed().as_millis() as u64,
+                    acoustic: acoustic_input.as_ref().map(|input| input.timing.clone()),
+                    prototype: prototype_timing,
+                });
             }
         } else {
             for item in &items {
+                let row_started = std::time::Instant::now();
+                let audio_prepare_started = std::time::Instant::now();
                 let acoustic_input = if source == "human" {
                     item.wav_path.as_deref().and_then(|wav_path| {
                         let samples_16k = load_authored_recording_16k(wav_path).ok()?;
@@ -8757,13 +8839,15 @@ pub async fn api_correct_prototype_bakeoff(
                 } else {
                     None
                 };
+                let audio_prepare_ms = audio_prepare_started.elapsed().as_millis() as u64;
                 let acoustic_context = acoustic_input.as_ref().map(|input| crate::prototype::AcousticContext {
                     transcript_alignment: &input.transcript_alignment,
                     transcript_word_confidence: &input.transcript_word_confidence,
                     zipa_segments: &input.zipa_segments,
                     zipa_by_transcript: &input.zipa_by_transcript,
                 });
-                let result = crate::prototype::prototype_correct_with_acoustics(
+                let prototype_started = std::time::Instant::now();
+                let (result, prototype_timing) = crate::prototype::prototype_correct_with_acoustics_timed(
                     &item.qwen,
                     &vocab,
                     &alt_spellings,
@@ -8772,6 +8856,14 @@ pub async fn api_correct_prototype_bakeoff(
                     acoustic_context.as_ref(),
                 );
                 prototype_results.push((result, None));
+                row_timings.push(BakeoffRowTiming {
+                    audio_prepare_ms,
+                    prototype_ms: prototype_started.elapsed().as_millis() as u64,
+                    reranker_ms: 0,
+                    total_ms: row_started.elapsed().as_millis() as u64,
+                    acoustic: acoustic_input.as_ref().map(|input| input.timing.clone()),
+                    prototype: prototype_timing,
+                });
             }
         }
 
@@ -8788,13 +8880,16 @@ pub async fn api_correct_prototype_bakeoff(
         let mut current_only_target = 0usize;
         let mut both_wrong_target = 0usize;
         let mut failure_buckets = PrototypeEvalFailureBuckets::default();
+        let mut timing_acc = BakeoffTimingAccumulator::default();
         let mut entries = Vec::with_capacity(items.len());
 
-        for ((item, current), (prototype, reranker_summary)) in items
+        for (((item, current), (prototype, reranker_summary)), row_timing) in items
             .into_iter()
             .zip(current_outputs.into_iter())
             .zip(prototype_results.into_iter())
+            .zip(row_timings.into_iter())
         {
+            timing_acc.record(&row_timing);
             let prototype_text = prototype.corrected.clone();
             let baseline_hit = normalized_compare_eq(&item.qwen, &item.expected);
             let current_hit = normalized_compare_eq(&current, &item.expected);
@@ -8845,8 +8940,10 @@ pub async fn api_correct_prototype_bakeoff(
                 "term": item.term,
                 "case_id": item.case_id,
                 "source": source,
+                "transcript_label": "Input",
+                "transcript_error": serde_json::Value::Null,
+                "transcript": item.qwen,
                 "expected": item.expected,
-                "qwen": item.qwen,
                 "recording_id": item.recording_id,
                 "template_sentence": item.template_sentence,
                 "expected_fragment": item.expected_fragment,
@@ -8857,12 +8954,11 @@ pub async fn api_correct_prototype_bakeoff(
                 "hit_count": item.hit_count,
                 "baseline_ok": baseline_hit,
                 "baseline_target_ok": baseline_target_hit,
-                "current": current,
-                "current_ok": current_hit,
-                "current_target_ok": current_target_hit,
                 "prototype": prototype_text,
                 "prototype_ok": prototype_hit,
                 "prototype_target_ok": prototype_target_hit,
+                "elapsed_ms": row_timing.total_ms,
+                "timing": serde_json::to_value(&row_timing).unwrap_or(serde_json::json!({})),
                 "analysis": {
                     "failure_reason": analysis.failure_reason,
                     "target_proposed": analysis.target_proposed,
@@ -8871,17 +8967,6 @@ pub async fn api_correct_prototype_bakeoff(
                     "exact_ok": analysis.exact_ok,
                     "target_ok": analysis.target_ok,
                 },
-                "prototype_accepted": prototype.accepted.iter().map(|edit| serde_json::json!({
-                    "from": edit.from,
-                    "to": edit.to,
-                    "score": edit.score,
-                    "phonetic_score": edit.phonetic_score,
-                    "via": edit.via,
-                    "acoustic_score": edit.acoustic_score,
-                    "acoustic_delta": edit.acoustic_delta,
-                    "from_phonemes": crate::prototype::phonetic_preview(&edit.from),
-                    "to_phonemes": vocab_preview(&vocab, &edit.to).1,
-                })).collect::<Vec<_>>(),
                 "prototype_trace_excerpt": prototype_trace_excerpt(&vocab, &prototype, reranker_summary.as_ref()),
             }));
         }
@@ -8889,6 +8974,7 @@ pub async fn api_correct_prototype_bakeoff(
         Ok(serde_json::json!({
             "source": source,
             "limit": limit,
+            "case_ids": body.case_ids,
             "randomize": source == "human" && randomize,
             "sample_seed": sample_seed,
             "prototype_only_eval": prototype_only_eval,
@@ -8903,6 +8989,7 @@ pub async fn api_correct_prototype_bakeoff(
                 "prototype_wrong": entries.len().saturating_sub(prototype_ok),
             },
             "failure_buckets": failure_buckets.to_json(),
+            "timing": serde_json::to_value(timing_acc.snapshot(batch_started.elapsed().as_millis() as u64)).unwrap_or(serde_json::json!({})),
             "target_summary": {
                 "n": entries.len(),
                 "baseline": baseline_target_ok,
@@ -8935,8 +9022,7 @@ pub async fn api_correct_prototype_bakeoff_detail(
         .to_ascii_lowercase();
     let state2 = state.clone();
     let expected = body.expected;
-    let transcript = body.transcript.or(body.qwen).unwrap_or_default();
-    let current = body.current;
+    let transcript = body.transcript.unwrap_or_default();
     let prototype = body.prototype;
     let use_model_reranker = body.use_model_reranker.unwrap_or(true);
     let use_prototype_adapters = body.use_prototype_adapters.unwrap_or(false);
@@ -8965,39 +9051,17 @@ pub async fn api_correct_prototype_bakeoff_detail(
                 None,
             );
             let reranker = if reranker_mode != PrototypeRerankerMode::Off
-                && should_run_prototype_reranker(&prototype_result.sentence_candidates)
+                && !prototype_result.edit_pool.is_empty()
             {
-                let candidates = prototype_result
-                    .sentence_candidates
-                    .iter()
-                    .take(8)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let rerank_value = match reranker_mode {
-                    PrototypeRerankerMode::Off => serde_json::json!(null),
-                    PrototypeRerankerMode::Trained => {
-                        run_prototype_reranker(
-                            state.as_ref(),
-                            &transcript,
-                            &candidates,
-                            true,
-                            prototype_reranker_train_id,
-                        )?
-                    }
-                    PrototypeRerankerMode::OfficialQwen3 => {
-                        run_official_qwen3_reranker(state.as_ref(), &transcript, &candidates)?
-                    }
-                };
-                if let Some(idx) = rerank_value
-                    .get("chosen_index")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v as usize)
-                {
-                    if let Some(candidate) = candidates.get(idx) {
-                        prototype_result.corrected = candidate.text.clone();
-                        prototype_result.accepted = candidate.edits.clone();
-                    }
-                }
+                let (corrected, accepted, rerank_value) = rerank_edit_regions(
+                    state.as_ref(),
+                    reranker_mode,
+                    &transcript,
+                    &prototype_result.edit_pool,
+                    prototype_reranker_train_id,
+                )?;
+                prototype_result.corrected = corrected;
+                prototype_result.accepted = accepted;
                 Some(rerank_value)
             } else {
                 None
@@ -9008,13 +9072,9 @@ pub async fn api_correct_prototype_bakeoff_detail(
                     "expected": [],
                     "transcript": [],
                     "espeak": [],
-                    "qwen": [],
-                    "current": [],
                     "prototype": [],
                     "zipa": [],
-                    "zipa_transcript": [],
                     "zipa_espeak": [],
-                    "zipa_qwen": [],
                 },
                 "prototype_trace": {
                     "corrected": prototype_result.corrected,
@@ -9092,7 +9152,6 @@ pub async fn api_correct_prototype_bakeoff_detail(
             .as_ref()
             .map(|input| input.transcript_alignment.clone())
             .unwrap_or_else(|| state2.aligner.align(&samples_16k, &parakeet).unwrap_or_default());
-        let current_alignment = state2.aligner.align(&samples_16k, &current)?;
         let prototype_alignment = state2.aligner.align(&samples_16k, &prototype)?;
         let zipa_trace = acoustic_input.as_ref().map(|input| input.zipa_trace.clone());
         let zipa_segments = acoustic_input
@@ -9127,36 +9186,17 @@ pub async fn api_correct_prototype_bakeoff_detail(
         let prototype_ms = prototype_started.elapsed().as_millis() as u64;
         let reranker_started = std::time::Instant::now();
         let reranker = if reranker_mode != PrototypeRerankerMode::Off
-            && should_run_prototype_reranker(&prototype_result.sentence_candidates)
+            && !prototype_result.edit_pool.is_empty()
         {
-            let candidates = prototype_result
-                .sentence_candidates
-                .iter()
-                .take(8)
-                .cloned()
-                .collect::<Vec<_>>();
-            let rerank_value = match reranker_mode {
-                PrototypeRerankerMode::Off => serde_json::json!(null),
-                PrototypeRerankerMode::Trained => {
-                    run_prototype_reranker(
-                        state.as_ref(),
-                        &parakeet,
-                        &candidates,
-                        true,
-                        prototype_reranker_train_id,
-                    )?
-                }
-                PrototypeRerankerMode::OfficialQwen3 => {
-                    run_official_qwen3_reranker(state.as_ref(), &parakeet, &candidates)?
-                }
-            };
-            let chosen_index = rerank_value.get("chosen_index").and_then(|v| v.as_u64()).map(|v| v as usize);
-            if let Some(idx) = chosen_index {
-                if let Some(candidate) = candidates.get(idx) {
-                    prototype_result.corrected = candidate.text.clone();
-                    prototype_result.accepted = candidate.edits.clone();
-                }
-            }
+            let (corrected, accepted, rerank_value) = rerank_edit_regions(
+                state.as_ref(),
+                reranker_mode,
+                &parakeet,
+                &prototype_result.edit_pool,
+                prototype_reranker_train_id,
+            )?;
+            prototype_result.corrected = corrected;
+            prototype_result.accepted = accepted;
             Some(rerank_value)
         } else {
             None
@@ -9173,15 +9213,7 @@ pub async fn api_correct_prototype_bakeoff_detail(
             "transcript_label": "Parakeet",
             "transcript": parakeet,
             "transcript_error": parakeet_error,
-            "current": parakeet,
-            "qwen": parakeet,
-            "parakeet": parakeet,
-            "cohere": "",
             "parakeet_alignment": parakeet_alignment_words,
-            "qwen_error": serde_json::Value::Null,
-            "parakeet_error": parakeet_error,
-            "cohere_error": serde_json::Value::Null,
-            "correction_input": "parakeet",
             "elapsed_ms": detail_started.elapsed().as_millis() as u64,
             "timing": {
                 "db_ms": db_ms,
@@ -9209,13 +9241,9 @@ pub async fn api_correct_prototype_bakeoff_detail(
                 "expected": fmt_alignment_json(&expected_alignment),
                 "transcript": fmt_alignment_json(&transcript_alignment),
                 "espeak": fmt_alignment_json(&transcript_alignment),
-                "qwen": fmt_alignment_json(&transcript_alignment),
-                "current": fmt_alignment_json(&current_alignment),
                 "prototype": fmt_alignment_json(&prototype_alignment),
                 "zipa": zipa_alignment,
-                "zipa_transcript": crate::prototype::zipa_grouped_by_alignment_json(&transcript_alignment, &zipa_segments),
                 "zipa_espeak": crate::prototype::zipa_grouped_by_alignment_json(&transcript_alignment, &zipa_segments),
-                "zipa_qwen": crate::prototype::zipa_grouped_by_alignment_json(&transcript_alignment, &zipa_segments),
             },
             "zipa_trace": zipa_trace,
             "prototype_trace": {
@@ -9531,6 +9559,124 @@ fn should_run_prototype_reranker(
     candidates: &[crate::prototype::SentenceCandidate],
 ) -> bool {
     candidates.len() > 1
+}
+
+fn run_selected_prototype_reranker(
+    state: &AppState,
+    reranker_mode: PrototypeRerankerMode,
+    asr_text: &str,
+    candidates: &[crate::prototype::SentenceCandidate],
+    prototype_reranker_train_id: Option<i64>,
+) -> anyhow::Result<serde_json::Value> {
+    match reranker_mode {
+        PrototypeRerankerMode::Off => Ok(serde_json::json!(null)),
+        PrototypeRerankerMode::Trained => run_prototype_reranker(
+            state,
+            asr_text,
+            candidates,
+            true,
+            prototype_reranker_train_id,
+        ),
+        PrototypeRerankerMode::OfficialQwen3 => {
+            run_official_qwen3_reranker(state, asr_text, candidates)
+        }
+    }
+}
+
+fn rerank_edit_regions(
+    state: &AppState,
+    reranker_mode: PrototypeRerankerMode,
+    transcript: &str,
+    edit_pool: &[crate::prototype::AcceptedProposal],
+    prototype_reranker_train_id: Option<i64>,
+) -> anyhow::Result<(String, Vec<crate::prototype::AcceptedProposal>, serde_json::Value)> {
+    let regions = crate::prototype::cluster_edit_regions(edit_pool);
+    let mut chosen_edits = Vec::<crate::prototype::AcceptedProposal>::new();
+    let mut region_summaries = Vec::<serde_json::Value>::new();
+    let mut total_candidates = 0usize;
+
+    for region in &regions {
+        let candidates = crate::prototype::build_region_sentence_candidates(transcript, region);
+        total_candidates += candidates.len();
+
+        let (chosen_index, rerank_value) = if reranker_mode != PrototypeRerankerMode::Off
+            && should_run_prototype_reranker(&candidates)
+        {
+            let rerank_value = run_selected_prototype_reranker(
+                state,
+                reranker_mode,
+                transcript,
+                &candidates,
+                prototype_reranker_train_id,
+            )?;
+            let chosen_index = rerank_value
+                .get("chosen_index")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .or_else(|| {
+                    candidates
+                        .iter()
+                        .enumerate()
+                        .max_by(|a, b| a.1.score.total_cmp(&b.1.score))
+                        .map(|(idx, _)| idx)
+                })
+                .unwrap_or(0);
+            (chosen_index, Some(rerank_value))
+        } else {
+            let chosen_index = candidates
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.score.total_cmp(&b.1.score))
+                .map(|(idx, _)| idx)
+                .unwrap_or(0);
+            (chosen_index, None)
+        };
+
+        if let Some(candidate) = candidates.get(chosen_index) {
+            chosen_edits.extend(candidate.edits.clone());
+        }
+
+        let chosen_text = candidates
+            .get(chosen_index)
+            .map(|candidate| candidate.text.clone())
+            .unwrap_or_else(|| transcript.to_string());
+        region_summaries.push(serde_json::json!({
+            "index": region.index,
+            "token_start": region.token_start,
+            "token_end": region.token_end,
+            "char_start": region.char_start,
+            "char_end": region.char_end,
+            "candidate_count": candidates.len(),
+            "chosen_index": chosen_index,
+            "chosen_label": candidates.get(chosen_index).map(|candidate| candidate.label.clone()),
+            "chosen_text": chosen_text,
+            "candidates": candidates.iter().enumerate().map(|(idx, candidate)| serde_json::json!({
+                "index": idx,
+                "label": candidate.label,
+                "text": candidate.text,
+                "heuristic_score": candidate.score,
+                "edits": candidate.edits,
+            })).collect::<Vec<_>>(),
+            "reranker": rerank_value,
+        }));
+    }
+
+    chosen_edits.sort_by_key(|edit| (edit.char_start, edit.char_end));
+    let corrected = crate::prototype::apply_accepted_edits(transcript, &chosen_edits);
+    let summary = serde_json::json!({
+        "mode": match reranker_mode {
+            PrototypeRerankerMode::Trained => "trained-prototype-reranker-mlx",
+            PrototypeRerankerMode::OfficialQwen3 => "official-qwen3-reranker",
+            PrototypeRerankerMode::Off => "off",
+        },
+        "strategy": "per-region",
+        "region_count": regions.len(),
+        "candidate_count": total_candidates,
+        "chosen_text": corrected,
+        "chosen_edit_count": chosen_edits.len(),
+        "regions": region_summaries,
+    });
+    Ok((corrected, chosen_edits, summary))
 }
 
 fn build_official_qwen3_reranker_instruction() -> &'static str {
@@ -10848,6 +10994,7 @@ mod tests {
             original: String::new(),
             corrected: String::new(),
             accepted: Vec::new(),
+            edit_pool: Vec::new(),
             proposals: Vec::new(),
             sentence_candidates: Vec::new(),
         }
@@ -10867,6 +11014,7 @@ mod tests {
             prefix_ratio: None,
             length_ratio: None,
             phonetic_score: Some(0.9),
+            phonetic_debug: None,
             observed_acoustic_score: None,
             acoustic_score: None,
             acoustic_delta: None,
@@ -11286,6 +11434,24 @@ mod tests {
         let right = prototype_bakeoff_case_id("applied", None, "ripgrep", "rip grip", "ripgrep");
         assert_eq!(left, right);
         assert!(left.starts_with("app-"));
+    }
+
+    #[test]
+    fn parse_human_case_ids_accepts_prefixed_and_plain_ids() {
+        let ids = parse_human_case_ids(&[
+            "hum-183".to_string(),
+            "184".to_string(),
+            "HUM-185".to_string(),
+            "hum-183".to_string(),
+        ])
+        .expect("parse ids");
+        assert_eq!(ids, vec![183, 184, 185]);
+    }
+
+    #[test]
+    fn parse_human_case_ids_rejects_invalid_input() {
+        let err = parse_human_case_ids(&["hum-nope".to_string()]).expect_err("should fail");
+        assert!(err.to_string().contains("invalid human case id"));
     }
 
     #[test]

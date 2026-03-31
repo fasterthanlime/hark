@@ -3,7 +3,6 @@ use std::time::Instant;
 
 use mlx_rs::module::ModuleParametersExt;
 use mlx_rs::ops;
-use mlx_rs::ops::indexing::IndexOp;
 use mlx_rs::Array;
 
 use qwen3_asr_mlx::config::AsrConfig;
@@ -13,6 +12,7 @@ use qwen3_asr_mlx::mel::{load_audio_wav, MelExtractor};
 use qwen3_asr_mlx::model::{
     Qwen3ASRModel, AUDIO_END_TOKEN_ID, AUDIO_PAD_TOKEN_ID, AUDIO_START_TOKEN_ID,
 };
+use qwen3_asr_mlx::streaming::{self, StreamingOptions, StreamingState};
 
 // Chat template token IDs
 const TOK_IM_START: i32 = 151644;
@@ -22,17 +22,36 @@ const TOK_USER: i32 = 872;
 const TOK_ASSISTANT: i32 = 77091;
 const TOK_NEWLINE: i32 = 198;
 
+fn find_tokenizer(model_dir: &Path) -> Option<tokenizers::Tokenizer> {
+    let paths = [
+        model_dir.join("tokenizer.json"),
+        dirs::home_dir()?.join("Library/Caches/qwen3-asr/Qwen--Qwen3-ASR-1.7B/tokenizer.json"),
+        dirs::home_dir()?.join("Library/Caches/qwen3-asr/Qwen--Qwen3-ASR-0.6B/tokenizer.json"),
+    ];
+    for p in &paths {
+        if p.exists() {
+            if let Ok(t) = tokenizers::Tokenizer::from_file(p) {
+                return Some(t);
+            }
+        }
+    }
+    None
+}
+
 fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 3 {
-        eprintln!("Usage: transcribe <model_dir> <audio.wav>");
+    let streaming_mode = args.iter().any(|a| a == "--streaming");
+    let non_flag_args: Vec<&String> = args[1..].iter().filter(|a| !a.starts_with("--")).collect();
+
+    if non_flag_args.len() < 2 {
+        eprintln!("Usage: transcribe [--streaming] <model_dir> <audio.wav>");
         std::process::exit(1);
     }
 
-    let model_dir = Path::new(&args[1]);
-    let audio_path = &args[2];
+    let model_dir = Path::new(non_flag_args[0]);
+    let audio_path = non_flag_args[1];
 
     // 1. Load config
     let t0 = Instant::now();
@@ -41,164 +60,145 @@ fn main() -> anyhow::Result<()> {
     let config: AsrConfig = serde_json::from_str(&config_str)?;
     let thinker = &config.thinker_config;
     println!("Config loaded in {:.0}ms", t0.elapsed().as_millis());
-    println!(
-        "  encoder: {} layers, d_model={}",
-        thinker.audio_config.encoder_layers, thinker.audio_config.d_model
-    );
-    println!(
-        "  decoder: {} layers, hidden_size={}",
-        thinker.text_config.num_hidden_layers, thinker.text_config.hidden_size
-    );
 
-    // 2. Create model (random weights)
+    // 2. Create model
     let t0 = Instant::now();
     let mut model = Qwen3ASRModel::new(thinker)?;
     println!("Model created in {:.0}ms", t0.elapsed().as_millis());
 
-    // 3. Load weights from safetensors (handles both dense and quantized)
+    // 3. Load weights
     let t0 = Instant::now();
     let stats = load::load_weights(&mut model, model_dir)?;
     model.eval()?;
     println!(
-        "Weights loaded in {:.0}ms: {}/{} keys loaded, {} skipped, {} quantized layers ({}bit, gs={})",
+        "Weights loaded in {:.0}ms: {}/{} keys, {} quantized layers ({}bit)",
         t0.elapsed().as_millis(),
-        stats.loaded,
-        stats.total_keys,
-        stats.skipped,
-        stats.quantized_layers,
-        stats.bits,
-        stats.group_size,
+        stats.loaded, stats.total_keys, stats.quantized_layers, stats.bits,
     );
 
     // 4. Load audio
     let t0 = Instant::now();
     let samples = load_audio_wav(audio_path, 16000)?;
     println!(
-        "Audio loaded: {} samples ({:.1}s) in {:.0}ms",
-        samples.len(),
-        samples.len() as f64 / 16000.0,
-        t0.elapsed().as_millis()
+        "Audio: {} samples ({:.1}s) in {:.0}ms",
+        samples.len(), samples.len() as f64 / 16000.0, t0.elapsed().as_millis()
     );
 
-    // 5. Compute mel spectrogram
+    let tokenizer = find_tokenizer(model_dir)
+        .ok_or_else(|| anyhow::anyhow!("no tokenizer.json found"))?;
+
+    if streaming_mode {
+        run_streaming(&mut model, &samples, tokenizer)?;
+    } else {
+        run_batch(&mut model, &samples, &tokenizer)?;
+    }
+
+    Ok(())
+}
+
+fn run_streaming(
+    model: &mut Qwen3ASRModel,
+    samples: &[f32],
+    tokenizer: tokenizers::Tokenizer,
+) -> anyhow::Result<()> {
+    let opts = StreamingOptions::default();
+    let chunk_samples = (opts.chunk_size_sec * 16000.0) as usize;
+    let mut state = StreamingState::new(opts, tokenizer);
+
+    println!("\n--- Streaming mode (chunk={}s) ---", state.options.chunk_size_sec);
+
+    let t_total = Instant::now();
+    let mut chunk_idx = 0;
+
+    // Feed audio in chunk-sized pieces
+    let mut offset = 0;
+    while offset < samples.len() {
+        let end = (offset + chunk_samples).min(samples.len());
+        let chunk = &samples[offset..end];
+        offset = end;
+
+        let t0 = Instant::now();
+        let result = streaming::feed_audio(model, &mut state, chunk)?;
+        let ms = t0.elapsed().as_millis();
+
+        chunk_idx += 1;
+        if let Some(text) = result {
+            println!("  chunk {}: {:.0}ms — {}", chunk_idx, ms, text);
+        } else {
+            println!("  chunk {}: {:.0}ms — (buffering)", chunk_idx, ms);
+        }
+    }
+
+    // Finish
     let t0 = Instant::now();
-    let mel_extractor = MelExtractor::new(400, 160, 128, 16000);
-    let (mel_data, n_mels, n_frames) = mel_extractor.extract(&samples)?;
-    println!(
-        "Mel: {}x{} frames in {:.0}ms",
-        n_mels,
-        n_frames,
-        t0.elapsed().as_millis()
-    );
+    let final_text = streaming::finish_streaming(model, &mut state)?;
+    let finish_ms = t0.elapsed().as_millis();
+    let total_ms = t_total.elapsed().as_millis();
 
-    // Convert to MLX array: (n_mels, n_frames)
+    println!("\nFinish: {:.0}ms", finish_ms);
+    println!("Total streaming: {:.0}ms", total_ms);
+    println!("\nTranscription: {}", final_text);
+
+    Ok(())
+}
+
+fn run_batch(
+    mut model: &mut Qwen3ASRModel,
+    samples: &[f32],
+    tokenizer: &tokenizers::Tokenizer,
+) -> anyhow::Result<()> {
+    let mel_extractor = MelExtractor::new(400, 160, 128, 16000);
+    let (mel_data, n_mels, n_frames) = mel_extractor.extract(samples)?;
     let mel = Array::from_slice(&mel_data, &[n_mels as i32, n_frames as i32]);
 
-    // 6. Encode audio
     let t0 = Instant::now();
     let audio_features = model.encode_audio(&mel)?;
     audio_features.eval()?;
     let n_audio_tokens = audio_features.shape()[0] as usize;
-    let audio_dim = audio_features.shape()[1] as usize;
     println!(
-        "Encoded: {} audio tokens x {} dim in {:.0}ms (expected dim={})",
-        n_audio_tokens,
-        audio_dim,
-        t0.elapsed().as_millis(),
-        thinker.text_config.hidden_size,
+        "Encoded: {} audio tokens in {:.0}ms",
+        n_audio_tokens, t0.elapsed().as_millis()
     );
 
-    // Add batch dim: (1, n_audio_tokens, dim)
     let audio_features = mlx_rs::ops::expand_dims(&audio_features, 0)?;
 
-    // 7. Build prompt
     let mut prompt_tokens: Vec<i32> = vec![
-        TOK_IM_START,
-        TOK_SYSTEM,
-        TOK_NEWLINE,
-        TOK_IM_END,
-        TOK_NEWLINE,
-        TOK_IM_START,
-        TOK_USER,
-        TOK_NEWLINE,
-        AUDIO_START_TOKEN_ID,
+        TOK_IM_START, TOK_SYSTEM, TOK_NEWLINE, TOK_IM_END, TOK_NEWLINE,
+        TOK_IM_START, TOK_USER, TOK_NEWLINE, AUDIO_START_TOKEN_ID,
     ];
     prompt_tokens.extend(std::iter::repeat_n(AUDIO_PAD_TOKEN_ID, n_audio_tokens));
     prompt_tokens.extend_from_slice(&[
-        AUDIO_END_TOKEN_ID,
-        TOK_IM_END,
-        TOK_NEWLINE,
-        TOK_IM_START,
-        TOK_ASSISTANT,
-        TOK_NEWLINE,
+        AUDIO_END_TOKEN_ID, TOK_IM_END, TOK_NEWLINE,
+        TOK_IM_START, TOK_ASSISTANT, TOK_NEWLINE,
     ]);
 
     let seq_len = prompt_tokens.len();
-    println!("Prompt: {} tokens ({} audio placeholders)", seq_len, n_audio_tokens);
-
     let input_ids = Array::from_slice(&prompt_tokens, &[1, seq_len as i32]);
-
-    // Position IDs: (1, 3, seq_len) — all three dims use same positions
     let positions: Vec<i32> = (0..seq_len as i32).collect();
     let pos_arr = Array::from_slice(&positions, &[1, 1, seq_len as i32]);
     let position_ids = ops::broadcast_to(&pos_arr, &[1, 3, seq_len as i32])?;
 
-    // 8. Generate (run 3 times for warmup comparison)
     for run in 0..3 {
         let t0 = Instant::now();
-
-        let audio_features_run = model.encode_audio(&mel)?;
-        audio_features_run.eval()?;
+        let af = model.encode_audio(&mel)?;
+        af.eval()?;
         let enc_ms = t0.elapsed().as_millis();
+        let af = mlx_rs::ops::expand_dims(&af, 0)?;
 
-        let audio_features_run = mlx_rs::ops::expand_dims(&audio_features_run, 0)?;
-
-        let output_tokens = generate::generate(
-            &mut model,
-            &input_ids,
-            &audio_features_run,
-            &position_ids,
-            512,
-        )?;
+        let output_tokens = generate::generate(&mut model, &input_ids, &af, &position_ids, 512)?;
         let total_ms = t0.elapsed().as_millis();
         let gen_ms = total_ms - enc_ms;
         println!(
             "Run {}: encode {:.0}ms + generate {} tokens in {:.0}ms ({:.1} tok/s) = {:.0}ms total",
-            run + 1,
-            enc_ms,
-            output_tokens.len(),
-            gen_ms,
-            output_tokens.len() as f64 / (gen_ms as f64 / 1000.0),
-            total_ms,
+            run + 1, enc_ms, output_tokens.len(), gen_ms,
+            output_tokens.len() as f64 / (gen_ms as f64 / 1000.0), total_ms,
         );
     }
-    let output_tokens = generate::generate(
-        &mut model,
-        &input_ids,
-        &audio_features,
-        &position_ids,
-        512,
-    )?;
 
-    // 9. Decode tokens with tokenizer
-    let tokenizer_path = [
-        model_dir.join("tokenizer.json"),
-        dirs::home_dir().unwrap().join("Library/Caches/qwen3-asr/Qwen--Qwen3-ASR-1.7B/tokenizer.json"),
-        dirs::home_dir().unwrap().join("Library/Caches/qwen3-asr/Qwen--Qwen3-ASR-0.6B/tokenizer.json"),
-    ].into_iter().find(|p| p.exists());
-
-    if let Some(tp) = tokenizer_path {
-        let tokenizer = tokenizers::Tokenizer::from_file(&tp)
-            .map_err(|e| anyhow::anyhow!("tokenizer: {e}"))?;
-        let ids: Vec<u32> = output_tokens.iter().map(|&t| t as u32).collect();
-        let text = tokenizer
-            .decode(&ids, true)
-            .map_err(|e| anyhow::anyhow!("decode: {e}"))?;
-        println!("\nTranscription: {}", text);
-    } else {
-        println!("\nRaw tokens: {:?}", output_tokens);
-        println!("(no tokenizer.json found)");
-    }
+    let output_tokens = generate::generate(&mut model, &input_ids, &audio_features, &position_ids, 512)?;
+    let ids: Vec<u32> = output_tokens.iter().map(|&t| t as u32).collect();
+    let text = tokenizer.decode(&ids, true).map_err(|e| anyhow::anyhow!("decode: {e}"))?;
+    println!("\nTranscription: {}", text);
 
     Ok(())
 }

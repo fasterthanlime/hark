@@ -13,10 +13,6 @@ import type {
 type RawAsrDualResponse = {
   parakeet: string;
   parakeet_alignment: TimedToken[];
-  correction_input: string;
-  // legacy fields we ignore
-  qwen?: string;
-  cohere?: string;
 };
 
 type RawCorrectResponse = {
@@ -29,12 +25,9 @@ type RawCorrectResponse = {
     timing_source: string;
     transcript?: TimedToken[];
     espeak?: TimedToken[];
-    qwen?: TimedToken[];
     zipa?: TimedToken[];
     zipa_espeak?: TimedToken[];
-    zipa_qwen?: TimedToken[];
     expected?: TimedToken[];
-    current?: TimedToken[];
     prototype?: TimedToken[];
   };
   zipa_trace?: unknown;
@@ -46,11 +39,8 @@ type RawDetailResponse = {
   recording_id: number;
   transcript_label?: string;
   transcript?: string;
-  current?: string;
-  qwen?: string;
-  parakeet?: string;
+  transcript_error?: string | null;
   parakeet_alignment: TimedToken[];
-  correction_input: string;
   elapsed_ms?: number;
   alignments: RawCorrectResponse["alignments"];
   zipa_trace?: unknown;
@@ -67,8 +57,10 @@ type RawBakeoffEntry = {
   term: string;
   case_id: string;
   source: string;
+  transcript_label?: string;
+  transcript_error?: string | null;
+  transcript: string;
   expected: string;
-  qwen: string;
   recording_id: number;
   hit_count: number;
   prototype_ok: boolean;
@@ -103,17 +95,16 @@ type RawBakeoffResult = {
 
 function normalizeAlignments(raw: RawCorrectResponse["alignments"] | null | undefined) {
   if (!raw) {
-    return { timingSource: "", transcript: [], expected: [], espeak: [], current: [], prototype: [], zipa: [], zipaEspeak: [] };
+    return { timingSource: "", transcript: [], expected: [], espeak: [], prototype: [], zipa: [], zipaEspeak: [] };
   }
   return {
     timingSource: raw.timing_source,
     transcript: raw.transcript,
     expected: raw.expected,
-    espeak: raw.espeak ?? raw.qwen ?? [],
-    current: raw.current,
+    espeak: raw.espeak,
     prototype: raw.prototype,
     zipa: raw.zipa,
-    zipaEspeak: raw.zipa_espeak ?? raw.zipa_qwen ?? [],
+    zipaEspeak: raw.zipa_espeak,
   };
 }
 
@@ -135,8 +126,6 @@ function normalizeSentenceCandidates(raw: unknown[]): SentenceCandidate[] {
       via: e.via,
       score: e.score,
       phoneticScore: e.phonetic_score,
-      acousticScore: e.acoustic_score,
-      acousticDelta: e.acoustic_delta,
     })),
     score: c.score ?? 0,
   }));
@@ -166,14 +155,12 @@ function normalizeCorrectResponse(
   transcript: string,
   transcriptLabel: string,
   parakeetAlignment: TimedToken[],
-  correctionInput: string,
 ): EvalInspectorData {
   return {
     transcript,
     transcriptLabel,
     transcriptSource: "parakeet",
     parakeetAlignment,
-    correctionInput,
     alignments: normalizeAlignments(raw.alignments),
     zipaTrace: raw.zipa_trace,
     prototype: {
@@ -187,16 +174,15 @@ function normalizeCorrectResponse(
 }
 
 function normalizeDetailResponse(raw: RawDetailResponse): EvalInspectorData {
-  const transcript =
-    raw.transcript ?? raw.current ?? raw.parakeet ?? raw.qwen ?? "";
+  const transcript = raw.transcript ?? "";
   const transcriptLabel = raw.transcript_label ?? "Parakeet";
   const pt = raw.prototype_trace;
   return {
     transcript,
     transcriptLabel,
+    transcriptError: raw.transcript_error,
     transcriptSource: "parakeet",
     parakeetAlignment: raw.parakeet_alignment ?? [],
-    correctionInput: raw.correction_input,
     elapsedMs: raw.elapsed_ms,
     alignments: normalizeAlignments(raw.alignments),
     zipaTrace: raw.zipa_trace,
@@ -218,7 +204,7 @@ function normalizeBakeoffEntry(raw: RawBakeoffEntry): BakeoffEntry {
     caseId: raw.case_id,
     source: raw.source,
     expected: raw.expected,
-    transcript: raw.qwen, // legacy field → canonical
+    transcript: raw.transcript,
     recordingId: raw.recording_id,
     hitCount: raw.hit_count,
     prototypeOk: raw.prototype_ok,
@@ -290,13 +276,14 @@ export async function correctPrototype(params: {
     reranker_mode: "trained",
     prototype_reranker_train_id: params.trainId,
   });
-  return normalizeCorrectResponse(raw, params.transcript, "Parakeet", [], "parakeet");
+  return normalizeCorrectResponse(raw, params.transcript, "Parakeet", []);
 }
 
 /** Start a human eval bakeoff job */
 export async function startBakeoff(params: {
   limit: number;
   trainId: number;
+  caseIds?: string[];
   randomize?: boolean;
   sampleSeed?: number;
 }): Promise<{ jobId: number }> {
@@ -305,6 +292,7 @@ export async function startBakeoff(params: {
     {
       source: "human",
       limit: params.limit,
+      case_ids: params.caseIds,
       randomize: params.randomize ?? true,
       sample_seed: params.sampleSeed,
       use_model_reranker: true,
@@ -355,7 +343,6 @@ export async function bakeoffDetail(params: {
       recording_id: params.recordingId,
       transcript: params.transcript,
       expected: params.expected,
-      current: params.transcript,
       prototype: params.prototype,
       use_model_reranker: true,
       use_prototype_adapters: true,

@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
-use serde::Serialize;
-use synth_corrupt::corrupt::phoneme_edit_distance;
+use std::sync::OnceLock;
+
+use rspanphon::featuretable::FeatureTable;
+use serde::{Deserialize, Serialize};
 
 use crate::db::{ReviewedConfusionSurfaceRow, VocabRow};
 
@@ -18,12 +20,29 @@ pub struct PrototypeCandidate {
     pub prefix_ratio: Option<f32>,
     pub length_ratio: Option<f32>,
     pub phonetic_score: Option<f32>,
+    pub phonetic_debug: Option<PhoneticSimilarityDebug>,
     pub observed_acoustic_score: Option<f32>,
     pub acoustic_score: Option<f32>,
     pub acoustic_delta: Option<f32>,
     pub phonemes: Option<String>,
     pub exact_words: bool,
     pub exact_compact: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PhoneticSimilarityDebug {
+    pub compared_against: &'static str,
+    pub observed_ipa: Vec<String>,
+    pub candidate_ipa: Vec<String>,
+    pub observed_features: Vec<String>,
+    pub candidate_features: Vec<String>,
+    pub weighted_edit_distance: f32,
+    pub max_feature_len: usize,
+    pub token_score: f32,
+    pub char_score: f32,
+    pub consonant_overlap_ratio: Option<f32>,
+    pub structure_multiplier: f32,
+    pub blended_score: f32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,7 +63,7 @@ pub struct PrototypeSpanProposal {
     pub candidates: Vec<PrototypeCandidate>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcceptedProposal {
     pub token_start: usize,
     pub token_end: usize,
@@ -71,10 +90,21 @@ pub struct SentenceCandidate {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct EditRegion {
+    pub index: usize,
+    pub token_start: usize,
+    pub token_end: usize,
+    pub char_start: usize,
+    pub char_end: usize,
+    pub edits: Vec<AcceptedProposal>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct PrototypeCorrectionResult {
     pub original: String,
     pub corrected: String,
     pub accepted: Vec<AcceptedProposal>,
+    pub edit_pool: Vec<AcceptedProposal>,
     pub proposals: Vec<PrototypeSpanProposal>,
     pub sentence_candidates: Vec<SentenceCandidate>,
 }
@@ -167,6 +197,7 @@ struct ScoredCandidate {
     prefix_ratio: Option<f32>,
     length_ratio: Option<f32>,
     phonetic_score: Option<f32>,
+    phonetic_debug: Option<PhoneticSimilarityDebug>,
     observed_acoustic_score: Option<f32>,
     acoustic_score: Option<f32>,
     acoustic_delta: Option<f32>,
@@ -300,6 +331,7 @@ pub fn prototype_correct_with_acoustics_timed(
             original: input.to_string(),
             corrected: best.text.clone(),
             accepted: best.edits.clone(),
+            edit_pool,
             proposals: span_proposals,
             sentence_candidates,
         },
@@ -577,6 +609,7 @@ fn enumerate_span_proposals(
                         prefix_ratio: candidate.prefix_ratio,
                         length_ratio: candidate.length_ratio,
                         phonetic_score: candidate.phonetic_score,
+                        phonetic_debug: candidate.phonetic_debug,
                         observed_acoustic_score: candidate.observed_acoustic_score,
                         acoustic_score: candidate.acoustic_score,
                         acoustic_delta: candidate.acoustic_delta,
@@ -693,6 +726,7 @@ fn phone_led_rescue_proposal(
                 prefix_ratio: None,
                 length_ratio: None,
                 phonetic_score: Some(phon),
+                phonetic_debug: phoneme_similarity_debug(&observed, &form.phonemes),
                 observed_acoustic_score: None,
                 acoustic_score: Some(phon),
                 acoustic_delta: None,
@@ -772,6 +806,7 @@ fn phone_led_rescue_proposal(
                 prefix_ratio: candidate.prefix_ratio,
                 length_ratio: candidate.length_ratio,
                 phonetic_score: candidate.phonetic_score,
+                phonetic_debug: candidate.phonetic_debug,
                 observed_acoustic_score: candidate.observed_acoustic_score,
                 acoustic_score: candidate.acoustic_score,
                 acoustic_delta: candidate.acoustic_delta,
@@ -865,7 +900,8 @@ fn phone_led_candidates_for_span(
             if !matches!(form.phoneme_kind, PhonemeKind::Ipa) || form.phonemes.is_empty() {
                 continue;
             }
-            let phonetic_score = phoneme_similarity(&observed, &form.phonemes);
+            let phonetic_debug = phoneme_similarity_debug(&observed, &form.phonemes);
+            let phonetic_score = phonetic_debug.as_ref().map(|debug| debug.blended_score);
             let phon = phonetic_score.unwrap_or(0.0);
             let min_score = (match form.via {
                 "spoken" | "confusion" | "alt" => 0.72,
@@ -898,6 +934,7 @@ fn phone_led_candidates_for_span(
                 prefix_ratio: None,
                 length_ratio: None,
                 phonetic_score,
+                phonetic_debug,
                 observed_acoustic_score: None,
                 acoustic_score: Some(phon),
                 acoustic_delta: None,
@@ -937,12 +974,13 @@ fn score_term(
             && matches!(form.phoneme_kind, PhonemeKind::Ipa)
             && !span_observed.phones.is_empty()
             && !form.phonemes.is_empty();
-        let phonetic_score = phoneme_similarity_if_compatible(
+        let phonetic_debug = phoneme_similarity_debug_if_compatible(
             &span_observed.phones,
             &span_observed.kind,
             &form.phonemes,
             &form.phoneme_kind,
         );
+        let phonetic_score = phonetic_debug.as_ref().map(|debug| debug.blended_score);
         let observed_acoustic_score = match span_observed.kind {
             PhonemeKind::Ipa => None,
             _ => acoustic_phones.and_then(|phones| {
@@ -1128,6 +1166,7 @@ fn score_term(
                 prefix_ratio,
                 length_ratio,
                 phonetic_score,
+                phonetic_debug,
                 observed_acoustic_score,
                 acoustic_score,
                 acoustic_delta,
@@ -1165,22 +1204,33 @@ fn build_edit_pool(spans: &[PrototypeSpanProposal]) -> Vec<AcceptedProposal> {
                 .unwrap_or(false);
             let phonetic_support = candidate.phonetic_score.unwrap_or(0.0);
             let via_threshold = match candidate.via.as_str() {
-                "spoken" | "confusion" => 0.58,
+                "spoken" => 0.68,
+                "confusion" => 0.72,
                 "alt" => 0.60,
                 "canonical" => 0.64,
                 _ => 0.68,
             };
-            let phonetic_backed = matches!(candidate.via.as_str(), "spoken" | "confusion" | "alt")
-                && phonetic_support >= 0.68;
+            let phonetic_backed = match candidate.via.as_str() {
+                "confusion" => phonetic_support >= 0.74,
+                "spoken" => phonetic_support >= 0.72,
+                "alt" => phonetic_support >= 0.68,
+                _ => false,
+            };
             let strong_prefix_match = matches!(candidate.via.as_str(), "spoken" | "confusion" | "alt")
                 && candidate.score >= 0.62
                 && candidate.prefix_ratio.unwrap_or(0.0) >= 0.95
                 && candidate.dice.unwrap_or(0.0) >= 0.72;
-            let via_supported =
-                candidate.score >= via_threshold && (phonetic_backed || acoustically_supported);
+            let via_supported = match candidate.via.as_str() {
+                "confusion" => candidate.score >= via_threshold && phonetic_backed,
+                "spoken" => candidate.score >= via_threshold && phonetic_backed,
+                _ => candidate.score >= via_threshold && (phonetic_backed || acoustically_supported),
+            };
+            let score_alone_supported =
+                candidate.score >= 0.68
+                    && !matches!(candidate.via.as_str(), "confusion" | "spoken");
             if !(candidate.exact_words
                 || candidate.exact_compact
-                || candidate.score >= 0.68
+                || score_alone_supported
                 || via_supported
                 || strong_prefix_match
                 || (candidate.score >= 0.64 && acoustically_supported))
@@ -1326,6 +1376,107 @@ fn build_sentence_candidates(
     }
     candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
     candidates
+}
+
+pub fn cluster_edit_regions(edits: &[AcceptedProposal]) -> Vec<EditRegion> {
+    let mut sorted = edits.to_vec();
+    sorted.sort_by(|a, b| {
+        a.token_start
+            .cmp(&b.token_start)
+            .then(a.token_end.cmp(&b.token_end))
+            .then(a.char_start.cmp(&b.char_start))
+            .then_with(|| b.score.total_cmp(&a.score))
+    });
+
+    let mut regions = Vec::<EditRegion>::new();
+    for edit in sorted {
+        let start_new = regions
+            .last()
+            .map(|region| edit.token_start > region.token_end.saturating_add(1))
+            .unwrap_or(true);
+        if start_new {
+            let index = regions.len();
+            regions.push(EditRegion {
+                index,
+                token_start: edit.token_start,
+                token_end: edit.token_end,
+                char_start: edit.char_start,
+                char_end: edit.char_end,
+                edits: vec![edit],
+            });
+            continue;
+        }
+        let region = regions.last_mut().unwrap();
+        region.token_end = region.token_end.max(edit.token_end);
+        region.char_end = region.char_end.max(edit.char_end);
+        region.edits.push(edit);
+    }
+
+    for region in &mut regions {
+        region.edits.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then(a.token_start.cmp(&b.token_start))
+                .then(a.char_start.cmp(&b.char_start))
+        });
+    }
+    regions
+}
+
+pub fn build_region_sentence_candidates(
+    input: &str,
+    region: &EditRegion,
+) -> Vec<SentenceCandidate> {
+    let edits = &region.edits;
+    let mut candidates = Vec::new();
+    candidates.push(SentenceCandidate {
+        label: format!("region:{}:original", region.index),
+        text: input.to_string(),
+        edits: Vec::new(),
+        score: 0.0,
+    });
+    let mut seen = HashSet::from([input.to_string()]);
+
+    for edit in edits.iter().take(6).cloned() {
+        let text = apply_edits(input, std::slice::from_ref(&edit));
+        if seen.insert(text.clone()) {
+            let score = score_sentence_candidate(std::slice::from_ref(&edit));
+            candidates.push(SentenceCandidate {
+                label: format!("region:{}:single:{}->{}", region.index, edit.from, edit.to),
+                text,
+                edits: vec![edit],
+                score,
+            });
+        }
+    }
+
+    for i in 0..edits.len().min(4) {
+        for j in i + 1..edits.len().min(4) {
+            let pair = [edits[i].clone(), edits[j].clone()];
+            if overlaps(&pair[0], &pair[1]) {
+                continue;
+            }
+            let mut ordered = pair.to_vec();
+            ordered.sort_by_key(|edit| edit.char_start);
+            let text = apply_edits(input, &ordered);
+            if seen.insert(text.clone()) {
+                let score = score_sentence_candidate(&ordered);
+                candidates.push(SentenceCandidate {
+                    label: format!("region:{}:pair:{}+{}", region.index, ordered[0].to, ordered[1].to),
+                    text,
+                    edits: ordered,
+                    score,
+                });
+            }
+        }
+    }
+
+    candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
+    candidates
+}
+
+pub fn apply_accepted_edits(input: &str, edits: &[AcceptedProposal]) -> String {
+    apply_edits(input, edits)
 }
 
 fn overlaps(a: &AcceptedProposal, b: &AcceptedProposal) -> bool {
@@ -1874,19 +2025,212 @@ fn parse_reviewed_ipa(text: &str) -> Vec<String> {
     parse_house_ipa(text)
 }
 
-fn phoneme_similarity(a: &[String], b: &[String]) -> Option<f32> {
+pub(crate) fn debug_phonetic_similarity_from_text(
+    observed: &str,
+    candidate: &str,
+) -> Option<PhoneticSimilarityDebug> {
+    let observed = parse_reviewed_ipa(observed);
+    let candidate = parse_reviewed_ipa(candidate);
+    phoneme_similarity_debug(&observed, &candidate)
+}
+
+fn rspanphon_feature_table() -> &'static FeatureTable {
+    static FEATURE_TABLE: OnceLock<FeatureTable> = OnceLock::new();
+    FEATURE_TABLE.get_or_init(FeatureTable::new)
+}
+
+fn feature_vectors_to_strings(vectors: &[Vec<i8>]) -> Vec<String> {
+    vectors
+        .iter()
+        .map(|vector| {
+            vector
+                .iter()
+                .map(i8::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .collect()
+}
+
+fn is_vowel_phone(token: &str) -> bool {
+    token.chars().next().is_some_and(|ch| {
+        matches!(
+            ch,
+            'a'
+                | 'e'
+                | 'i'
+                | 'o'
+                | 'u'
+                | 'y'
+                | 'æ'
+                | 'ɑ'
+                | 'ɒ'
+                | 'ɔ'
+                | 'ə'
+                | 'ɛ'
+                | 'ɜ'
+                | 'ɞ'
+                | 'ɪ'
+                | 'ʊ'
+                | 'ʉ'
+                | 'ɨ'
+                | 'ø'
+                | 'œ'
+                | 'ɐ'
+                | 'ɶ'
+                | 'ɚ'
+                | 'ɝ'
+        )
+    })
+}
+
+fn consonant_skeleton(tokens: &[String]) -> Vec<String> {
+    tokens
+        .iter()
+        .flat_map(|token| {
+            let expanded = tokenize_compact_ipa(token);
+            let phones = if expanded.is_empty() {
+                vec![token.clone()]
+            } else {
+                expanded
+            };
+            phones
+                .into_iter()
+                .filter(|phone| !is_vowel_phone(phone))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn lcs_len(a: &[String], b: &[String]) -> usize {
     if a.is_empty() || b.is_empty() {
+        return 0;
+    }
+    let mut dp = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for (i, ai) in a.iter().enumerate() {
+        for (j, bj) in b.iter().enumerate() {
+            dp[i + 1][j + 1] = if ai == bj {
+                dp[i][j] + 1
+            } else {
+                dp[i + 1][j].max(dp[i][j + 1])
+            };
+        }
+    }
+    dp[a.len()][b.len()]
+}
+
+fn consonant_structure_adjustment(observed: &[String], candidate: &[String]) -> (Option<f32>, f32) {
+    let observed_cons = consonant_skeleton(observed);
+    let candidate_cons = consonant_skeleton(candidate);
+    let max_len = observed_cons.len().max(candidate_cons.len());
+    if max_len < 2 {
+        let first_observed_phone = observed.first();
+        let first_candidate_phone = candidate.first();
+        let first_phone_match = first_observed_phone
+            .zip(first_candidate_phone)
+            .is_some_and(|(a, b)| a == b);
+        let first_observed_cons = observed_cons.first();
+        let first_candidate_cons = candidate_cons.first();
+        let first_consonant_match = first_observed_cons
+            .zip(first_candidate_cons)
+            .is_some_and(|(a, b)| a == b);
+        let has_single_consonant_anchor =
+            first_observed_cons.is_some() && first_candidate_cons.is_some();
+        let multiplier = if has_single_consonant_anchor {
+            if first_consonant_match {
+                if first_phone_match { 1.0 } else { 0.90 }
+            } else {
+                0.58
+            }
+        } else if first_phone_match {
+            1.0
+        } else {
+            0.72
+        };
+        return (None, multiplier);
+    }
+    let overlap_ratio = lcs_len(&observed_cons, &candidate_cons) as f32 / max_len as f32;
+    let base = if max_len <= 4 { 0.55 } else { 0.60 };
+    let first_match = observed_cons
+        .first()
+        .zip(candidate_cons.first())
+        .is_some_and(|(a, b)| a == b) as i32 as f32;
+    let last_match = observed_cons
+        .last()
+        .zip(candidate_cons.last())
+        .is_some_and(|(a, b)| a == b) as i32 as f32;
+    let multiplier = (base + 0.25 * overlap_ratio + 0.10 * first_match + 0.10 * last_match)
+        .clamp(0.0, 1.0);
+    (Some(overlap_ratio), multiplier)
+}
+
+fn phoneme_similarity_debug(
+    observed: &[String],
+    candidate: &[String],
+) -> Option<PhoneticSimilarityDebug> {
+    if observed.is_empty() || candidate.is_empty() {
         return None;
     }
-    let a_norm = normalize_house_ipa_tokens(a);
-    let b_norm = normalize_house_ipa_tokens(b);
-    let a_features = house_ipa_to_feature_tokens(&a_norm);
-    let b_features = house_ipa_to_feature_tokens(&b_norm);
-    let dist = phoneme_edit_distance(&a_features, &b_features) as f32 / 100.0;
-    let max_len = a_features.len().max(b_features.len()) as f32;
-    let token_score = (1.0 - dist / max_len).clamp(0.0, 1.0);
-    let char_score = bigram_dice(&a_features.join(""), &b_features.join(""));
-    Some((0.78 * token_score + 0.22 * char_score).clamp(0.0, 1.0))
+    let observed_ipa = normalize_house_ipa_tokens(observed);
+    let candidate_ipa = normalize_house_ipa_tokens(candidate);
+    let feature_table = rspanphon_feature_table();
+    let observed_string = observed_ipa.join("");
+    let candidate_string = candidate_ipa.join("");
+    let observed_phonemes = feature_table.phonemes(&observed_string);
+    let candidate_phonemes = feature_table.phonemes(&candidate_string);
+    if observed_phonemes.is_empty() || candidate_phonemes.is_empty() {
+        return None;
+    }
+    let observed_vectors = feature_table.phonemes_to_vectors(observed_phonemes);
+    let candidate_vectors = feature_table.phonemes_to_vectors(candidate_phonemes);
+    if observed_vectors.is_empty() || candidate_vectors.is_empty() {
+        return None;
+    }
+    let weighted_edit_distance =
+        FeatureTable::fd(observed_vectors.clone(), candidate_vectors.clone()) as f32;
+    let max_feature_len = observed_vectors.len().max(candidate_vectors.len());
+    if max_feature_len == 0 {
+        return None;
+    }
+    let base_score =
+        (1.0 - weighted_edit_distance / (2.0 * max_feature_len as f32)).clamp(0.0, 1.0);
+    let length_ratio =
+        observed_vectors.len().min(candidate_vectors.len()) as f32 / max_feature_len as f32;
+    let token_score = (base_score * length_ratio.sqrt()).clamp(0.0, 1.0);
+    let (consonant_overlap_ratio, structure_multiplier) =
+        consonant_structure_adjustment(&observed_ipa, &candidate_ipa);
+    let char_score = 0.0;
+    let blended_score = (token_score * structure_multiplier).clamp(0.0, 1.0);
+    Some(PhoneticSimilarityDebug {
+        compared_against: "observed_acoustic_phones",
+        observed_ipa,
+        candidate_ipa,
+        observed_features: feature_vectors_to_strings(&observed_vectors),
+        candidate_features: feature_vectors_to_strings(&candidate_vectors),
+        weighted_edit_distance,
+        max_feature_len,
+        token_score,
+        char_score,
+        consonant_overlap_ratio,
+        structure_multiplier,
+        blended_score,
+    })
+}
+
+fn phoneme_similarity(a: &[String], b: &[String]) -> Option<f32> {
+    phoneme_similarity_debug(a, b).map(|debug| debug.blended_score)
+}
+
+fn phoneme_similarity_debug_if_compatible(
+    a: &[String],
+    a_kind: &PhonemeKind,
+    b: &[String],
+    b_kind: &PhonemeKind,
+) -> Option<PhoneticSimilarityDebug> {
+    if std::mem::discriminant(a_kind) != std::mem::discriminant(b_kind) {
+        return None;
+    }
+    phoneme_similarity_debug(a, b)
 }
 
 fn phoneme_similarity_if_compatible(
@@ -1895,10 +2239,7 @@ fn phoneme_similarity_if_compatible(
     b: &[String],
     b_kind: &PhonemeKind,
 ) -> Option<f32> {
-    if std::mem::discriminant(a_kind) != std::mem::discriminant(b_kind) {
-        return None;
-    }
-    phoneme_similarity(a, b)
+    phoneme_similarity_debug_if_compatible(a, a_kind, b, b_kind).map(|debug| debug.blended_score)
 }
 
 fn phoneme_string(phonemes: &[String]) -> Option<String> {
@@ -2438,6 +2779,85 @@ mod tests {
     }
 
     #[test]
+    fn clusters_non_adjacent_edits_into_separate_regions() {
+        let edits = vec![
+            AcceptedProposal {
+                token_start: 2,
+                token_end: 3,
+                char_start: 10,
+                char_end: 17,
+                from: "making".to_string(),
+                matched_form: "making".to_string(),
+                from_phonemes: None,
+                to: "MachO".to_string(),
+                to_phonemes: None,
+                via: "spoken".to_string(),
+                score: 1.07,
+                phonetic_score: Some(0.95),
+                acoustic_score: None,
+                acoustic_delta: None,
+            },
+            AcceptedProposal {
+                token_start: 7,
+                token_end: 8,
+                char_start: 41,
+                char_end: 49,
+                from: "requests".to_string(),
+                matched_form: "requests".to_string(),
+                from_phonemes: None,
+                to: "reqwest".to_string(),
+                to_phonemes: None,
+                via: "spoken".to_string(),
+                score: 1.11,
+                phonetic_score: Some(0.97),
+                acoustic_score: None,
+                acoustic_delta: None,
+            },
+        ];
+        let regions = cluster_edit_regions(&edits);
+        assert_eq!(regions.len(), 2, "{regions:#?}");
+        assert_eq!(regions[0].edits.len(), 1);
+        assert_eq!(regions[1].edits.len(), 1);
+        assert_eq!(regions[0].edits[0].to, "MachO");
+        assert_eq!(regions[1].edits[0].to, "reqwest");
+    }
+
+    #[test]
+    fn region_candidates_do_not_create_cross_region_combo_sentence() {
+        let region = EditRegion {
+            index: 0,
+            token_start: 2,
+            token_end: 3,
+            char_start: 10,
+            char_end: 17,
+            edits: vec![AcceptedProposal {
+                token_start: 2,
+                token_end: 3,
+                char_start: 10,
+                char_end: 17,
+                from: "making".to_string(),
+                matched_form: "making".to_string(),
+                from_phonemes: None,
+                to: "MachO".to_string(),
+                to_phonemes: None,
+                via: "spoken".to_string(),
+                score: 1.07,
+                phonetic_score: Some(0.95),
+                acoustic_score: None,
+                acoustic_delta: None,
+            }],
+        };
+        let candidates = build_region_sentence_candidates(
+            "We should use requests for making HTTP requests in our application.",
+            &region,
+        );
+        assert!(candidates.iter().any(|candidate| candidate.text.contains("MachO")));
+        assert!(candidates
+            .iter()
+            .all(|candidate| !candidate.text.contains("reqwest for MachO")));
+    }
+
+    #[test]
     fn acoustic_delta_is_relative_to_observed_surface() {
         let observed = Some(0.84);
         let candidate = Some(0.58);
@@ -2516,6 +2936,7 @@ mod tests {
                 prefix_ratio: Some(0.60),
                 length_ratio: Some(1.0),
                 phonetic_score: Some(0.78),
+                phonetic_debug: None,
                 observed_acoustic_score: Some(0.61),
                 acoustic_score: Some(0.65),
                 acoustic_delta: Some(0.04),
@@ -2559,6 +2980,7 @@ mod tests {
                     prefix_ratio: Some(1.0),
                     length_ratio: Some(1.0),
                     phonetic_score: Some(1.0),
+                    phonetic_debug: None,
                     observed_acoustic_score: None,
                     acoustic_score: None,
                     acoustic_delta: None,
@@ -2579,6 +3001,7 @@ mod tests {
                     prefix_ratio: Some(1.0),
                     length_ratio: Some(1.0),
                     phonetic_score: Some(1.0),
+                    phonetic_debug: None,
                     observed_acoustic_score: None,
                     acoustic_score: None,
                     acoustic_delta: None,
@@ -2623,6 +3046,7 @@ mod tests {
                 prefix_ratio: Some(1.0),
                 length_ratio: Some(0.5833333),
                 phonetic_score: Some(0.5833334),
+                phonetic_debug: None,
                 observed_acoustic_score: None,
                 acoustic_score: None,
                 acoustic_delta: None,
@@ -2634,6 +3058,176 @@ mod tests {
         let edits = build_edit_pool(&spans);
         assert_eq!(edits.len(), 1, "{:#?}", edits);
         assert_eq!(edits[0].to, "AArch64");
+    }
+
+    #[test]
+    fn build_edit_pool_rejects_weak_confusion_even_with_ok_rank() {
+        let spans = vec![PrototypeSpanProposal {
+            token_start: 1,
+            token_end: 4,
+            char_start: 0,
+            char_end: 12,
+            raw_text: "Rust T is".to_string(),
+            normalized: "rusttis".to_string(),
+            phonemes: Some("ʔ a t i ŋ k b ɛ s t i i".to_string()),
+            acoustic_phonemes: None,
+            parakeet_confidence: None,
+            observed_acoustic_score: None,
+            acoustic_trustworthy: false,
+            acoustic_window_start_sec: None,
+            acoustic_window_end_sec: None,
+            candidates: vec![PrototypeCandidate {
+                term: "fasterthanlime".to_string(),
+                via: "confusion".to_string(),
+                matched_form: "Rust T is".to_string(),
+                matched_form_phonemes: Some("ʔ a t i ŋ k b ɛ s t i i".to_string()),
+                term_preview: Some("faster than lime".to_string()),
+                term_preview_phonemes: Some("f a s t ə ð ə n l a ɪ m".to_string()),
+                score: 0.818,
+                lexical_score: Some(0.48),
+                dice: Some(0.44),
+                prefix_ratio: Some(0.33),
+                length_ratio: Some(0.92),
+                phonetic_score: Some(0.603),
+                phonetic_debug: None,
+                observed_acoustic_score: None,
+                acoustic_score: None,
+                acoustic_delta: None,
+                phonemes: Some("f a s t ə ð ə n l a ɪ m".to_string()),
+                exact_words: false,
+                exact_compact: false,
+            }],
+        }];
+        let edits = build_edit_pool(&spans);
+        assert!(edits.is_empty(), "{:#?}", edits);
+    }
+
+    #[test]
+    fn build_edit_pool_keeps_strong_confusion_when_phonetically_supported() {
+        let spans = vec![PrototypeSpanProposal {
+            token_start: 1,
+            token_end: 2,
+            char_start: 0,
+            char_end: 5,
+            raw_text: "Right".to_string(),
+            normalized: "right".to_string(),
+            phonemes: Some("R AY T".to_string()),
+            acoustic_phonemes: None,
+            parakeet_confidence: None,
+            observed_acoustic_score: None,
+            acoustic_trustworthy: false,
+            acoustic_window_start_sec: None,
+            acoustic_window_end_sec: None,
+            candidates: vec![PrototypeCandidate {
+                term: "regalloc".to_string(),
+                via: "confusion".to_string(),
+                matched_form: "Right".to_string(),
+                matched_form_phonemes: Some("R AY T".to_string()),
+                term_preview: Some("regalloc".to_string()),
+                term_preview_phonemes: Some("R EH G A L O K".to_string()),
+                score: 0.86,
+                lexical_score: Some(0.62),
+                dice: Some(0.74),
+                prefix_ratio: Some(0.96),
+                length_ratio: Some(0.88),
+                phonetic_score: Some(0.79),
+                phonetic_debug: None,
+                observed_acoustic_score: None,
+                acoustic_score: None,
+                acoustic_delta: None,
+                phonemes: Some("R EH G A L O K".to_string()),
+                exact_words: false,
+                exact_compact: false,
+            }],
+        }];
+        let edits = build_edit_pool(&spans);
+        assert_eq!(edits.len(), 1, "{:#?}", edits);
+        assert_eq!(edits[0].to, "regalloc");
+    }
+
+    #[test]
+    fn build_edit_pool_rejects_weak_spoken_even_with_ok_rank() {
+        let spans = vec![PrototypeSpanProposal {
+            token_start: 3,
+            token_end: 5,
+            char_start: 8,
+            char_end: 16,
+            raw_text: "for such".to_string(),
+            normalized: "forsuch".to_string(),
+            phonemes: Some("f ɹ ʃ ʌ s ʃ ə tʃ".to_string()),
+            acoustic_phonemes: None,
+            parakeet_confidence: None,
+            observed_acoustic_score: None,
+            acoustic_trustworthy: false,
+            acoustic_window_start_sec: None,
+            acoustic_window_end_sec: None,
+            candidates: vec![PrototypeCandidate {
+                term: "repr".to_string(),
+                via: "spoken".to_string(),
+                matched_form: "for such".to_string(),
+                matched_form_phonemes: Some("f ɹ ʃ ʌ s ʃ ə tʃ".to_string()),
+                term_preview: Some("repr".to_string()),
+                term_preview_phonemes: Some("ɹ ɛ p ɹ ə".to_string()),
+                score: 0.979,
+                lexical_score: Some(0.42),
+                dice: Some(0.30),
+                prefix_ratio: Some(0.18),
+                length_ratio: Some(0.62),
+                phonetic_score: Some(0.603),
+                phonetic_debug: None,
+                observed_acoustic_score: None,
+                acoustic_score: None,
+                acoustic_delta: None,
+                phonemes: Some("ɹ ɛ p ɹ ə".to_string()),
+                exact_words: false,
+                exact_compact: false,
+            }],
+        }];
+        let edits = build_edit_pool(&spans);
+        assert!(edits.is_empty(), "{:#?}", edits);
+    }
+
+    #[test]
+    fn build_edit_pool_keeps_strong_spoken_when_phonetically_supported() {
+        let spans = vec![PrototypeSpanProposal {
+            token_start: 4,
+            token_end: 5,
+            char_start: 23,
+            char_end: 32,
+            raw_text: "serdejson".to_string(),
+            normalized: "serdejson".to_string(),
+            phonemes: Some("S EH R D EH JH S AO N".to_string()),
+            acoustic_phonemes: None,
+            parakeet_confidence: None,
+            observed_acoustic_score: None,
+            acoustic_trustworthy: false,
+            acoustic_window_start_sec: None,
+            acoustic_window_end_sec: None,
+            candidates: vec![PrototypeCandidate {
+                term: "serde_json".to_string(),
+                via: "spoken".to_string(),
+                matched_form: "ser-dee jay-son".to_string(),
+                matched_form_phonemes: Some("S EH R D EH JH EY Z AH N".to_string()),
+                term_preview: Some("ser-dee jay-son".to_string()),
+                term_preview_phonemes: Some("S EH R D EH JH EY Z AH N".to_string()),
+                score: 0.72,
+                lexical_score: Some(0.56),
+                dice: Some(0.51),
+                prefix_ratio: Some(0.60),
+                length_ratio: Some(1.0),
+                phonetic_score: Some(0.78),
+                phonetic_debug: None,
+                observed_acoustic_score: None,
+                acoustic_score: Some(0.61),
+                acoustic_delta: Some(0.04),
+                phonemes: Some("S EH R D EH JH EY Z AH N".to_string()),
+                exact_words: false,
+                exact_compact: false,
+            }],
+        }];
+        let edits = build_edit_pool(&spans);
+        assert_eq!(edits.len(), 1, "{:#?}", edits);
+        assert_eq!(edits[0].to, "serde_json");
     }
 
     #[test]
@@ -2666,6 +3260,19 @@ mod tests {
         assert_eq!(candidate.observed_acoustic_score, None, "{candidate:#?}");
         assert_eq!(candidate.acoustic_delta, None, "{candidate:#?}");
         assert_eq!(candidate.phonetic_score, candidate.acoustic_score, "{candidate:#?}");
+    }
+
+    #[test]
+    fn phonetic_similarity_debug_matches_public_score() {
+        let observed = parse_reviewed_ipa("j ɛ s t ə ɹ d eɪ");
+        let candidate = parse_reviewed_ipa("s ɜ d eɪ");
+        let debug = phoneme_similarity_debug(&observed, &candidate).expect("debug");
+        let score = phoneme_similarity(&observed, &candidate).expect("score");
+        assert!((debug.blended_score - score).abs() < 1e-6, "{debug:#?} vs {score}");
+        assert!(!debug.observed_features.is_empty(), "{debug:#?}");
+        assert!(!debug.candidate_features.is_empty(), "{debug:#?}");
+        assert!(debug.max_feature_len >= debug.observed_features.len());
+        assert!(debug.max_feature_len >= debug.candidate_features.len());
     }
 
     #[test]
@@ -2789,6 +3396,80 @@ mod tests {
     fn phoneme_similarity_uses_feature_distance_for_close_phones() {
         let sim = phoneme_similarity(&parse_house_ipa("dʒ"), &parse_house_ipa("tʃ")).unwrap();
         assert!(sim >= 0.60, "{sim}");
+    }
+
+    #[test]
+    fn phonetic_similarity_penalizes_medicinal_vs_macho() {
+        let sim = phoneme_similarity(
+            &parse_reviewed_ipa("m ə d ɪ s ə n ə l"),
+            &parse_reviewed_ipa("m a k o"),
+        )
+        .unwrap();
+        assert!(sim < 0.80, "{sim}");
+    }
+
+    #[test]
+    fn phonetic_similarity_penalizes_yesterday_vs_serde() {
+        let sim = phoneme_similarity(
+            &parse_reviewed_ipa("j ɛ s t ə ɹ d eɪ"),
+            &parse_reviewed_ipa("s ɜ d eɪ"),
+        )
+        .unwrap();
+        assert!(sim < 0.80, "{sim}");
+    }
+
+    #[test]
+    fn phonetic_similarity_penalizes_ssd_vs_ssl() {
+        let sim = phoneme_similarity(
+            &parse_reviewed_ipa("ɛ s ɛ s d iː"),
+            &parse_reviewed_ipa("ɛ s ɛ s ɛ l"),
+        )
+        .unwrap();
+        assert!(sim < 0.80, "{sim}");
+    }
+
+    #[test]
+    fn phonetic_similarity_penalizes_grouped_espeak_ssd_vs_ssl() {
+        let sim = phoneme_similarity(
+            &parse_reviewed_ipa("ɛs ɛs d iː"),
+            &parse_reviewed_ipa("ɛs ɛs ɛl"),
+        )
+        .unwrap();
+        assert!(sim < 0.80, "{sim}");
+    }
+
+    #[test]
+    fn phonetic_similarity_penalizes_why_not_vs_bearcove() {
+        let sim = phoneme_similarity(
+            &parse_reviewed_ipa("w aɪ n oʊ t"),
+            &parse_reviewed_ipa("b eə k əʊ v"),
+        )
+        .unwrap();
+        assert!(sim < 0.65, "{sim}");
+    }
+
+    #[test]
+    fn phonetic_similarity_penalizes_hmm_vs_mir() {
+        let sim =
+            phoneme_similarity(&parse_reviewed_ipa("h ə a"), &parse_reviewed_ipa("m i ə")).unwrap();
+        assert!(sim < 0.65, "{sim}");
+    }
+
+    #[test]
+    fn phonetic_similarity_penalizes_for_arc_sixty_vs_rustc() {
+        let sim = phoneme_similarity(
+            &parse_reviewed_ipa("f ɹ ɔ e i ɑ i tʃ s i k s t i"),
+            &parse_reviewed_ipa("ɹ ʌ s t s i"),
+        )
+        .unwrap();
+        assert!(sim < 0.50, "{sim}");
+    }
+
+    #[test]
+    fn phonetic_similarity_keeps_short_matches_with_same_onset() {
+        let sim =
+            phoneme_similarity(&parse_reviewed_ipa("m ɪ ə"), &parse_reviewed_ipa("m i ə")).unwrap();
+        assert!(sim > 0.75, "{sim}");
     }
 
     #[test]

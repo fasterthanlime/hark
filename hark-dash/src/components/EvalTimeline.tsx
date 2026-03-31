@@ -334,7 +334,7 @@ export function EvalTimeline({
       style={{
         width: "100%",
         overflowX: "auto",
-        overflowY: "hidden",
+        overflowY: "auto",
         background: "var(--bg-surface)",
         borderBottom: "1px solid var(--border)",
         position: "relative",

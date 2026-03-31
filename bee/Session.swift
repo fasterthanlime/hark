@@ -292,24 +292,50 @@ actor Session {
         }
 
         // --- Consumer Task ---
-        // Reads Channel 2, updates IME. Runs on this actor.
+        // Reads Channel 2, updates IME with typewriter animation.
         let ic = self.inputClient
 
         consumerTask = Task {
-            var lastPartial = ""
+            var displayedText = ""
+            var targetText = ""
 
             for await _ in ch2.stream {
                 let events = ch2.drain()
                 for event in events {
                     switch event {
                     case .partial(let text):
-                        lastPartial = text
-                        ic.setMarkedText(text)
+                        targetText = text
+
+                        // Find common prefix length
+                        let commonLen = displayedText.commonPrefixLength(with: targetText)
+                        let displayed = displayedText
+
+                        // If text diverged before current display, snap back
+                        if commonLen < displayed.count {
+                            displayedText = String(targetText.prefix(commonLen))
+                        }
+
+                        // Reveal new characters one at a time
+                        let remaining = targetText.dropFirst(displayedText.count)
+                        for ch in remaining {
+                            displayedText.append(ch)
+                            ic.setMarkedText(Self.addCursor(displayedText))
+                            // Scale delay inversely with how far behind we are
+                            let behind = targetText.count - displayedText.count
+                            let delayMs = behind > 10 ? 5 : (behind > 3 ? 10 : 20)
+                            try? await Task.sleep(for: .milliseconds(delayMs))
+                            if Task.isCancelled { return }
+                        }
+
+                        // If we caught up, show the cursor
+                        ic.setMarkedText(Self.addCursor(displayedText))
 
                     case .done(let text, let mode):
-                        let finalText = text.isEmpty ? lastPartial : text
+                        let finalText = text.isEmpty ? targetText : text
                         diag.update { $0.finalText = finalText }
 
+                        // Snap to final text (no cursor)
+                        ic.setMarkedText(finalText)
                         await self.finishIME(text: finalText, mode: mode)
                         return
                     }
@@ -397,6 +423,16 @@ actor Session {
     }
 
     // MARK: - Helpers
+
+    /// Replace trailing period with a cursor indicator while streaming.
+    static func addCursor(_ text: String) -> String {
+        if text.hasSuffix(".") {
+            return String(text.dropLast()) + "▍"
+        } else if text.hasSuffix("。") {
+            return String(text.dropLast()) + "▍"
+        }
+        return text + "▍"
+    }
 
     static func computeRMS(_ samples: [Float]) -> Float {
         guard !samples.isEmpty else { return 0 }
@@ -546,6 +582,20 @@ final class DrainSignal: @unchecked Sendable {
 
     func get() -> EndMode? {
         lock.withLock { mode }
+    }
+}
+
+extension String {
+    func commonPrefixLength(with other: String) -> Int {
+        var count = 0
+        var i = self.startIndex
+        var j = other.startIndex
+        while i < self.endIndex && j < other.endIndex && self[i] == other[j] {
+            count += 1
+            i = self.index(after: i)
+            j = other.index(after: j)
+        }
+        return count
     }
 }
 

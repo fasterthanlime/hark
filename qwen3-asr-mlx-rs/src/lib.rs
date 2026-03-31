@@ -7,6 +7,7 @@ pub mod load;
 pub mod mel;
 pub mod model;
 pub mod mrope;
+pub mod streaming;
 pub mod weights;
 
 pub type Result<T> = std::result::Result<T, error::AsrError>;
