@@ -8,6 +8,7 @@ use mlx_rs::Array;
 
 use qwen3_asr_mlx::config::AsrConfig;
 use qwen3_asr_mlx::generate;
+use qwen3_asr_mlx::load;
 use qwen3_asr_mlx::mel::{load_audio_wav, MelExtractor};
 use qwen3_asr_mlx::model::{
     Qwen3ASRModel, AUDIO_END_TOKEN_ID, AUDIO_PAD_TOKEN_ID, AUDIO_START_TOKEN_ID,
@@ -54,122 +55,20 @@ fn main() -> anyhow::Result<()> {
     let mut model = Qwen3ASRModel::new(thinker)?;
     println!("Model created in {:.0}ms", t0.elapsed().as_millis());
 
-    // 3. Load weights from safetensors
+    // 3. Load weights from safetensors (handles both dense and quantized)
     let t0 = Instant::now();
-    // Find all safetensors files
-    let mut st_files: Vec<_> = std::fs::read_dir(model_dir)?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "safetensors"))
-        .map(|e| e.path())
-        .collect();
-    st_files.sort();
-
-    if st_files.is_empty() {
-        anyhow::bail!("No .safetensors files found in {}", model_dir.display());
-    }
-
-    // Load weights with key remapping (strip thinker. prefix, transpose conv2d)
-    let mut all_weights = std::collections::HashMap::new();
-    for f in &st_files {
-        println!("  Loading weights from {}", f.display());
-        let tensors = Array::load_safetensors(f)?;
-        all_weights.extend(tensors);
-    }
-
-    // Remap keys
-    let mut remapped = std::collections::HashMap::new();
-    for (key, value) in all_weights {
-        let mut new_key = key.clone();
-        let had_thinker = new_key.starts_with("thinker.");
-        if had_thinker {
-            new_key = new_key["thinker.".len()..].to_string();
-        }
-        // Transpose conv2d weights: PyTorch (out,in,kH,kW) → MLX (out,kH,kW,in)
-        let value = if had_thinker
-            && new_key.contains("conv2d")
-            && new_key.ends_with(".weight")
-            && value.ndim() == 4
-        {
-            value.transpose_axes(&[0, 2, 3, 1])?
-        } else {
-            value
-        };
-        remapped.insert(new_key, value);
-    }
-
-    println!("  Remapped {} weight keys", remapped.len());
-
-    // Detect quantization: check for .scales keys
-    let quantized_prefixes: std::collections::HashSet<String> = remapped.keys()
-        .filter(|k| k.ends_with(".scales"))
-        .map(|k| k.strip_suffix(".scales").unwrap().to_string())
-        .collect();
-    let is_quantized = !quantized_prefixes.is_empty();
-
-    if is_quantized {
-        // Infer bits from weight shapes
-        let group_size = 64i32;
-        let bits = quantized_prefixes.iter().next()
-            .and_then(|prefix| {
-                let w = remapped.get(&format!("{prefix}.weight"))?;
-                let s = remapped.get(&format!("{prefix}.scales"))?;
-                let w_cols = w.shape().last().copied().unwrap_or(1);
-                let s_cols = s.shape().last().copied().unwrap_or(1);
-                Some(if s_cols > 0 { (w_cols * 32 / (s_cols * group_size)) as i32 } else { 4 })
-            })
-            .unwrap_or(4);
-        println!("  Detected {}bit quantized weights (group_size={}), {} quantized layers", bits, group_size, quantized_prefixes.len());
-
-        // Quantize model structure (creates QuantizedLinear with .inner.weight paths)
-        model = mlx_rs::nn::quantize(model, group_size, bits)?;
-
-        // Remap: foo.weight → foo.inner.weight for quantized layers
-        let mut final_weights = std::collections::HashMap::new();
-        for (key, value) in remapped {
-            if key.ends_with(".weight") {
-                let prefix = key.strip_suffix(".weight").unwrap();
-                if quantized_prefixes.contains(prefix) {
-                    final_weights.insert(format!("{prefix}.inner.weight"), value);
-                    continue;
-                }
-            }
-            // For .bias keys on quantized layers: foo.bias → foo.inner.bias
-            if key.ends_with(".bias") && !key.ends_with(".biases") {
-                let prefix = key.strip_suffix(".bias").unwrap();
-                if quantized_prefixes.contains(prefix) {
-                    final_weights.insert(format!("{prefix}.inner.bias"), value);
-                    continue;
-                }
-            }
-            final_weights.insert(key, value);
-        }
-        remapped = final_weights;
-    }
-
-    // Load into model using the flattened parameter tree
-    use mlx_rs::module::ModuleParameters;
-    let mut params = model.parameters_mut().flatten();
-    let mut loaded = 0;
-    let mut skipped = Vec::new();
-    for (key, value) in &remapped {
-        if let Some(param) = params.get_mut(&**key) {
-            **param = value.clone();
-            loaded += 1;
-        } else {
-            skipped.push(key.clone());
-        }
-    }
-    println!("  Loaded {} params, skipped {} keys", loaded, skipped.len());
-    if !skipped.is_empty() {
-        for k in skipped.iter().take(10) {
-            println!("    skipped: {}", k);
-        }
-        if skipped.len() > 10 {
-            println!("    ... and {} more", skipped.len() - 10);
-        }
-    }
-    // No eval here — MLX lazy evaluation will materialize on first use
-    println!("Weights loaded in {:.0}ms", t0.elapsed().as_millis());
+    let stats = load::load_weights(&mut model, model_dir)?;
+    model.eval()?;
+    println!(
+        "Weights loaded in {:.0}ms: {}/{} keys loaded, {} skipped, {} quantized layers ({}bit, gs={})",
+        t0.elapsed().as_millis(),
+        stats.loaded,
+        stats.total_keys,
+        stats.skipped,
+        stats.quantized_layers,
+        stats.bits,
+        stats.group_size,
+    );
 
     // 4. Load audio
     let t0 = Instant::now();
@@ -186,7 +85,7 @@ fn main() -> anyhow::Result<()> {
     let mel_extractor = MelExtractor::new(400, 160, 128, 16000);
     let (mel_data, n_mels, n_frames) = mel_extractor.extract(&samples)?;
     println!(
-        "Mel: {}×{} frames in {:.0}ms",
+        "Mel: {}x{} frames in {:.0}ms",
         n_mels,
         n_frames,
         t0.elapsed().as_millis()
@@ -202,7 +101,7 @@ fn main() -> anyhow::Result<()> {
     let n_audio_tokens = audio_features.shape()[0] as usize;
     let audio_dim = audio_features.shape()[1] as usize;
     println!(
-        "Encoded: {} audio tokens × {} dim in {:.0}ms (expected dim={})",
+        "Encoded: {} audio tokens x {} dim in {:.0}ms (expected dim={})",
         n_audio_tokens,
         audio_dim,
         t0.elapsed().as_millis(),
@@ -242,14 +141,12 @@ fn main() -> anyhow::Result<()> {
     // Position IDs: (1, 3, seq_len) — all three dims use same positions
     let positions: Vec<i32> = (0..seq_len as i32).collect();
     let pos_arr = Array::from_slice(&positions, &[1, 1, seq_len as i32]);
-    // Broadcast to (1, 3, seq_len)
     let position_ids = ops::broadcast_to(&pos_arr, &[1, 3, seq_len as i32])?;
 
     // 8. Generate (run 3 times for warmup comparison)
     for run in 0..3 {
         let t0 = Instant::now();
 
-        // Re-encode audio each run (encoder perf matters too)
         let audio_features_run = model.encode_audio(&mel)?;
         audio_features_run.eval()?;
         let enc_ms = t0.elapsed().as_millis();
@@ -284,9 +181,14 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     // 9. Decode tokens with tokenizer
-    let tokenizer_path = model_dir.join("tokenizer.json");
-    if tokenizer_path.exists() {
-        let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
+    let tokenizer_path = [
+        model_dir.join("tokenizer.json"),
+        dirs::home_dir().unwrap().join("Library/Caches/qwen3-asr/Qwen--Qwen3-ASR-1.7B/tokenizer.json"),
+        dirs::home_dir().unwrap().join("Library/Caches/qwen3-asr/Qwen--Qwen3-ASR-0.6B/tokenizer.json"),
+    ].into_iter().find(|p| p.exists());
+
+    if let Some(tp) = tokenizer_path {
+        let tokenizer = tokenizers::Tokenizer::from_file(&tp)
             .map_err(|e| anyhow::anyhow!("tokenizer: {e}"))?;
         let ids: Vec<u32> = output_tokens.iter().map(|&t| t as u32).collect();
         let text = tokenizer
@@ -295,7 +197,7 @@ fn main() -> anyhow::Result<()> {
         println!("\nTranscription: {}", text);
     } else {
         println!("\nRaw tokens: {:?}", output_tokens);
-        println!("(no tokenizer.json found at {})", tokenizer_path.display());
+        println!("(no tokenizer.json found)");
     }
 
     Ok(())

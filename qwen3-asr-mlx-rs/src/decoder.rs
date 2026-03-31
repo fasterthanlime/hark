@@ -64,27 +64,27 @@ impl KVCache {
 // ── TextAttention ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, ModuleParameters, Quantizable)]
-struct TextAttention {
+pub struct TextAttention {
     #[quantizable]
     #[param]
-    q_proj: MaybeQuantized<nn::Linear>,
+    pub q_proj: MaybeQuantized<nn::Linear>,
     #[quantizable]
     #[param]
-    k_proj: MaybeQuantized<nn::Linear>,
+    pub k_proj: MaybeQuantized<nn::Linear>,
     #[quantizable]
     #[param]
-    v_proj: MaybeQuantized<nn::Linear>,
+    pub v_proj: MaybeQuantized<nn::Linear>,
     #[quantizable]
     #[param]
-    o_proj: MaybeQuantized<nn::Linear>,
+    pub o_proj: MaybeQuantized<nn::Linear>,
     #[param]
-    q_norm: nn::RmsNorm,
+    pub q_norm: nn::RmsNorm,
     #[param]
-    k_norm: nn::RmsNorm,
+    pub k_norm: nn::RmsNorm,
 
-    num_heads: i32,
-    num_kv_heads: i32,
-    head_dim: i32,
+    pub num_heads: i32,
+    pub num_kv_heads: i32,
+    pub head_dim: i32,
 }
 
 impl TextAttention {
@@ -189,16 +189,16 @@ fn repeat_kv(x: &Array, n_rep: i32) -> Result<Array, Exception> {
 // ── SwiGLU ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, ModuleParameters, Quantizable)]
-struct SwiGLU {
+pub struct SwiGLU {
     #[quantizable]
     #[param]
-    gate_proj: MaybeQuantized<nn::Linear>,
+    pub gate_proj: MaybeQuantized<nn::Linear>,
     #[quantizable]
     #[param]
-    up_proj: MaybeQuantized<nn::Linear>,
+    pub up_proj: MaybeQuantized<nn::Linear>,
     #[quantizable]
     #[param]
-    down_proj: MaybeQuantized<nn::Linear>,
+    pub down_proj: MaybeQuantized<nn::Linear>,
 }
 
 impl SwiGLU {
@@ -227,17 +227,17 @@ impl Module<&Array> for SwiGLU {
 // ── TextDecoderLayer ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, ModuleParameters, Quantizable)]
-struct TextDecoderLayer {
+pub struct TextDecoderLayer {
     #[param]
-    input_layernorm: nn::RmsNorm,
+    pub input_layernorm: nn::RmsNorm,
     #[quantizable]
     #[param]
-    self_attn: TextAttention,
+    pub self_attn: TextAttention,
     #[param]
-    post_attention_layernorm: nn::RmsNorm,
+    pub post_attention_layernorm: nn::RmsNorm,
     #[quantizable]
     #[param]
-    mlp: SwiGLU,
+    pub mlp: SwiGLU,
 }
 
 impl TextDecoderLayer {
@@ -282,12 +282,12 @@ pub struct TextDecoder {
     pub embed_tokens: MaybeQuantized<nn::Embedding>,
     #[quantizable]
     #[param]
-    layers: Vec<TextDecoderLayer>,
+    pub layers: Vec<TextDecoderLayer>,
     #[param]
-    norm: nn::RmsNorm,
+    pub norm: nn::RmsNorm,
 
-    rotary_emb: InterleavedMRoPE,
-    config: TextDecoderConfig,
+    pub rotary_emb: InterleavedMRoPE,
+    pub config: TextDecoderConfig,
 }
 
 impl TextDecoder {

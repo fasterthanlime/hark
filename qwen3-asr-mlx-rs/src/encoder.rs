@@ -37,21 +37,21 @@ fn build_sinusoidal_pe(max_positions: usize, embedding_dim: usize) -> Array {
 // ── AudioAttention ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, ModuleParameters, Quantizable)]
-struct AudioAttention {
+pub struct AudioAttention {
     #[quantizable]
     #[param]
-    q_proj: MaybeQuantized<nn::Linear>,
+    pub q_proj: MaybeQuantized<nn::Linear>,
     #[quantizable]
     #[param]
-    k_proj: MaybeQuantized<nn::Linear>,
+    pub k_proj: MaybeQuantized<nn::Linear>,
     #[quantizable]
     #[param]
-    v_proj: MaybeQuantized<nn::Linear>,
+    pub v_proj: MaybeQuantized<nn::Linear>,
     #[quantizable]
     #[param]
-    out_proj: MaybeQuantized<nn::Linear>,
-    num_heads: i32,
-    head_dim: i32,
+    pub out_proj: MaybeQuantized<nn::Linear>,
+    pub num_heads: i32,
+    pub head_dim: i32,
 }
 
 impl AudioAttention {
@@ -114,20 +114,20 @@ impl Module<AudioAttentionInput<'_>> for AudioAttention {
 // ── AudioEncoderLayer ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone, ModuleParameters, Quantizable)]
-struct AudioEncoderLayer {
+pub struct AudioEncoderLayer {
     #[param]
-    self_attn_layer_norm: nn::LayerNorm,
+    pub self_attn_layer_norm: nn::LayerNorm,
     #[quantizable]
     #[param]
-    self_attn: AudioAttention,
+    pub self_attn: AudioAttention,
     #[param]
-    final_layer_norm: nn::LayerNorm,
+    pub final_layer_norm: nn::LayerNorm,
     #[quantizable]
     #[param]
-    fc1: MaybeQuantized<nn::Linear>,
+    pub fc1: MaybeQuantized<nn::Linear>,
     #[quantizable]
     #[param]
-    fc2: MaybeQuantized<nn::Linear>,
+    pub fc2: MaybeQuantized<nn::Linear>,
 }
 
 impl AudioEncoderLayer {
@@ -166,29 +166,29 @@ impl AudioEncoderLayer {
 #[derive(Debug, Clone, ModuleParameters, Quantizable)]
 pub struct AudioEncoder {
     #[param]
-    conv2d1: nn::Conv2d,
+    pub conv2d1: nn::Conv2d,
     #[param]
-    conv2d2: nn::Conv2d,
+    pub conv2d2: nn::Conv2d,
     #[param]
-    conv2d3: nn::Conv2d,
+    pub conv2d3: nn::Conv2d,
     #[quantizable]
     #[param]
-    conv_out: MaybeQuantized<nn::Linear>,
+    pub conv_out: MaybeQuantized<nn::Linear>,
     #[quantizable]
     #[param]
-    layers: Vec<AudioEncoderLayer>,
+    pub layers: Vec<AudioEncoderLayer>,
     #[param]
-    ln_post: nn::LayerNorm,
+    pub ln_post: nn::LayerNorm,
     #[quantizable]
     #[param]
-    proj1: MaybeQuantized<nn::Linear>,
+    pub proj1: MaybeQuantized<nn::Linear>,
     #[quantizable]
     #[param]
-    proj2: MaybeQuantized<nn::Linear>,
+    pub proj2: MaybeQuantized<nn::Linear>,
 
     // Not a parameter — computed at init
-    sinusoidal_pe: Array,
-    config: AudioEncoderConfig,
+    pub sinusoidal_pe: Array,
+    pub config: AudioEncoderConfig,
 }
 
 impl AudioEncoder {
