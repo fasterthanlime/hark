@@ -126,7 +126,30 @@ fn run_streaming(
 ) -> anyhow::Result<()> {
     let opts = StreamingOptions::default().with_mode(mode);
     let chunk_samples = (opts.chunk_size_sec * 16000.0) as usize;
-    let mut state = StreamingState::new(opts, tokenizer);
+
+    // Load forced aligner for rotate mode
+    let aligner = if mode == StreamingMode::Rotate {
+        let aligner_dir = dirs::home_dir()
+            .unwrap()
+            .join("Library/Caches/qwen3-asr/Qwen--Qwen3-ForcedAligner-0.6B");
+        if aligner_dir.exists() {
+            println!("Loading forced aligner for rotate mode...");
+            let t0 = Instant::now();
+            let a = qwen3_asr_mlx::forced_aligner::ForcedAligner::load(
+                &aligner_dir,
+                tokenizer.clone(),
+            )?;
+            println!("Aligner loaded in {:.0}ms", t0.elapsed().as_millis());
+            Some(a)
+        } else {
+            println!("Warning: forced aligner not found, using proportional estimate");
+            None
+        }
+    } else {
+        None
+    };
+
+    let mut state = StreamingState::new(opts, tokenizer, aligner);
 
     println!("\n--- Streaming mode={:?} (chunk={}s) ---", mode, state.options.chunk_size_sec);
 

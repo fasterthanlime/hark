@@ -8,6 +8,7 @@ use mlx_rs::error::Exception;
 use mlx_rs::Array;
 
 use crate::encoder::EncoderCache;
+use crate::forced_aligner::ForcedAligner;
 use crate::generate;
 use crate::mel::MelExtractor;
 use crate::model::Qwen3ASRModel;
@@ -146,10 +147,13 @@ pub struct StreamingState {
     committed_text: String,
     last_first_sentence: String,
     stable_count: usize,
+
+    /// Forced aligner for precise audio boundaries (Rotate mode).
+    aligner: Option<ForcedAligner>,
 }
 
 impl StreamingState {
-    pub fn new(options: StreamingOptions, tokenizer: tokenizers::Tokenizer) -> Self {
+    pub fn new(options: StreamingOptions, tokenizer: tokenizers::Tokenizer, aligner: Option<ForcedAligner>) -> Self {
         let chunk_size_samples = (options.chunk_size_sec * 16000.0) as usize;
         let overlap_samples = (options.overlap_sec * 16000.0) as usize;
         let language = options.language.clone().unwrap_or_else(|| "English".to_string());
@@ -178,6 +182,7 @@ impl StreamingState {
             committed_text: String::new(),
             last_first_sentence: String::new(),
             stable_count: 0,
+            aligner,
         }
     }
 }
@@ -557,13 +562,33 @@ fn feed_rotate(
             if state.stable_count >= state.options.commit_after_stable && has_more {
                 let committed_sentence = state.last_first_sentence.clone();
 
-                // Estimate audio boundary using proportional token count.
-                // TODO: replace with forced aligner for exact boundaries.
-                let committed_audio_samples = estimate_audio_boundary(
-                    &committed_sentence,
-                    &current_text,
-                    state.audio_accum.len(),
-                );
+                // Determine audio boundary for the committed sentence.
+                let committed_audio_samples = if let Some(ref mut aligner) = state.aligner {
+                    // Use forced aligner for precise word-level timestamps
+                    match aligner.align(&state.audio_accum, &committed_sentence) {
+                        Ok(items) if !items.is_empty() => {
+                            let last_word = &items[items.len() - 1];
+                            let end_sec = last_word.end_time;
+                            let samples = (end_sec * 16000.0) as usize;
+                            log::info!(
+                                "Aligner: committed text ends at {:.3}s ({} samples), last word: {:?} [{:.3}s-{:.3}s]",
+                                end_sec, samples, last_word.word, last_word.start_time, last_word.end_time,
+                            );
+                            samples
+                        }
+                        Ok(_) => {
+                            log::warn!("Aligner returned no items, falling back to estimate");
+                            estimate_audio_boundary(&committed_sentence, &current_text, state.audio_accum.len())
+                        }
+                        Err(e) => {
+                            log::warn!("Aligner failed: {e}, falling back to estimate");
+                            estimate_audio_boundary(&committed_sentence, &current_text, state.audio_accum.len())
+                        }
+                    }
+                } else {
+                    // Fallback: proportional estimate
+                    estimate_audio_boundary(&committed_sentence, &current_text, state.audio_accum.len())
+                };
 
                 // Append to committed text
                 if !state.committed_text.is_empty() {
@@ -584,22 +609,13 @@ fn feed_rotate(
                     keep_from as f64 / 16000.0,
                 );
 
-                // Tokenize last ~200 chars of committed text for prefix context
-                let context_text = if state.committed_text.len() > 200 {
-                    &state.committed_text[state.committed_text.len() - 200..]
-                } else {
-                    &state.committed_text
-                };
-                let context_ids: Vec<u32> = state.tokenizer
-                    .encode(context_text, false)
-                    .map(|enc| enc.get_ids().to_vec())
-                    .unwrap_or_default();
-
-                // Reset streaming state for new session with remaining audio
+                // Reset streaming state for new session with remaining audio.
+                // Start fresh — no prefix seeding. The model transcribes the
+                // remaining audio without bias from committed text.
                 state.audio_accum = remaining_audio;
                 state.encoder_cache = EncoderCache::new();
-                state.raw_token_ids = context_ids;
-                state.chunk_id = state.options.unfixed_chunk_num + 1;
+                state.raw_token_ids.clear();
+                state.chunk_id = 0;
                 state.stable_count = 0;
                 state.last_first_sentence.clear();
 
