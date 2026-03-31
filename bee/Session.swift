@@ -72,7 +72,7 @@ actor Session {
 
     // MARK: - Start
 
-    func start(language: String?) async {
+    func start(language: String?, asrConfig: TranscriptionService.SessionConfig) async {
         logger.info("[\(self.id)] Starting session")
 
         // Warm up engine if cold
@@ -104,7 +104,9 @@ actor Session {
         ime = .active
 
         // ASR: create session
-        let asrSession = transcriptionService.createSession(language: language)
+        var config = asrConfig
+        config.language = language
+        let asrSession = transcriptionService.createSession(config)
         asr = asrSession != nil ? .streaming : .idle
 
         // --- Capture Task ---
@@ -498,6 +500,9 @@ final class SessionDiag: @unchecked Sendable {
         var fedSamples: Int = 0
         var lastFeedUs: Int = 0
         var totalFeedUs: Int = 0
+
+        var lastRms: Float = 0
+        var peakRms: Float = 0
 
         var drainBuffers: Int = 0
         var drainSamples: Int = 0

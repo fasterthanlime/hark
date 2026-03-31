@@ -209,6 +209,14 @@ struct MenuBarView: View {
     @ViewBuilder
     private var togglesSection: some View {
         VStack(alignment: .leading, spacing: 4) {
+            chunkSizePicker
+            tokenLimitPicker(label: "Tokens/step", options: Self.streamingTokenOptions, current: appState.maxNewTokensStreaming) {
+                appState.maxNewTokensStreaming = $0
+            }
+            tokenLimitPicker(label: "Tokens/final", options: Self.finalTokenOptions, current: appState.maxNewTokensFinal) {
+                appState.maxNewTokensFinal = $0
+            }
+
             toggleRow(label: "Run on Startup", isOn: runOnStartupEnabled) {
                 runOnStartupEnabled.toggle()
                 // TODO: SMAppService register/unregister
@@ -224,6 +232,84 @@ struct MenuBarView: View {
                 DebugPanel.shared.toggle(appState: appState)
             }
         }
+    }
+
+    private static let chunkSizeOptions: [(label: String, value: Float)] = [
+        ("0.2s", 0.2),
+        ("0.35s", 0.35),
+        ("0.5s", 0.5),
+        ("0.75s", 0.75),
+        ("1s", 1.0),
+    ]
+
+    private static let streamingTokenOptions: [(label: String, value: UInt32)] = [
+        ("default", 0), ("8", 8), ("16", 16), ("32", 32), ("64", 64),
+    ]
+
+    private static let finalTokenOptions: [(label: String, value: UInt32)] = [
+        ("default", 0), ("64", 64), ("128", 128), ("256", 256), ("512", 512),
+    ]
+
+    @ViewBuilder
+    private func tokenLimitPicker(label: String, options: [(label: String, value: UInt32)], current: UInt32, action: @escaping (UInt32) -> Void) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(.system(.caption))
+                .foregroundStyle(.secondary)
+                .frame(width: 60, alignment: .leading)
+            Spacer(minLength: 0)
+            HStack(spacing: 2) {
+                ForEach(options, id: \.value) { opt in
+                    Button {
+                        action(opt.value)
+                    } label: {
+                        Text(opt.label)
+                            .font(.system(size: 10, weight: current == opt.value ? .bold : .regular))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background {
+                                if current == opt.value {
+                                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                        .fill(Color.accentColor.opacity(0.2))
+                                }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.horizontal, 6)
+    }
+
+    @ViewBuilder
+    private var chunkSizePicker: some View {
+        HStack(spacing: 8) {
+            Text("Chunk")
+                .font(.system(.caption))
+                .foregroundStyle(.secondary)
+                .frame(width: 60, alignment: .leading)
+            Spacer(minLength: 0)
+            HStack(spacing: 2) {
+                ForEach(Self.chunkSizeOptions, id: \.value) { opt in
+                    Button {
+                        appState.chunkSizeSec = opt.value
+                    } label: {
+                        Text(opt.label)
+                            .font(.system(size: 10, weight: appState.chunkSizeSec == opt.value ? .bold : .regular))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background {
+                                if appState.chunkSizeSec == opt.value {
+                                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                        .fill(Color.accentColor.opacity(0.2))
+                                }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.horizontal, 6)
     }
 
     @ViewBuilder

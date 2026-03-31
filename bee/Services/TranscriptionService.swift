@@ -62,7 +62,15 @@ final class TranscriptionService: @unchecked Sendable {
 
     // MARK: - Streaming Session
 
-    func createSession(chunkSizeSec: Float = 1.0, language: String? = nil) -> StreamingSession? {
+    struct SessionConfig: Sendable {
+        var chunkSizeSec: Float = 0.5
+        var sessionDurationSec: Float = 120.0
+        var language: String? = nil
+        var maxNewTokensStreaming: UInt32 = 0  // 0 = use Rust default
+        var maxNewTokensFinal: UInt32 = 0      // 0 = use Rust default
+    }
+
+    func createSession(_ config: SessionConfig = SessionConfig()) -> StreamingSession? {
         lock.lock()
         guard let engine else {
             lock.unlock()
@@ -72,16 +80,20 @@ final class TranscriptionService: @unchecked Sendable {
 
         func makeSession(langPtr: UnsafePointer<CChar>?) -> StreamingSession? {
             let opts = AsrSessionOptions(
-                chunk_size_sec: chunkSizeSec,
-                session_duration_sec: 120.0,
+                chunk_size_sec: config.chunkSizeSec,
+                session_duration_sec: config.sessionDurationSec,
                 language: langPtr,
-                prompt: nil
+                prompt: nil,
+                unfixed_chunk_num: 0,
+                unfixed_token_num: 0,
+                max_new_tokens_streaming: config.maxNewTokensStreaming,
+                max_new_tokens_final: config.maxNewTokensFinal
             )
             guard let session = asr_session_create(engine, opts) else { return nil }
             return StreamingSession(ptr: session)
         }
 
-        if let language {
+        if let language = config.language {
             return language.withCString { makeSession(langPtr: $0) }
         }
         return makeSession(langPtr: nil)

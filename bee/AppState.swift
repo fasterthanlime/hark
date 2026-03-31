@@ -32,6 +32,11 @@ final class AppState {
     // History
     var transcriptionHistory: [TranscriptionHistoryItem] = []
 
+    // ASR settings
+    var chunkSizeSec: Float = 0.5
+    var maxNewTokensStreaming: UInt32 = 0  // 0 = Rust default (32)
+    var maxNewTokensFinal: UInt32 = 0      // 0 = Rust default (512)
+
     // Debug
     var debugEnabled = false
     var lastSessionDiag: SessionDiag.Snapshot?
@@ -103,7 +108,12 @@ final class AppState {
             let session = createSession()
             uiState = .pending(session)
             startPendingTimer(session: session)
-            Task { await session.start(language: detectLanguage()) }
+            let config = TranscriptionService.SessionConfig(
+                chunkSizeSec: chunkSizeSec,
+                maxNewTokensStreaming: maxNewTokensStreaming,
+                maxNewTokensFinal: maxNewTokensFinal
+            )
+            Task { await session.start(language: detectLanguage(), asrConfig: config) }
             return false // not swallowed
 
         case .locked(let session):

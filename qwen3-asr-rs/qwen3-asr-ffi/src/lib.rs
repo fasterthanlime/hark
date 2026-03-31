@@ -42,6 +42,14 @@ pub struct AsrSessionOptions {
     pub language: *const c_char,
     /// Vocabulary hint / prompt text. NULL for none.
     pub prompt: *const c_char,
+    /// Number of initial chunks before prefix conditioning kicks in. 0 = use default (2).
+    pub unfixed_chunk_num: u32,
+    /// Number of tokens to roll back from end for context. 0 = use default (12).
+    pub unfixed_token_num: u32,
+    /// Max new tokens per streaming step. 0 = use default (32).
+    pub max_new_tokens_streaming: u32,
+    /// Max new tokens for final flush. 0 = use default (512).
+    pub max_new_tokens_final: u32,
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -465,10 +473,20 @@ pub extern "C" fn asr_session_create(
     let engine_ref = unsafe { &*engine };
     let arc = engine_ref.inner.clone();
     let mut streaming_opts = StreamingOptions::default()
-        .with_chunk_size_sec(opts.chunk_size_sec)
-        // Keep a larger mutable suffix so punctuation/endings can be revised
-        // instead of being frozen too aggressively between chunks.
-        .with_unfixed_token_num(12);
+        .with_chunk_size_sec(opts.chunk_size_sec);
+    if opts.unfixed_chunk_num > 0 {
+        streaming_opts = streaming_opts.with_unfixed_chunk_num(opts.unfixed_chunk_num as usize);
+    }
+    // Default unfixed_token_num is 12 (larger than upstream default of 5)
+    // to keep a larger mutable suffix so punctuation can be revised.
+    let unfixed_token_num = if opts.unfixed_token_num > 0 { opts.unfixed_token_num as usize } else { 12 };
+    streaming_opts = streaming_opts.with_unfixed_token_num(unfixed_token_num);
+    if opts.max_new_tokens_streaming > 0 {
+        streaming_opts = streaming_opts.with_max_new_tokens_streaming(opts.max_new_tokens_streaming as usize);
+    }
+    if opts.max_new_tokens_final > 0 {
+        streaming_opts = streaming_opts.with_max_new_tokens_final(opts.max_new_tokens_final as usize);
+    }
     if !opts.language.is_null() {
         if let Ok(lang) = unsafe { CStr::from_ptr(opts.language) }.to_str() {
             if !lang.is_empty() {

@@ -14,10 +14,14 @@ typedef struct AsrSession AsrSession;
 
 /* Options for creating a streaming session */
 typedef struct {
-    float chunk_size_sec;        /* e.g. 0.5  */
-    float session_duration_sec;  /* e.g. 10.0 — auto-rotates after this */
-    const char *language;        /* e.g. "english", "french", or NULL for auto-detect */
-    const char *prompt;          /* vocabulary hint text, or NULL for none */
+    float chunk_size_sec;           /* e.g. 0.5  */
+    float session_duration_sec;     /* e.g. 10.0 — auto-rotates after this */
+    const char *language;           /* e.g. "english", "french", or NULL for auto-detect */
+    const char *prompt;             /* vocabulary hint text, or NULL for none */
+    unsigned int unfixed_chunk_num;       /* 0 = use default (2) */
+    unsigned int unfixed_token_num;       /* 0 = use default (12) */
+    unsigned int max_new_tokens_streaming; /* 0 = use default (32) */
+    unsigned int max_new_tokens_final;    /* 0 = use default (512) */
 } AsrSessionOptions;
 
 /*
