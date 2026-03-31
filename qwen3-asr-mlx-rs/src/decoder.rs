@@ -4,11 +4,12 @@
 
 use mlx_rs::builder::Builder;
 use mlx_rs::error::Exception;
-use mlx_rs::macros::ModuleParameters;
+use mlx_rs::macros::{ModuleParameters, Quantizable};
 use mlx_rs::module::Module;
 use mlx_rs::nn;
 use mlx_rs::ops;
 use mlx_rs::ops::indexing::IndexOp;
+use mlx_rs::quantization::MaybeQuantized;
 use mlx_rs::Array;
 
 use crate::config::TextDecoderConfig;
@@ -62,16 +63,20 @@ impl KVCache {
 
 // ── TextAttention ───────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, ModuleParameters)]
+#[derive(Debug, Clone, ModuleParameters, Quantizable)]
 struct TextAttention {
+    #[quantizable]
     #[param]
-    q_proj: nn::Linear,
+    q_proj: MaybeQuantized<nn::Linear>,
+    #[quantizable]
     #[param]
-    k_proj: nn::Linear,
+    k_proj: MaybeQuantized<nn::Linear>,
+    #[quantizable]
     #[param]
-    v_proj: nn::Linear,
+    v_proj: MaybeQuantized<nn::Linear>,
+    #[quantizable]
     #[param]
-    o_proj: nn::Linear,
+    o_proj: MaybeQuantized<nn::Linear>,
     #[param]
     q_norm: nn::RmsNorm,
     #[param]
@@ -91,10 +96,10 @@ impl TextAttention {
         let bias = false; // Qwen3-ASR uses no bias on decoder attention
 
         Ok(Self {
-            q_proj: nn::LinearBuilder::new(h, nh * hd).bias(bias).build()?,
-            k_proj: nn::LinearBuilder::new(h, nkv * hd).bias(bias).build()?,
-            v_proj: nn::LinearBuilder::new(h, nkv * hd).bias(bias).build()?,
-            o_proj: nn::LinearBuilder::new(nh * hd, h).bias(bias).build()?,
+            q_proj: MaybeQuantized::new(nn::LinearBuilder::new(h, nh * hd).bias(bias).build()?),
+            k_proj: MaybeQuantized::new(nn::LinearBuilder::new(h, nkv * hd).bias(bias).build()?),
+            v_proj: MaybeQuantized::new(nn::LinearBuilder::new(h, nkv * hd).bias(bias).build()?),
+            o_proj: MaybeQuantized::new(nn::LinearBuilder::new(nh * hd, h).bias(bias).build()?),
             q_norm: nn::RmsNormBuilder::new(hd).eps(config.rms_norm_eps as f32).build()?,
             k_norm: nn::RmsNormBuilder::new(hd).eps(config.rms_norm_eps as f32).build()?,
             num_heads: nh,
@@ -183,22 +188,25 @@ fn repeat_kv(x: &Array, n_rep: i32) -> Result<Array, Exception> {
 
 // ── SwiGLU ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, ModuleParameters)]
+#[derive(Debug, Clone, ModuleParameters, Quantizable)]
 struct SwiGLU {
+    #[quantizable]
     #[param]
-    gate_proj: nn::Linear,
+    gate_proj: MaybeQuantized<nn::Linear>,
+    #[quantizable]
     #[param]
-    up_proj: nn::Linear,
+    up_proj: MaybeQuantized<nn::Linear>,
+    #[quantizable]
     #[param]
-    down_proj: nn::Linear,
+    down_proj: MaybeQuantized<nn::Linear>,
 }
 
 impl SwiGLU {
     fn new(hidden_size: i32, intermediate_size: i32) -> Result<Self, Exception> {
         Ok(Self {
-            gate_proj: nn::LinearBuilder::new(hidden_size, intermediate_size).bias(false).build()?,
-            up_proj: nn::LinearBuilder::new(hidden_size, intermediate_size).bias(false).build()?,
-            down_proj: nn::LinearBuilder::new(intermediate_size, hidden_size).bias(false).build()?,
+            gate_proj: MaybeQuantized::new(nn::LinearBuilder::new(hidden_size, intermediate_size).bias(false).build()?),
+            up_proj: MaybeQuantized::new(nn::LinearBuilder::new(hidden_size, intermediate_size).bias(false).build()?),
+            down_proj: MaybeQuantized::new(nn::LinearBuilder::new(intermediate_size, hidden_size).bias(false).build()?),
         })
     }
 }
@@ -218,14 +226,16 @@ impl Module<&Array> for SwiGLU {
 
 // ── TextDecoderLayer ────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, ModuleParameters)]
+#[derive(Debug, Clone, ModuleParameters, Quantizable)]
 struct TextDecoderLayer {
     #[param]
     input_layernorm: nn::RmsNorm,
+    #[quantizable]
     #[param]
     self_attn: TextAttention,
     #[param]
     post_attention_layernorm: nn::RmsNorm,
+    #[quantizable]
     #[param]
     mlp: SwiGLU,
 }
@@ -265,10 +275,12 @@ impl TextDecoderLayer {
 
 // ── TextDecoder ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, ModuleParameters)]
+#[derive(Debug, Clone, ModuleParameters, Quantizable)]
 pub struct TextDecoder {
+    #[quantizable]
     #[param]
-    pub embed_tokens: nn::Embedding,
+    pub embed_tokens: MaybeQuantized<nn::Embedding>,
+    #[quantizable]
     #[param]
     layers: Vec<TextDecoderLayer>,
     #[param]
@@ -301,7 +313,7 @@ impl TextDecoder {
             .unwrap_or(mrope::MROPE_SECTION);
 
         Ok(Self {
-            embed_tokens: nn::Embedding::new(config.vocab_size as i32, h)?,
+            embed_tokens: MaybeQuantized::new(nn::Embedding::new(config.vocab_size as i32, h)?),
             layers,
             norm: nn::RmsNormBuilder::new(h).eps(eps).build()?,
             rotary_emb: InterleavedMRoPE::new(

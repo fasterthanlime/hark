@@ -1,10 +1,11 @@
 use mlx_rs::builder::Builder;
 use mlx_rs::error::Exception;
-use mlx_rs::macros::ModuleParameters;
+use mlx_rs::macros::{ModuleParameters, Quantizable};
 use mlx_rs::module::Module;
 use mlx_rs::nn;
 use mlx_rs::ops;
 use mlx_rs::ops::indexing::IndexOp;
+use mlx_rs::quantization::MaybeQuantized;
 use mlx_rs::Array;
 
 use crate::config::AudioEncoderConfig;
@@ -35,16 +36,20 @@ fn build_sinusoidal_pe(max_positions: usize, embedding_dim: usize) -> Array {
 
 // ── AudioAttention ──────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, ModuleParameters)]
+#[derive(Debug, Clone, ModuleParameters, Quantizable)]
 struct AudioAttention {
+    #[quantizable]
     #[param]
-    q_proj: nn::Linear,
+    q_proj: MaybeQuantized<nn::Linear>,
+    #[quantizable]
     #[param]
-    k_proj: nn::Linear,
+    k_proj: MaybeQuantized<nn::Linear>,
+    #[quantizable]
     #[param]
-    v_proj: nn::Linear,
+    v_proj: MaybeQuantized<nn::Linear>,
+    #[quantizable]
     #[param]
-    out_proj: nn::Linear,
+    out_proj: MaybeQuantized<nn::Linear>,
     num_heads: i32,
     head_dim: i32,
 }
@@ -53,10 +58,10 @@ impl AudioAttention {
     fn new(d_model: i32, num_heads: i32) -> Result<Self, Exception> {
         let head_dim = d_model / num_heads;
         Ok(Self {
-            q_proj: nn::LinearBuilder::new(d_model, d_model).bias(true).build()?,
-            k_proj: nn::LinearBuilder::new(d_model, d_model).bias(true).build()?,
-            v_proj: nn::LinearBuilder::new(d_model, d_model).bias(true).build()?,
-            out_proj: nn::LinearBuilder::new(d_model, d_model).bias(true).build()?,
+            q_proj: MaybeQuantized::new(nn::LinearBuilder::new(d_model, d_model).bias(true).build()?),
+            k_proj: MaybeQuantized::new(nn::LinearBuilder::new(d_model, d_model).bias(true).build()?),
+            v_proj: MaybeQuantized::new(nn::LinearBuilder::new(d_model, d_model).bias(true).build()?),
+            out_proj: MaybeQuantized::new(nn::LinearBuilder::new(d_model, d_model).bias(true).build()?),
             num_heads,
             head_dim,
         })
@@ -108,18 +113,21 @@ impl Module<AudioAttentionInput<'_>> for AudioAttention {
 
 // ── AudioEncoderLayer ───────────────────────────────────────────────────
 
-#[derive(Debug, Clone, ModuleParameters)]
+#[derive(Debug, Clone, ModuleParameters, Quantizable)]
 struct AudioEncoderLayer {
     #[param]
     self_attn_layer_norm: nn::LayerNorm,
+    #[quantizable]
     #[param]
     self_attn: AudioAttention,
     #[param]
     final_layer_norm: nn::LayerNorm,
+    #[quantizable]
     #[param]
-    fc1: nn::Linear,
+    fc1: MaybeQuantized<nn::Linear>,
+    #[quantizable]
     #[param]
-    fc2: nn::Linear,
+    fc2: MaybeQuantized<nn::Linear>,
 }
 
 impl AudioEncoderLayer {
@@ -128,8 +136,8 @@ impl AudioEncoderLayer {
             self_attn_layer_norm: nn::LayerNorm::new(d_model)?,
             self_attn: AudioAttention::new(d_model, num_heads)?,
             final_layer_norm: nn::LayerNorm::new(d_model)?,
-            fc1: nn::LinearBuilder::new(d_model, ffn_dim).bias(true).build()?,
-            fc2: nn::LinearBuilder::new(ffn_dim, d_model).bias(true).build()?,
+            fc1: MaybeQuantized::new(nn::LinearBuilder::new(d_model, ffn_dim).bias(true).build()?),
+            fc2: MaybeQuantized::new(nn::LinearBuilder::new(ffn_dim, d_model).bias(true).build()?),
         })
     }
 
@@ -155,7 +163,7 @@ impl AudioEncoderLayer {
 
 // ── AudioEncoder ────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, ModuleParameters)]
+#[derive(Debug, Clone, ModuleParameters, Quantizable)]
 pub struct AudioEncoder {
     #[param]
     conv2d1: nn::Conv2d,
@@ -163,16 +171,20 @@ pub struct AudioEncoder {
     conv2d2: nn::Conv2d,
     #[param]
     conv2d3: nn::Conv2d,
+    #[quantizable]
     #[param]
-    conv_out: nn::Linear,
+    conv_out: MaybeQuantized<nn::Linear>,
+    #[quantizable]
     #[param]
     layers: Vec<AudioEncoderLayer>,
     #[param]
     ln_post: nn::LayerNorm,
+    #[quantizable]
     #[param]
-    proj1: nn::Linear,
+    proj1: MaybeQuantized<nn::Linear>,
+    #[quantizable]
     #[param]
-    proj2: nn::Linear,
+    proj2: MaybeQuantized<nn::Linear>,
 
     // Not a parameter — computed at init
     sinusoidal_pe: Array,
@@ -203,8 +215,8 @@ impl AudioEncoder {
         let conv2d3 = nn::Conv2dBuilder::new(dhs as i32, dhs as i32, 3)
             .stride(2).padding(1).build()?;
 
-        let conv_out = nn::LinearBuilder::new((dhs * freq_after_conv) as i32, config.d_model as i32)
-            .bias(false).build()?;
+        let conv_out = MaybeQuantized::new(nn::LinearBuilder::new((dhs * freq_after_conv) as i32, config.d_model as i32)
+            .bias(false).build()?);
 
         let sinusoidal_pe = build_sinusoidal_pe(config.max_source_positions, config.d_model);
 
@@ -218,10 +230,10 @@ impl AudioEncoder {
         }
 
         let ln_post = nn::LayerNorm::new(config.d_model as i32)?;
-        let proj1 = nn::LinearBuilder::new(config.d_model as i32, config.d_model as i32)
-            .bias(true).build()?;
-        let proj2 = nn::LinearBuilder::new(config.d_model as i32, config.output_dim as i32)
-            .bias(true).build()?;
+        let proj1 = MaybeQuantized::new(nn::LinearBuilder::new(config.d_model as i32, config.d_model as i32)
+            .bias(true).build()?);
+        let proj2 = MaybeQuantized::new(nn::LinearBuilder::new(config.d_model as i32, config.output_dim as i32)
+            .bias(true).build()?);
 
         Ok(Self {
             conv2d1,

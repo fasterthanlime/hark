@@ -99,6 +99,53 @@ fn main() -> anyhow::Result<()> {
 
     println!("  Remapped {} weight keys", remapped.len());
 
+    // Detect quantization: check for .scales keys
+    let quantized_prefixes: std::collections::HashSet<String> = remapped.keys()
+        .filter(|k| k.ends_with(".scales"))
+        .map(|k| k.strip_suffix(".scales").unwrap().to_string())
+        .collect();
+    let is_quantized = !quantized_prefixes.is_empty();
+
+    if is_quantized {
+        // Infer bits from weight shapes
+        let group_size = 64i32;
+        let bits = quantized_prefixes.iter().next()
+            .and_then(|prefix| {
+                let w = remapped.get(&format!("{prefix}.weight"))?;
+                let s = remapped.get(&format!("{prefix}.scales"))?;
+                let w_cols = w.shape().last().copied().unwrap_or(1);
+                let s_cols = s.shape().last().copied().unwrap_or(1);
+                Some(if s_cols > 0 { (w_cols * 32 / (s_cols * group_size)) as i32 } else { 4 })
+            })
+            .unwrap_or(4);
+        println!("  Detected {}bit quantized weights (group_size={}), {} quantized layers", bits, group_size, quantized_prefixes.len());
+
+        // Quantize model structure (creates QuantizedLinear with .inner.weight paths)
+        model = mlx_rs::nn::quantize(model, group_size, bits)?;
+
+        // Remap: foo.weight → foo.inner.weight for quantized layers
+        let mut final_weights = std::collections::HashMap::new();
+        for (key, value) in remapped {
+            if key.ends_with(".weight") {
+                let prefix = key.strip_suffix(".weight").unwrap();
+                if quantized_prefixes.contains(prefix) {
+                    final_weights.insert(format!("{prefix}.inner.weight"), value);
+                    continue;
+                }
+            }
+            // For .bias keys on quantized layers: foo.bias → foo.inner.bias
+            if key.ends_with(".bias") && !key.ends_with(".biases") {
+                let prefix = key.strip_suffix(".bias").unwrap();
+                if quantized_prefixes.contains(prefix) {
+                    final_weights.insert(format!("{prefix}.inner.bias"), value);
+                    continue;
+                }
+            }
+            final_weights.insert(key, value);
+        }
+        remapped = final_weights;
+    }
+
     // Load into model using the flattened parameter tree
     use mlx_rs::module::ModuleParameters;
     let mut params = model.parameters_mut().flatten();
@@ -121,9 +168,7 @@ fn main() -> anyhow::Result<()> {
             println!("    ... and {} more", skipped.len() - 10);
         }
     }
-    // Eval after loading
-    use mlx_rs::module::ModuleParametersExt;
-    model.eval()?;
+    // No eval here — MLX lazy evaluation will materialize on first use
     println!("Weights loaded in {:.0}ms", t0.elapsed().as_millis());
 
     // 4. Load audio
@@ -200,8 +245,36 @@ fn main() -> anyhow::Result<()> {
     // Broadcast to (1, 3, seq_len)
     let position_ids = ops::broadcast_to(&pos_arr, &[1, 3, seq_len as i32])?;
 
-    // 8. Generate
-    let t0 = Instant::now();
+    // 8. Generate (run 3 times for warmup comparison)
+    for run in 0..3 {
+        let t0 = Instant::now();
+
+        // Re-encode audio each run (encoder perf matters too)
+        let audio_features_run = model.encode_audio(&mel)?;
+        audio_features_run.eval()?;
+        let enc_ms = t0.elapsed().as_millis();
+
+        let audio_features_run = mlx_rs::ops::expand_dims(&audio_features_run, 0)?;
+
+        let output_tokens = generate::generate(
+            &mut model,
+            &input_ids,
+            &audio_features_run,
+            &position_ids,
+            512,
+        )?;
+        let total_ms = t0.elapsed().as_millis();
+        let gen_ms = total_ms - enc_ms;
+        println!(
+            "Run {}: encode {:.0}ms + generate {} tokens in {:.0}ms ({:.1} tok/s) = {:.0}ms total",
+            run + 1,
+            enc_ms,
+            output_tokens.len(),
+            gen_ms,
+            output_tokens.len() as f64 / (gen_ms as f64 / 1000.0),
+            total_ms,
+        );
+    }
     let output_tokens = generate::generate(
         &mut model,
         &input_ids,
@@ -209,13 +282,6 @@ fn main() -> anyhow::Result<()> {
         &position_ids,
         512,
     )?;
-    let gen_ms = t0.elapsed().as_millis();
-    println!(
-        "Generated {} tokens in {:.0}ms ({:.1} tok/s)",
-        output_tokens.len(),
-        gen_ms,
-        output_tokens.len() as f64 / (gen_ms as f64 / 1000.0)
-    );
 
     // 9. Decode tokens with tokenizer
     let tokenizer_path = model_dir.join("tokenizer.json");

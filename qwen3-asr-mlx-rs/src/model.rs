@@ -2,11 +2,12 @@
 
 use mlx_rs::builder::Builder;
 use mlx_rs::error::Exception;
-use mlx_rs::macros::ModuleParameters;
+use mlx_rs::macros::{ModuleParameters, Quantizable};
 use mlx_rs::module::Module;
 use mlx_rs::nn;
 use mlx_rs::ops;
 use mlx_rs::ops::indexing::IndexOp;
+use mlx_rs::quantization::MaybeQuantized;
 use mlx_rs::Array;
 
 use crate::config::ThinkerConfig;
@@ -19,14 +20,17 @@ pub const AUDIO_START_TOKEN_ID: i32 = 151669;
 pub const AUDIO_END_TOKEN_ID: i32 = 151670;
 pub const EOS_TOKEN_IDS: &[i32] = &[151643, 151645];
 
-#[derive(Debug, Clone, ModuleParameters)]
+#[derive(Debug, Clone, ModuleParameters, Quantizable)]
 pub struct Qwen3ASRModel {
+    #[quantizable]
     #[param]
     pub audio_tower: AudioEncoder,
+    #[quantizable]
     #[param]
     pub model: TextDecoder,
+    #[quantizable]
     #[param]
-    pub lm_head: nn::Linear,
+    pub lm_head: MaybeQuantized<nn::Linear>,
 
     audio_token_id: i32,
 }
@@ -35,12 +39,12 @@ impl Qwen3ASRModel {
     pub fn new(config: &ThinkerConfig) -> Result<Self, Exception> {
         let audio_tower = AudioEncoder::new(&config.audio_config)?;
         let model = TextDecoder::new(&config.text_config)?;
-        let lm_head = nn::LinearBuilder::new(
+        let lm_head = MaybeQuantized::new(nn::LinearBuilder::new(
             config.text_config.hidden_size as i32,
             config.text_config.vocab_size as i32,
         )
         .bias(false)
-        .build()?;
+        .build()?);
 
         Ok(Self {
             audio_tower,
