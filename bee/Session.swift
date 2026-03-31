@@ -303,12 +303,16 @@ actor Session {
 
             for await _ in ch2.stream {
                 let events = ch2.drain()
+
+                // If a .done is in this batch, skip animation and go straight to commit
+                let hasDone = events.contains { if case .done = $0 { return true }; return false }
+
                 for event in events {
                     switch event {
                     case .partial(let text):
                         targetText = text
 
-                        if displayedText == targetText { break }
+                        if hasDone || displayedText == targetText { break }
 
                         // Matrix-style morph: randomly alternate between
                         // appending the next char and fixing a wrong char in-place
