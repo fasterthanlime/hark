@@ -134,7 +134,7 @@ fn create_mel_filterbank(
     filters
 }
 
-pub(crate) struct MelExtractor {
+pub struct MelExtractor {
     n_fft: usize,
     hop_length: usize,
     num_mel_bins: usize,
@@ -143,7 +143,7 @@ pub(crate) struct MelExtractor {
 }
 
 impl MelExtractor {
-    pub(crate) fn new(
+    pub fn new(
         n_fft: usize,
         hop_length: usize,
         num_mel_bins: usize,
@@ -168,7 +168,7 @@ impl MelExtractor {
 
     /// Extract log-mel spectrogram.
     /// Returns flat vec [num_mel_bins × num_frames], and (num_mel_bins, num_frames).
-    pub(crate) fn extract(&self, samples: &[f32]) -> Result<(Vec<f32>, usize, usize)> {
+    pub fn extract(&self, samples: &[f32]) -> Result<(Vec<f32>, usize, usize)> {
         // Pad to next multiple of hop_length
         let padded_len = samples.len().div_ceil(self.hop_length) * self.hop_length;
         let mut padded_samples = samples.to_vec();

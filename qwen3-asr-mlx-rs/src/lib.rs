@@ -2,6 +2,7 @@ pub mod config;
 pub mod decoder;
 pub mod encoder;
 pub mod error;
+pub mod generate;
 pub mod mel;
 pub mod model;
 pub mod mrope;

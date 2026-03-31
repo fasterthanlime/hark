@@ -16,5 +16,10 @@ rustfft = "6"
 safetensors = "0.6"
 anyhow = "1"
 log = "0.4"
+env_logger = "0.11"
 thiserror = "2"
 half = "2"
+
+[[bin]]
+name = "transcribe"
+path = "src/bin/transcribe.rs"
