@@ -317,6 +317,10 @@ impl TextDecoder {
     ///
     /// Either `input_ids` (B, L) or `inputs_embeds` (B, L, D) must be provided.
     /// `position_ids` (B, 3, L) must always be provided for MRoPE.
+    pub fn num_layers(&self) -> usize {
+        self.layers.len()
+    }
+
     pub fn forward_decoder(
         &mut self,
         input_ids: Option<&Array>,

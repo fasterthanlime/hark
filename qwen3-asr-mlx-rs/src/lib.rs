@@ -3,6 +3,7 @@ pub mod decoder;
 pub mod encoder;
 pub mod error;
 pub mod mel;
+pub mod model;
 pub mod mrope;
 pub mod weights;
 
