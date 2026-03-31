@@ -88,8 +88,10 @@ pub struct StreamingOptions {
     pub overlap_sec: f32,
     /// Number of stable updates before committing the prefix (Rotate mode). Default: 3
     pub commit_after_stable: usize,
-    /// Number of leading tokens to track for stability (Rotate mode). Default: 32
+    /// Number of leading tokens to commit (Rotate mode). Default: 12
     pub commit_token_count: usize,
+    /// Minimum trailing tokens beyond commit_token_count before committing. Default: 6
+    pub min_trailing_tokens: usize,
     /// VAD speech probability threshold (0.0–1.0). Default: 0.5
     pub vad_threshold: f32,
 }
@@ -108,6 +110,7 @@ impl Default for StreamingOptions {
             overlap_sec: 0.5,
             commit_after_stable: 3,
             commit_token_count: 12,
+            min_trailing_tokens: 6,
             vad_threshold: 0.5,
         }
     }
@@ -125,6 +128,7 @@ impl StreamingOptions {
     pub fn with_overlap_sec(mut self, v: f32) -> Self { self.overlap_sec = v; self }
     pub fn with_commit_after_stable(mut self, v: usize) -> Self { self.commit_after_stable = v; self }
     pub fn with_commit_token_count(mut self, v: usize) -> Self { self.commit_token_count = v; self }
+    pub fn with_min_trailing_tokens(mut self, v: usize) -> Self { self.min_trailing_tokens = v; self }
     pub fn with_vad_threshold(mut self, v: f32) -> Self { self.vad_threshold = v; self }
 }
 
@@ -637,15 +641,18 @@ fn feed_rotate(
             state.chunk_id, state.raw_token_ids.len(), state.stable_count,
             state.options.commit_after_stable, state.options.commit_token_count,
         );
+        let total = state.raw_token_ids.len();
+        let need = state.options.commit_token_count + state.options.min_trailing_tokens;
         stream_log(&format!(
-            "chunk {}: {} tokens, prefix[..{}] stable {}/{}, mode={:?}",
-            state.chunk_id, state.raw_token_ids.len(), n, state.stable_count,
+            "chunk {}: {} tokens (need {}), prefix[..{}] stable {}/{}, mode={:?}",
+            state.chunk_id, total, need, n, state.stable_count,
             state.options.commit_after_stable, state.options.mode,
         ));
 
         // Commit when prefix is stable AND we have enough tokens
         if state.stable_count >= state.options.commit_after_stable
             && n >= state.options.commit_token_count
+            && state.raw_token_ids.len() >= state.options.commit_token_count + state.options.min_trailing_tokens
         {
             let committed_text_new = state.tokenizer
                 .decode(&current_prefix, true)
@@ -849,6 +856,7 @@ fn feed_rotate_cached(
 
         if state.stable_count >= state.options.commit_after_stable
             && n >= state.options.commit_token_count
+            && state.raw_token_ids.len() >= state.options.commit_token_count + state.options.min_trailing_tokens
         {
             let committed_text_new = state.tokenizer
                 .decode(&current_prefix, true)
