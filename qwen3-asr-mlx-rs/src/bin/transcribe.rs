@@ -68,10 +68,62 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("No .safetensors files found in {}", model_dir.display());
     }
 
+    // Load weights with key remapping (strip thinker. prefix, transpose conv2d)
+    let mut all_weights = std::collections::HashMap::new();
     for f in &st_files {
         println!("  Loading weights from {}", f.display());
-        model.load_safetensors(f)?;
+        let tensors = Array::load_safetensors(f)?;
+        all_weights.extend(tensors);
     }
+
+    // Remap keys
+    let mut remapped = std::collections::HashMap::new();
+    for (key, value) in all_weights {
+        let mut new_key = key.clone();
+        let had_thinker = new_key.starts_with("thinker.");
+        if had_thinker {
+            new_key = new_key["thinker.".len()..].to_string();
+        }
+        // Transpose conv2d weights: PyTorch (out,in,kH,kW) → MLX (out,kH,kW,in)
+        let value = if had_thinker
+            && new_key.contains("conv2d")
+            && new_key.ends_with(".weight")
+            && value.ndim() == 4
+        {
+            value.transpose_axes(&[0, 2, 3, 1])?
+        } else {
+            value
+        };
+        remapped.insert(new_key, value);
+    }
+
+    println!("  Remapped {} weight keys", remapped.len());
+
+    // Load into model using the flattened parameter tree
+    use mlx_rs::module::ModuleParameters;
+    let mut params = model.parameters_mut().flatten();
+    let mut loaded = 0;
+    let mut skipped = Vec::new();
+    for (key, value) in &remapped {
+        if let Some(param) = params.get_mut(&**key) {
+            **param = value.clone();
+            loaded += 1;
+        } else {
+            skipped.push(key.clone());
+        }
+    }
+    println!("  Loaded {} params, skipped {} keys", loaded, skipped.len());
+    if !skipped.is_empty() {
+        for k in skipped.iter().take(10) {
+            println!("    skipped: {}", k);
+        }
+        if skipped.len() > 10 {
+            println!("    ... and {} more", skipped.len() - 10);
+        }
+    }
+    // Eval after loading
+    use mlx_rs::module::ModuleParametersExt;
+    model.eval()?;
     println!("Weights loaded in {:.0}ms", t0.elapsed().as_millis());
 
     // 4. Load audio
@@ -103,10 +155,13 @@ fn main() -> anyhow::Result<()> {
     let audio_features = model.encode_audio(&mel)?;
     audio_features.eval()?;
     let n_audio_tokens = audio_features.shape()[0] as usize;
+    let audio_dim = audio_features.shape()[1] as usize;
     println!(
-        "Encoded: {} audio tokens in {:.0}ms",
+        "Encoded: {} audio tokens × {} dim in {:.0}ms (expected dim={})",
         n_audio_tokens,
-        t0.elapsed().as_millis()
+        audio_dim,
+        t0.elapsed().as_millis(),
+        thinker.text_config.hidden_size,
     );
 
     // Add batch dim: (1, n_audio_tokens, dim)
