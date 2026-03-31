@@ -50,6 +50,8 @@ fn main() -> anyhow::Result<()> {
             Some(StreamingMode::Overlap)
         } else if a == "--streaming=rotate" {
             Some(StreamingMode::Rotate)
+        } else if a == "--streaming=rotate-cached" {
+            Some(StreamingMode::RotateCached)
         } else {
             None
         }
@@ -131,7 +133,7 @@ fn run_streaming(
     let chunk_samples = (opts.chunk_size_sec * 16000.0) as usize;
 
     // Load forced aligner for rotate mode
-    let aligner = if mode == StreamingMode::Rotate {
+    let aligner = if mode == StreamingMode::Rotate || mode == StreamingMode::RotateCached {
         let aligner_dir = dirs::home_dir()
             .unwrap()
             .join("Library/Caches/qwen3-asr/Qwen--Qwen3-ForcedAligner-0.6B");

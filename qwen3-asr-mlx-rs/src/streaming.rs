@@ -59,6 +59,9 @@ pub enum StreamingMode {
     Overlap,
     /// Like Accumulate, but sentence commit triggers session rotation.
     Rotate,
+    /// Like Rotate, but reuses decoder KV cache across steps via multi-turn prompts.
+    /// Only prefills new audio each step instead of the full prompt.
+    RotateCached,
 }
 
 // ── StreamingOptions ────────────────────────────────────────────────────
@@ -160,6 +163,13 @@ pub struct StreamingState {
 
     /// Forced aligner for precise audio boundaries (Rotate mode).
     aligner: Option<ForcedAligner>,
+
+    /// Persistent decoder KV cache for RotateCached mode.
+    decoder_cache: Option<crate::decoder::KVCache>,
+    /// Next position in the decoder KV cache.
+    decoder_next_pos: usize,
+    /// Whether first step in current session (needs full prefill vs followup).
+    is_first_step: bool,
 }
 
 impl StreamingState {
@@ -193,6 +203,9 @@ impl StreamingState {
             last_prefix_tokens: Vec::new(),
             stable_count: 0,
             aligner,
+            decoder_cache: None,
+            decoder_next_pos: 0,
+            is_first_step: true,
         }
     }
 }
@@ -227,7 +240,7 @@ pub fn finish_streaming(
     state: &mut StreamingState,
 ) -> Result<String, Exception> {
     match state.options.mode {
-        StreamingMode::Accumulate | StreamingMode::Rotate => finish_accumulate(model, state),
+        StreamingMode::Accumulate | StreamingMode::Rotate | StreamingMode::RotateCached => finish_accumulate(model, state),
         StreamingMode::Overlap => finish_overlap(model, state),
     }
 }
@@ -260,6 +273,7 @@ fn feed_audio_inner(
         StreamingMode::Accumulate => feed_accumulate(model, state, finalizing),
         StreamingMode::Overlap => feed_overlap(model, state, finalizing),
         StreamingMode::Rotate => feed_rotate(model, state, finalizing),
+        StreamingMode::RotateCached => feed_rotate_cached(model, state, finalizing),
     }
 }
 
@@ -665,6 +679,176 @@ fn feed_rotate(
 /// Estimate how many audio samples correspond to the committed text.
 /// Uses proportional character count as approximation.
 /// TODO: replace with forced aligner for precise word-level timestamps.
+// ── Mode: RotateCached ──────────────────────────────────────────────────
+
+fn feed_rotate_cached(
+    model: &mut Qwen3ASRModel,
+    state: &mut StreamingState,
+    finalizing: bool,
+) -> Result<Option<String>, Exception> {
+    // VAD + buffering already handled by feed_audio_inner, but we need the chunk
+    let chunk: Vec<f32> = state.buffer.drain(..state.chunk_size_samples).collect();
+    state.chunk_id += 1;
+
+    if !finalizing && state.chunk_id > 1 {
+        let rms = compute_rms(&chunk);
+        if rms < POST_SPEECH_SILENCE_RMS_THRESHOLD {
+            return Ok(None);
+        }
+    }
+
+    // Encode just this chunk's audio
+    let t_step = std::time::Instant::now();
+    let t0 = std::time::Instant::now();
+
+    let (mel_data, n_mels, n_frames) = state.mel_extractor.extract(&chunk)
+        .map_err(|e| Exception::custom(format!("mel: {e}")))?;
+    let mel = Array::from_slice(&mel_data, &[n_mels as i32, n_frames as i32]);
+    let audio_features = model.encode_audio(&mel)?;
+    let audio_features = mlx_rs::ops::expand_dims(&audio_features, 0)?;
+    let n_audio_tokens = audio_features.shape()[1] as usize;
+    let enc_ms = t0.elapsed().as_millis();
+
+    // Also keep accumulated audio for the aligner (it needs the full session audio)
+    state.audio_accum.extend_from_slice(&chunk);
+
+    // Build prompt: full on first step, followup on subsequent
+    let prompt = if state.is_first_step {
+        state.is_first_step = false;
+        generate::build_initial_prompt(
+            n_audio_tokens,
+            &state.language_tokens,
+            &state.asr_text_tokens,
+        )
+    } else {
+        // Truncate KV cache: roll back unfixed tokens from previous generation
+        if let Some(ref mut cache) = state.decoder_cache {
+            let rollback = state.options.unfixed_token_num.min(
+                state.decoder_next_pos.saturating_sub(1)
+            );
+            if rollback > 0 {
+                let new_len = state.decoder_next_pos - rollback;
+                cache.truncate(new_len);
+                state.decoder_next_pos = new_len;
+                // Also trim the raw token IDs
+                let keep = state.raw_token_ids.len().saturating_sub(rollback);
+                state.raw_token_ids.truncate(keep);
+            }
+        }
+        generate::build_followup_prompt(
+            n_audio_tokens,
+            &state.language_tokens,
+            &state.asr_text_tokens,
+        )
+    };
+
+    // Prefill + decode with persistent cache
+    let t0 = std::time::Instant::now();
+    let (generated, new_pos) = generate::prefill_and_decode(
+        model,
+        &prompt,
+        &audio_features,
+        &mut state.decoder_cache,
+        state.decoder_next_pos,
+        state.options.max_new_tokens_streaming,
+    )?;
+    let decode_ms = t0.elapsed().as_millis();
+    state.decoder_next_pos = new_pos;
+
+    // Accumulate tokens
+    state.raw_token_ids.extend(generated.iter().map(|&t| t as u32));
+
+    // Decode all tokens to text
+    let text = state.tokenizer
+        .decode(&state.raw_token_ids, true)
+        .unwrap_or_default();
+    state.text = text;
+
+    log::info!(
+        "step {}: enc={:.0}ms decode={:.0}ms total={:.0}ms (prompt={} tokens, gen={} tokens, cache_pos={})",
+        state.chunk_id, enc_ms, decode_ms, t_step.elapsed().as_millis(),
+        prompt.len(), generated.len(), state.decoder_next_pos,
+    );
+
+    // --- Commit logic (same as rotate mode) ---
+    if !state.raw_token_ids.is_empty() {
+        let n = state.options.commit_token_count.min(state.raw_token_ids.len());
+        let current_prefix: Vec<u32> = state.raw_token_ids[..n].to_vec();
+
+        if current_prefix == state.last_prefix_tokens {
+            state.stable_count += 1;
+        } else {
+            state.last_prefix_tokens = current_prefix.clone();
+            state.stable_count = 1;
+        }
+
+        if state.stable_count >= state.options.commit_after_stable
+            && n >= state.options.commit_token_count
+        {
+            let committed_text_new = state.tokenizer
+                .decode(&current_prefix, true)
+                .unwrap_or_default();
+
+            let committed_audio_samples = if let Some(ref mut aligner) = state.aligner {
+                let t_align = std::time::Instant::now();
+                let result = aligner.align(&state.audio_accum, &committed_text_new);
+                log::info!("Aligner took {:.0}ms on {:.1}s audio",
+                    t_align.elapsed().as_millis(), state.audio_accum.len() as f64 / 16000.0);
+                match result {
+                    Ok(items) if !items.is_empty() => {
+                        let last_word = &items[items.len() - 1];
+                        let samples = (last_word.end_time * 16000.0) as usize;
+                        log::info!("Aligner: boundary at {:.3}s, last word: {:?}",
+                            last_word.end_time, last_word.word);
+                        samples
+                    }
+                    _ => estimate_audio_boundary(&committed_text_new, &state.text, state.audio_accum.len()),
+                }
+            } else {
+                estimate_audio_boundary(&committed_text_new, &state.text, state.audio_accum.len())
+            };
+
+            if !state.committed_text.is_empty() {
+                state.committed_text = join_committed(&state.committed_text, &committed_text_new);
+            } else {
+                state.committed_text = committed_text_new;
+            }
+
+            let keep_from = committed_audio_samples.min(state.audio_accum.len());
+            let remaining_audio: Vec<f32> = state.audio_accum[keep_from..].to_vec();
+            let remaining_tokens: Vec<u32> = state.raw_token_ids[n..].to_vec();
+
+            log::info!(
+                "Session rotated. Committed: {:?} | audio: kept {:.1}s (boundary at {:.1}s) | seeding {} tokens",
+                state.committed_text,
+                remaining_audio.len() as f64 / 16000.0,
+                keep_from as f64 / 16000.0,
+                remaining_tokens.len(),
+            );
+
+            // Reset session — clear KV cache, start fresh
+            state.audio_accum = remaining_audio;
+            state.encoder_cache = EncoderCache::new();
+            state.raw_token_ids = remaining_tokens;
+            state.chunk_id = state.options.unfixed_chunk_num + 1;
+            state.stable_count = 0;
+            state.last_prefix_tokens.clear();
+            state.decoder_cache = None;
+            state.decoder_next_pos = 0;
+            state.is_first_step = true;
+
+            unsafe { mlx_clear_cache(); }
+            log_memory("after rotation");
+        }
+
+        if !state.committed_text.is_empty() {
+            state.text = join_committed(&state.committed_text, &state.text);
+        }
+    }
+
+    Ok(Some(state.text.clone()))
+}
+
 fn estimate_audio_boundary(
     committed_text: &str,
     full_text: &str,

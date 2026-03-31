@@ -59,6 +59,28 @@ impl KVCache {
 
         Ok((full_k, full_v))
     }
+
+    /// Truncate the cache to keep only the first `seq_len` positions.
+    /// Keys/values have shape (B, num_heads, seq_len, head_dim).
+    pub fn truncate(&mut self, seq_len: usize) {
+        for layer_k in &mut self.keys {
+            if let Some(k) = layer_k {
+                let current = k.shape()[2] as usize;
+                if seq_len < current {
+                    *k = k.index((.., .., ..seq_len as i32, ..));
+                }
+            }
+        }
+        for layer_v in &mut self.values {
+            if let Some(v) = layer_v {
+                let current = v.shape()[2] as usize;
+                if seq_len < current {
+                    *v = v.index((.., .., ..seq_len as i32, ..));
+                }
+            }
+        }
+        self.offset = seq_len;
+    }
 }
 
 // ── TextAttention ───────────────────────────────────────────────────────
