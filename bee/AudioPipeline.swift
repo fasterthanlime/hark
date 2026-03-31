@@ -44,6 +44,14 @@ final class Pipeline<T: Sendable>: @unchecked Sendable {
         cont?.finish()
     }
 
+    /// True if the buffer has pending items. Non-blocking peek for the consumer.
+    var isEmpty: Bool {
+        lock.lock()
+        let empty = buffer.isEmpty
+        lock.unlock()
+        return empty
+    }
+
     /// Returns all queued items at once. Called by the consumer after
     /// being woken by the stream.
     func drain() -> [T] {

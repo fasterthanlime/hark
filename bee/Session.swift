@@ -298,6 +298,7 @@ actor Session {
         consumerTask = Task {
             var displayedText = ""
             var targetText = ""
+            let imeLog = IMELog()
 
             for await _ in ch2.stream {
                 let events = ch2.drain()
@@ -306,28 +307,44 @@ actor Session {
                     case .partial(let text):
                         targetText = text
 
-                        // Find common prefix length
-                        let commonLen = displayedText.commonPrefixLength(with: targetText)
-                        let displayed = displayedText
+                        if displayedText == targetText { break }
 
-                        // If text diverged before current display, snap back
-                        if commonLen < displayed.count {
-                            displayedText = String(targetText.prefix(commonLen))
+                        // Compute shortest edit script (character-level LCS diff)
+                        let ops = Self.shortestEdit(from: displayedText, to: targetText)
+                        let editCount = ops.filter { if case .keep = $0 { return false }; return true }.count
+                        imeLog.write("MORPH \(displayedText.count)→\(targetText.count) chars, \(editCount) edits")
+
+                        // Apply edits one at a time, updating the IME at each step
+                        var chars = Array(displayedText)
+                        var cursor = 0 // position in chars array
+
+                        for op in ops {
+                            // If a new partial arrived, abort this animation
+                            if !ch2.isEmpty { break }
+
+                            switch op {
+                            case .keep:
+                                cursor += 1
+                            case .delete:
+                                chars.remove(at: cursor)
+                                displayedText = String(chars)
+                                ic.setMarkedText(Self.addCursor(displayedText))
+                                let delayMs = editCount > 30 ? 10 : (editCount > 12 ? 20 : 35)
+                                try? await Task.sleep(for: .milliseconds(delayMs))
+                                if Task.isCancelled { return }
+                            case .insert(let ch):
+                                chars.insert(ch, at: cursor)
+                                cursor += 1
+                                displayedText = String(chars)
+                                ic.setMarkedText(Self.addCursor(displayedText))
+                                let delayMs = editCount > 30 ? 10 : (editCount > 12 ? 20 : 35)
+                                try? await Task.sleep(for: .milliseconds(delayMs))
+                                if Task.isCancelled { return }
+                            }
                         }
 
-                        // Reveal new characters one at a time
-                        let remaining = targetText.dropFirst(displayedText.count)
-                        for ch in remaining {
-                            displayedText.append(ch)
-                            ic.setMarkedText(Self.addCursor(displayedText))
-                            // Scale delay inversely with how far behind we are
-                            let behind = targetText.count - displayedText.count
-                            let delayMs = behind > 10 ? 5 : (behind > 3 ? 10 : 20)
-                            try? await Task.sleep(for: .milliseconds(delayMs))
-                            if Task.isCancelled { return }
-                        }
-
-                        // If we caught up, show the cursor
+                        // Snap to target in case animation was interrupted
+                        displayedText = targetText
                         ic.setMarkedText(Self.addCursor(displayedText))
 
                     case .done(let text, let mode):
@@ -424,14 +441,65 @@ actor Session {
 
     // MARK: - Helpers
 
-    /// Replace trailing period with a cursor indicator while streaming.
     static func addCursor(_ text: String) -> String {
-        if text.hasSuffix(".") {
-            return String(text.dropLast()) + "▍"
-        } else if text.hasSuffix("。") {
-            return String(text.dropLast()) + "▍"
+        if text.hasSuffix(".") || text.hasSuffix("。") {
+            return String(text.dropLast())
         }
-        return text + "▍"
+        return text
+    }
+
+    // MARK: - Shortest Edit Script (LCS-based)
+
+    enum EditOp {
+        case keep
+        case delete
+        case insert(Character)
+    }
+
+    /// Compute the shortest edit script to transform `from` into `to` using
+    /// character-level LCS (longest common subsequence). Returns a sequence of
+    /// keep/delete/insert operations that, applied left-to-right, morph `from` into `to`.
+    static func shortestEdit(from old: String, to new: String) -> [EditOp] {
+        let a = Array(old)
+        let b = Array(new)
+        let m = a.count
+        let n = b.count
+
+        // DP table for LCS lengths
+        // Use a rolling two-row approach for memory efficiency
+        var prev = [Int](repeating: 0, count: n + 1)
+        var curr = [Int](repeating: 0, count: n + 1)
+
+        // We need the full table to backtrace, so build it
+        // For strings up to ~500 chars this is fine
+        var dp = [[Int]](repeating: [Int](repeating: 0, count: n + 1), count: m + 1)
+        for i in 1...max(m, 1) {
+            for j in 1...max(n, 1) {
+                if i <= m && j <= n && a[i - 1] == b[j - 1] {
+                    dp[i][j] = dp[i - 1][j - 1] + 1
+                } else if i <= m && j <= n {
+                    dp[i][j] = max(dp[i - 1][j], dp[i][j - 1])
+                }
+            }
+        }
+
+        // Backtrace to produce edit script
+        var ops: [EditOp] = []
+        var i = m, j = n
+        while i > 0 || j > 0 {
+            if i > 0 && j > 0 && a[i - 1] == b[j - 1] {
+                ops.append(.keep)
+                i -= 1; j -= 1
+            } else if j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) {
+                ops.append(.insert(b[j - 1]))
+                j -= 1
+            } else {
+                ops.append(.delete)
+                i -= 1
+            }
+        }
+        ops.reverse()
+        return ops
     }
 
     static func computeRMS(_ samples: [Float]) -> Float {
@@ -603,4 +671,25 @@ enum SessionResult: Sendable {
     case aborted(id: UUID)
     case cancelled(id: UUID, text: String)
     case committed(id: UUID, text: String, submitted: Bool)
+}
+
+/// Simple file logger for debugging IME text flow.
+private final class IMELog: Sendable {
+    private let path = "/tmp/bee-ime.log"
+
+    init() {
+        // Truncate on new session
+        try? "".write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
+    func write(_ msg: String) {
+        let ts = ProcessInfo.processInfo.systemUptime
+        let line = String(format: "[%.3f] %@\n", ts, msg)
+        if let data = line.data(using: .utf8),
+           let fh = FileHandle(forWritingAtPath: path) {
+            fh.seekToEndOfFile()
+            fh.write(data)
+            fh.closeFile()
+        }
+    }
 }

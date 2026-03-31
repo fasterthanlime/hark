@@ -31,8 +31,6 @@ pub struct ForcedAlignItem {
 /// Forced aligner model.
 pub struct ForcedAligner {
     model: Qwen3ASRModel,
-    /// Classification head: [hidden_size] → [classify_num] (timestamp buckets)
-    aligner_head: nn::Linear,
     mel_extractor: crate::mel::MelExtractor,
     tokenizer: tokenizers::Tokenizer,
     timestamp_token_id: i64,
@@ -74,19 +72,14 @@ impl ForcedAligner {
             stats.loaded, stats.total_keys, classify_num, timestamp_token_id, timestamp_segment_time,
         );
 
-        // Load the aligner-specific lm_head from safetensors
-        // (load_weights puts the [5000, 1024] weight into lm_head which was created as [vocab_size, hidden_size],
-        // but since it's MaybeQuantized and the weight loading replaces it, this should work)
-        // Actually we need to extract it directly since the shapes won't match for quantized loading.
-        // For the dense aligner model, let's just read the weight directly.
-        let aligner_head = Self::load_aligner_head(model_dir, thinker)?;
+        // load_weights already loaded lm_head (quantized or dense) into model.lm_head.
+        // For the aligner, lm_head maps to [classify_num] timestamp buckets instead of vocab.
 
         let mel_extractor = crate::mel::MelExtractor::new(400, 160,
             thinker.audio_config.num_mel_bins, 16000);
 
         Ok(ForcedAligner {
             model,
-            aligner_head,
             mel_extractor,
             tokenizer,
             timestamp_token_id,
@@ -94,38 +87,6 @@ impl ForcedAligner {
             classify_num,
             config: thinker.clone(),
         })
-    }
-
-    fn load_aligner_head(model_dir: &Path, config: &ThinkerConfig) -> Result<nn::Linear, Exception> {
-        // Read safetensors to find thinker.lm_head.weight
-        let mut st_files: Vec<_> = std::fs::read_dir(model_dir)
-            .map_err(|e| Exception::custom(format!("read dir: {e}")))?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map_or(false, |ext| ext == "safetensors"))
-            .map(|e| e.path())
-            .collect();
-        st_files.sort();
-
-        for f in &st_files {
-            let tensors = Array::load_safetensors(f)
-                .map_err(|e| Exception::custom(format!("load safetensors: {e}")))?;
-            if let Some(weight) = tensors.get("thinker.lm_head.weight") {
-                log::info!("Aligner head shape: {:?}", weight.shape());
-                let mut linear = nn::LinearBuilder::new(
-                    config.text_config.hidden_size as i32,
-                    weight.shape()[0], // classify_num
-                ).bias(false).build()?;
-                // Replace weight
-                use mlx_rs::module::{ModuleParameters, Param};
-                let mut params = linear.parameters_mut().flatten();
-                if let Some(param) = params.get_mut("weight") {
-                    **param = weight.clone();
-                }
-                drop(params);
-                return Ok(linear);
-            }
-        }
-        Err(Exception::custom("thinker.lm_head.weight not found in safetensors"))
     }
 
     /// Run forced alignment: given audio samples and known text, produce word-level timestamps.
@@ -176,8 +137,8 @@ impl ForcedAligner {
             &mut None, // no KV cache needed for single pass
         )?;
 
-        // Apply aligner classification head
-        let logits = self.aligner_head.forward(&hidden)?; // (1, seq_len, classify_num)
+        // Apply aligner classification head (lm_head maps hidden → classify_num buckets)
+        let logits = self.model.lm_head.forward(&hidden)?; // (1, seq_len, classify_num)
         let output_ids = mlx_rs::ops::indexing::argmax_axis(&logits.index((0, .., ..)), -1, false)?;
         output_ids.eval()?;
 

@@ -3,6 +3,7 @@
 use std::ffi::{c_char, c_float, c_uint, CStr, CString};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Once};
+use std::io::Write;
 
 use qwen3_asr_mlx::config::AsrConfig;
 use qwen3_asr_mlx::forced_aligner::ForcedAligner;
@@ -73,6 +74,13 @@ fn to_c_string(s: &str) -> *mut c_char {
     CString::new(s).map(|cs| cs.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 
+fn ffi_log(msg: &str) {
+    let path = "/tmp/bee-ffi.log";
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "[{:.3}] {}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64(), msg);
+    }
+}
+
 fn find_tokenizer(model_dir: &Path) -> Option<tokenizers::Tokenizer> {
     let paths = [
         model_dir.join("tokenizer.json"),
@@ -90,8 +98,17 @@ fn find_tokenizer(model_dir: &Path) -> Option<tokenizers::Tokenizer> {
 }
 
 fn find_aligner_dir() -> Option<PathBuf> {
-    let dir = dirs::home_dir()?.join("Library/Caches/qwen3-asr/Qwen--Qwen3-ForcedAligner-0.6B");
-    if dir.exists() { Some(dir) } else { None }
+    let base = dirs::home_dir()?.join("Library/Caches/qwen3-asr");
+    // Prefer 4-bit quantized aligner
+    let candidates = [
+        "mlx-community--Qwen3-ForcedAligner-0.6B-4bit",
+        "Qwen--Qwen3-ForcedAligner-0.6B",
+    ];
+    for name in &candidates {
+        let dir = base.join(name);
+        if dir.exists() { return Some(dir); }
+    }
+    None
 }
 
 // ── Engine API ──────────────────────────────────────────────────────────
@@ -337,11 +354,18 @@ fn feed_impl(
 
     match result {
         Ok(Some(text)) => {
+            if text != session.last_text {
+                ffi_log(&format!("FEED text changed:\n  was: {:?}\n  now: {:?}", session.last_text, text));
+            }
             session.last_text = text.clone();
             to_c_string(&text)
         }
-        Ok(None) => std::ptr::null_mut(),
+        Ok(None) => {
+            ffi_log("FEED => None (buffering)");
+            std::ptr::null_mut()
+        }
         Err(e) => {
+            ffi_log(&format!("FEED => error: {e}"));
             set_err(out_err, &format!("{e}"));
             std::ptr::null_mut()
         }

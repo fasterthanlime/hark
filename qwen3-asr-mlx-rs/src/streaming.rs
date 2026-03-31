@@ -32,6 +32,13 @@ pub fn mlx_memory_stats() -> (usize, usize, usize) {
     (active, peak, cache)
 }
 
+fn stream_log(msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/bee-stream.log") {
+        let _ = writeln!(f, "[{:.3}] {}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64(), msg);
+    }
+}
+
 fn log_memory(label: &str) {
     let (active, peak, cache) = mlx_memory_stats();
     log::info!(
@@ -156,6 +163,7 @@ pub struct StreamingState {
 
     // Rotate mode state
     committed_text: String,
+    committed_token_ids: Vec<u32>,
     /// The first `commit_token_count` tokens from the last update, for stability tracking.
     last_prefix_tokens: Vec<u32>,
     /// How many consecutive updates the prefix tokens have been identical.
@@ -200,6 +208,7 @@ impl StreamingState {
             prev_chunk_tail: Vec::new(),
             overlap_samples,
             committed_text: String::new(),
+            committed_token_ids: Vec::new(),
             last_prefix_tokens: Vec::new(),
             stable_count: 0,
             aligner,
@@ -400,9 +409,12 @@ fn finish_accumulate(
     }
     run_accumulate_step(model, state, state.options.max_new_tokens_final)?;
 
-    // For Rotate mode, merge committed text with final session text
-    if state.options.mode == StreamingMode::Rotate && !state.committed_text.is_empty() {
-        state.text = join_committed(&state.committed_text, &state.text);
+    // For Rotate mode, merge committed text with final session text (token-deduped)
+    if state.options.mode == StreamingMode::Rotate && !state.committed_token_ids.is_empty() {
+        let skip = find_token_overlap(&state.committed_token_ids, &state.raw_token_ids);
+        let remaining_ids: Vec<u32> = state.raw_token_ids[skip..].to_vec();
+        let new_text = state.tokenizer.decode(&remaining_ids, true).unwrap_or_default();
+        state.text = join_committed(&state.committed_text, &new_text);
     }
 
     Ok(state.text.clone())
@@ -600,6 +612,11 @@ fn feed_rotate(
             state.chunk_id, state.raw_token_ids.len(), state.stable_count,
             state.options.commit_after_stable, state.options.commit_token_count,
         );
+        stream_log(&format!(
+            "chunk {}: {} tokens, prefix[..{}] stable {}/{}, mode={:?}",
+            state.chunk_id, state.raw_token_ids.len(), n, state.stable_count,
+            state.options.commit_after_stable, state.options.mode,
+        ));
 
         // Commit when prefix is stable AND we have enough tokens
         if state.stable_count >= state.options.commit_after_stable
@@ -629,7 +646,8 @@ fn feed_rotate(
                 estimate_audio_boundary(&committed_text_new, &state.text, state.audio_accum.len())
             };
 
-            // Append to committed text
+            // Append to committed token IDs and text
+            state.committed_token_ids.extend_from_slice(&current_prefix);
             if !state.committed_text.is_empty() {
                 state.committed_text = join_committed(&state.committed_text, &committed_text_new);
             } else {
@@ -646,6 +664,12 @@ fn feed_rotate(
                 state.audio_accum.len() as f64 / 16000.0,
                 keep_from as f64 / 16000.0,
             );
+            stream_log(&format!(
+                "COMMIT {} tokens: {:?} | kept {:.1}s of {:.1}s",
+                n, state.committed_text,
+                remaining_audio.len() as f64 / 16000.0,
+                state.audio_accum.len() as f64 / 16000.0,
+            ));
 
             // Keep tokens for the uncommitted tail
             let remaining_tokens: Vec<u32> = state.raw_token_ids[n..].to_vec();
@@ -667,9 +691,20 @@ fn feed_rotate(
             log_memory("after rotation");
         }
 
-        // Display: committed text + current session text
-        if !state.committed_text.is_empty() {
-            state.text = join_committed(&state.committed_text, &state.text);
+        // Display: committed text + current session text, with token-based dedup
+        if !state.committed_token_ids.is_empty() {
+            // Strip any leading tokens in the new session that overlap with
+            // committed tokens (the model may re-produce them from overlapping audio).
+            let new_ids = &state.raw_token_ids;
+            let skip = find_token_overlap(&state.committed_token_ids, new_ids);
+            if skip > 0 {
+                stream_log(&format!("TOKEN DEDUP: stripping {} overlapping tokens from session start", skip));
+            }
+            // Decode the new (non-overlapping) tokens separately, then join at text level
+            // to preserve proper spacing (concatenating token IDs loses inter-segment spaces).
+            let remaining_ids: Vec<u32> = new_ids[skip..].to_vec();
+            let new_text = state.tokenizer.decode(&remaining_ids, true).unwrap_or_default();
+            state.text = join_committed(&state.committed_text, &new_text);
         }
     }
 
@@ -904,10 +939,17 @@ fn detect_speech_onset(samples: &[f32]) -> Option<usize> {
     None
 }
 
-/// Join committed text with new text, fixing capitalization at the boundary.
+/// Join committed text with new session text, stripping any overlap where the
+/// session re-produced words already in committed text.
 fn join_committed(committed: &str, new: &str) -> String {
+    let committed = committed.trim();
+    let new = new.trim();
+    if new.is_empty() { return committed.to_string(); }
+    if committed.is_empty() { return new.to_string(); }
+
+    // Fix capitalization at boundary
     let needs_lowercase = !matches!(
-        committed.trim_end().chars().last(),
+        committed.chars().last(),
         Some('.' | '!' | '?' | '。' | '！' | '？') | None
     );
     let fixed = if needs_lowercase {
@@ -919,7 +961,85 @@ fn join_committed(committed: &str, new: &str) -> String {
     } else {
         new.to_string()
     };
-    append_chunk_text(committed, &fixed)
+
+    // Strip overlap: after rotation the model may re-produce words from committed
+    // text because the remaining audio still contains some overlap. The repeated
+    // words might appear at the START of the new text (prefix overlap) or somewhere
+    // inside it (the model transcribes new words then replays old ones).
+    //
+    // Strategy: find the longest suffix of committed (by words) that appears
+    // anywhere in the new text, and strip everything up to and including that match.
+    let committed_words: Vec<&str> = committed.split_whitespace().collect();
+    let new_words: Vec<&str> = fixed.split_whitespace().collect();
+
+    // Try progressively shorter suffixes of committed (skip the last word
+    // which may be a fragment like "It" from "It's" split at token boundary).
+    // We search for each suffix anywhere in the new text.
+    let max_suffix = committed_words.len().min(new_words.len());
+    for suffix_len in (2..=max_suffix).rev() {
+        // Try both with and without the last committed word (it may be a fragment)
+        for skip_last in [0usize, 1] {
+            if suffix_len <= skip_last { continue; }
+            let end = committed_words.len() - skip_last;
+            let start_idx = end.saturating_sub(suffix_len);
+            let comm_suffix = &committed_words[start_idx..end];
+            let match_len = comm_suffix.len();
+            if match_len < 2 { continue; }
+
+            for start in 0..=new_words.len().saturating_sub(match_len) {
+                let candidate = &new_words[start..start + match_len];
+                if comm_suffix.iter().zip(candidate.iter())
+                    .all(|(a, b)| strip_punct(&a.to_lowercase()) == strip_punct(&b.to_lowercase()))
+                {
+                    // Found match — keep everything after the match
+                    let after = start + match_len;
+                    let remaining = &new_words[after..];
+                    return if remaining.is_empty() {
+                        committed.to_string()
+                    } else {
+                        format!("{committed} {}", remaining.join(" "))
+                    };
+                }
+            }
+        }
+    }
+
+    // Don't add space if new text starts with apostrophe (contraction: 'll, 's, 't)
+    // or punctuation that attaches to the preceding word
+    let sep = match fixed.chars().next() {
+        Some('\'' | '\u{2019}' | ',' | '.' | '!' | '?' | ';' | ':') => "",
+        _ => " ",
+    };
+    format!("{committed}{sep}{fixed}")
+}
+
+fn strip_punct(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric() || *c == '\'').collect()
+}
+
+/// Find how many tokens at the start of `new_ids` overlap with a suffix of `committed_ids`.
+/// Returns the number of tokens to skip from `new_ids`.
+fn find_token_overlap(committed_ids: &[u32], new_ids: &[u32]) -> usize {
+    let max_overlap = committed_ids.len().min(new_ids.len());
+    for k in (1..=max_overlap).rev() {
+        let comm_suffix = &committed_ids[committed_ids.len() - k..];
+        let new_prefix = &new_ids[..k];
+        if comm_suffix == new_prefix {
+            return k;
+        }
+    }
+    // Also check if new_ids contains committed suffix anywhere (not just at prefix)
+    // This handles cases where the model produces some new tokens THEN replays committed tokens
+    for k in (3..=max_overlap).rev() {
+        let comm_suffix = &committed_ids[committed_ids.len() - k..];
+        for start in 1..=new_ids.len().saturating_sub(k) {
+            if &new_ids[start..start + k] == comm_suffix {
+                // Strip everything up to and including the match
+                return start + k;
+            }
+        }
+    }
+    0
 }
 
 fn compute_rms(samples: &[f32]) -> f32 {
