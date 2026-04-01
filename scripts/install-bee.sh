@@ -5,9 +5,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build-bee-release"
 INPUT_METHOD_DIR="$HOME/Library/Input Methods"
+BROKER_DIR="$HOME/Library/Application Support/bee"
+BROKER_BINARY="$BROKER_DIR/beeBroker"
+LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
+BROKER_LABEL="fasterthanlime.bee.broker"
+BROKER_PLIST="$LAUNCH_AGENTS_DIR/$BROKER_LABEL.plist"
+USER_DOMAIN="gui/$(id -u)"
 SWIFT_DIR="$PROJECT_ROOT/swift"
 XCODE_PROJECT="$SWIFT_DIR/bee.xcodeproj"
 XCODE_SPEC="$SWIFT_DIR/bee-project.yml"
+ENVRC_PATH="$PROJECT_ROOT/.envrc"
 
 if [ -t 1 ]; then
   RED=$'\033[0;31m'
@@ -27,6 +34,14 @@ else
   CYAN=''
   BOLD=''
   RESET=''
+fi
+
+if [ -f "$ENVRC_PATH" ]; then
+  # Source project environment from repo root so paths using $PWD resolve correctly.
+  pushd "$PROJECT_ROOT" >/dev/null
+  # shellcheck disable=SC1090
+  source "$ENVRC_PATH"
+  popd >/dev/null
 fi
 
 banner() {
@@ -58,9 +73,46 @@ run_step "Building MLX Rust FFI (release)" "cd \"$PROJECT_ROOT/rust\" && cargo b
 run_step "Generating Xcode project" "cd \"$SWIFT_DIR\" && xcodegen generate --spec \"$XCODE_SPEC\""
 run_step "Building bee (Release)" "cd \"$SWIFT_DIR\" && xcodebuild -project \"$XCODE_PROJECT\" -scheme bee -configuration Release CONFIGURATION_BUILD_DIR=\"$BUILD_DIR\" build"
 run_step "Building beeInput (Release)" "cd \"$SWIFT_DIR\" && xcodebuild -project \"$XCODE_PROJECT\" -scheme beeInput -configuration Release CONFIGURATION_BUILD_DIR=\"$BUILD_DIR\" build"
+run_step "Building beeBroker (Release)" "cd \"$SWIFT_DIR\" && xcodebuild -project \"$XCODE_PROJECT\" -scheme beeBroker -configuration Release CONFIGURATION_BUILD_DIR=\"$BUILD_DIR\" build"
 
 run_step "Installing bee to /Applications/bee.app" "rsync -a --delete \"$BUILD_DIR/bee.app/\" /Applications/bee.app/"
 run_step "Installing beeInput to $INPUT_METHOD_DIR/beeInput.app" "mkdir -p \"$INPUT_METHOD_DIR\" && rsync -a --delete \"$BUILD_DIR/beeInput.app/\" \"$INPUT_METHOD_DIR/beeInput.app/\""
+run_step "Installing beeBroker binary" "mkdir -p \"$BROKER_DIR\" && install -m 755 \"$BUILD_DIR/beeBroker\" \"$BROKER_BINARY\""
+run_step "Writing broker LaunchAgent plist" "mkdir -p \"$LAUNCH_AGENTS_DIR\" && cat > \"$BROKER_PLIST\" <<PLIST
+<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+  <key>Label</key>
+  <string>$BROKER_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$BROKER_BINARY</string>
+  </array>
+  <key>MachServices</key>
+  <dict>
+    <key>$BROKER_LABEL</key>
+    <true/>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/bee-broker.out</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/bee-broker.err</string>
+</dict>
+</plist>
+PLIST"
+run_step "Reloading broker LaunchAgent" "
+if launchctl print \"$USER_DOMAIN/$BROKER_LABEL\" >/dev/null 2>&1; then
+  launchctl kickstart -k \"$USER_DOMAIN/$BROKER_LABEL\"
+else
+  launchctl bootstrap \"$USER_DOMAIN\" \"$BROKER_PLIST\"
+  launchctl kickstart -k \"$USER_DOMAIN/$BROKER_LABEL\"
+fi
+"
 run_step "Restarting beeInput" "pkill beeInput || true"
 run_step "Killing running bee" "pkill bee || true"
 sleep 1

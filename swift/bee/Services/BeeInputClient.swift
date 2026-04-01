@@ -2,29 +2,85 @@ import AppKit
 import Carbon
 import Foundation
 
-@objc
-private protocol BeeIMEControlXPC {
-    func prepareSession(_ sessionID: String, targetPID: Int32, activationID: String, withReply reply: @escaping (Bool) -> Void)
-    func sessionStatus(_ sessionID: String, withReply reply: @escaping (Bool, Int32, String) -> Void)
-    func clearSession(_ sessionID: String, withReply reply: @escaping () -> Void)
+private final class BeeAppControlSink: NSObject, BeeBrokerPeerXPC {
+    private static let imeSubmitName = NSNotification.Name("fasterthanlime.bee.imeSubmit")
+    private static let imeCancelName = NSNotification.Name("fasterthanlime.bee.imeCancel")
+    private static let imeUserTypedName = NSNotification.Name("fasterthanlime.bee.imeUserTyped")
+    private static let imeContextLostName = NSNotification.Name("fasterthanlime.bee.imeContextLost")
+    private static let imeSessionStartedName = NSNotification.Name("fasterthanlime.bee.imeSessionStarted")
+
+    private func post(_ name: NSNotification.Name, userInfo: [AnyHashable: Any]) {
+        NotificationCenter.default.post(name: name, object: nil, userInfo: userInfo)
+    }
+
+    func handleIMESessionStarted(_ sessionID: String, clientPID: Int32, clientID: String) {
+        var userInfo: [AnyHashable: Any] = ["sessionID": sessionID]
+        if clientPID >= 0 {
+            userInfo["clientPID"] = Int(clientPID)
+        }
+        if !clientID.isEmpty {
+            userInfo["clientID"] = clientID
+        }
+        post(Self.imeSessionStartedName, userInfo: userInfo)
+    }
+
+    func handleIMESubmit(_ sessionID: String) {
+        post(Self.imeSubmitName, userInfo: ["sessionID": sessionID])
+    }
+
+    func handleIMECancel(_ sessionID: String) {
+        post(Self.imeCancelName, userInfo: ["sessionID": sessionID])
+    }
+
+    func handleIMEUserTyped(_ sessionID: String, keyCode: Int32, characters: String) {
+        post(
+            Self.imeUserTypedName,
+            userInfo: [
+                "sessionID": sessionID,
+                "keyCode": Int(keyCode),
+                "characters": characters,
+            ]
+        )
+    }
+
+    func handleIMEContextLost(_ sessionID: String, hadMarkedText: Bool) {
+        post(
+            Self.imeContextLostName,
+            userInfo: [
+                "sessionID": sessionID,
+                "hadMarkedText": hadMarkedText,
+            ]
+        )
+    }
+
+    func handlePrepareSession(_ sessionID: String, targetPID: Int32, activationID: String) {}
+    func handleClearSession(_ sessionID: String) {}
+    func handleSetMarkedText(_ sessionID: String, text: String) {}
+    func handleCommitText(_ sessionID: String, text: String, submit: Bool) {}
+    func handleCancelInput(_ sessionID: String) {}
+    func handleStopDictating(_ sessionID: String) {}
 }
 
-/// Communicates with the bee-input IME process via distributed notifications.
+/// Communicates with the helper broker process via XPC.
 final class BeeInputClient: Sendable {
-    private static let dnc = DistributedNotificationCenter.default()
+    private static let brokerServiceName = "fasterthanlime.bee.broker"
+    private static let brokerLaunchLabel = "fasterthanlime.bee.broker"
     private static let beeBundleID = "fasterthanlime.inputmethod.bee"
-    private static let xpcServiceName = "fasterthanlime.inputmethod.bee.xpc"
+    private static let appInstanceID = UUID().uuidString
     private static let readyPollIntervalMs: UInt64 = 20
-    private static let readyTimeoutMs: UInt64 = 1200
-
-    private static let setMarkedTextName = NSNotification.Name("fasterthanlime.bee.setMarkedText")
-    private static let commitTextName = NSNotification.Name("fasterthanlime.bee.commitText")
-    private static let cancelInputName = NSNotification.Name("fasterthanlime.bee.cancelInput")
-    private static let stopDictatingName = NSNotification.Name("fasterthanlime.bee.stopDictating")
+    private static let readyTimeoutMs: UInt64 = 2500
 
     nonisolated(unsafe) private static var previousInputSource: TISInputSource?
     nonisolated(unsafe) private static var xpcConnection: NSXPCConnection?
+    nonisolated(unsafe) private static var appControlSink = BeeAppControlSink()
+    nonisolated(unsafe) private static var helloSent = false
+    nonisolated(unsafe) private static var brokerLaunchAttempted = false
     private static let xpcLock = NSLock()
+
+    init() {
+        Self.ensureBrokerLaunchdService()
+        Self.sendHelloIfNeeded()
+    }
 
     // MARK: - Input Source Switching
 
@@ -84,18 +140,10 @@ final class BeeInputClient: Sendable {
         Self.switchAwayFromBeeInputIfNeeded()
     }
 
-    // MARK: - Distributed Notifications
+    // MARK: - IME Commands
 
     func setMarkedText(_ text: String, sessionID: UUID) {
-        Self.dnc.postNotificationName(
-            Self.setMarkedTextName,
-            object: nil,
-            userInfo: [
-                "sessionID": sessionID.uuidString,
-                "text": text,
-            ],
-            deliverImmediately: true
-        )
+        Self.setMarkedTextXPC(text, sessionID: sessionID)
     }
 
     func logSetMarkedText(_ text: String, sessionID: UUID) {
@@ -104,33 +152,15 @@ final class BeeInputClient: Sendable {
     }
 
     func commitText(_ text: String, sessionID: UUID) {
-        Self.dnc.postNotificationName(
-            Self.commitTextName,
-            object: nil,
-            userInfo: [
-                "sessionID": sessionID.uuidString,
-                "text": text,
-            ],
-            deliverImmediately: true
-        )
+        Self.commitTextXPC(text, submit: false, sessionID: sessionID)
     }
 
     func clearMarkedText(sessionID: UUID) {
-        Self.dnc.postNotificationName(
-            Self.cancelInputName,
-            object: nil,
-            userInfo: ["sessionID": sessionID.uuidString],
-            deliverImmediately: true
-        )
+        Self.cancelInputXPC(sessionID: sessionID)
     }
 
     func stopDictating(sessionID: UUID) {
-        Self.dnc.postNotificationName(
-            Self.stopDictatingName,
-            object: nil,
-            userInfo: ["sessionID": sessionID.uuidString],
-            deliverImmediately: true
-        )
+        Self.stopDictatingXPC(sessionID: sessionID)
     }
 
     func simulateReturn() {
@@ -173,33 +203,87 @@ final class BeeInputClient: Sendable {
     }
 
     private static func getXPCConnection() -> NSXPCConnection {
-        xpcLock.lock()
-        defer { xpcLock.unlock() }
-        if let connection = xpcConnection {
+        return xpcLock.withLock {
+            if let connection = xpcConnection {
+                return connection
+            }
+            let connection = NSXPCConnection(machServiceName: brokerServiceName, options: [])
+            connection.remoteObjectInterface = NSXPCInterface(with: BeeBrokerXPC.self)
+            connection.exportedInterface = NSXPCInterface(with: BeeBrokerPeerXPC.self)
+            connection.exportedObject = appControlSink
+            connection.resume()
+            xpcConnection = connection
             return connection
         }
-        let connection = NSXPCConnection(machServiceName: xpcServiceName, options: [])
-        connection.remoteObjectInterface = NSXPCInterface(with: BeeIMEControlXPC.self)
-        connection.resume()
-        xpcConnection = connection
-        return connection
     }
 
     private static func invalidateXPCConnection() {
-        xpcLock.lock()
-        defer { xpcLock.unlock() }
-        xpcConnection?.invalidate()
-        xpcConnection = nil
+        xpcLock.withLock {
+            xpcConnection?.invalidate()
+            xpcConnection = nil
+            helloSent = false
+        }
+    }
+
+    private static func ensureBrokerLaunchdService() {
+        let shouldAttempt = xpcLock.withLock { () -> Bool in
+            if brokerLaunchAttempted {
+                return false
+            }
+            brokerLaunchAttempted = true
+            return true
+        }
+        guard shouldAttempt else { return }
+
+        let uid = getuid()
+        let domain = "gui/\(uid)"
+        let service = "\(domain)/\(brokerLaunchLabel)"
+
+        // First try to kickstart an already-bootstrapped service.
+        let kickStatus = runLaunchctl(args: ["kickstart", "-k", service])
+        if kickStatus == 0 {
+            beeLog("BROKER launchd: kickstart ok service=\(service)")
+            return
+        }
+
+        // If not bootstrapped yet, bootstrap from the per-user LaunchAgent plist.
+        let plistPath = NSHomeDirectory() + "/Library/LaunchAgents/\(brokerLaunchLabel).plist"
+        if FileManager.default.fileExists(atPath: plistPath) {
+            _ = runLaunchctl(args: ["bootstrap", domain, plistPath])
+            let retryStatus = runLaunchctl(args: ["kickstart", "-k", service])
+            if retryStatus == 0 {
+                beeLog("BROKER launchd: bootstrap+kickstart ok service=\(service)")
+                return
+            }
+        }
+
+        beeLog("BROKER launchd: unable to start service=\(service)")
+    }
+
+    @discardableResult
+    private static func runLaunchctl(args: [String]) -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = args
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus
+        } catch {
+            beeLog("BROKER launchd: launchctl failed args=\(args.joined(separator: " ")) error=\(error.localizedDescription)")
+            return -1
+        }
     }
 
     private static func prepareSessionXPC(sessionID: UUID, targetPID: pid_t?, activationID: String) async -> Bool {
-        await withCheckedContinuation { continuation in
-            let connection = getXPCConnection()
+        sendHelloIfNeeded()
+        let connection = getXPCConnection()
+        return await withCheckedContinuation { continuation in
             let proxy = connection.remoteObjectProxyWithErrorHandler { error in
-                beeLog("IME XPC prepareSession error: \(error.localizedDescription)")
+                beeLog("BROKER XPC prepareSession error: \(error.localizedDescription)")
                 invalidateXPCConnection()
                 continuation.resume(returning: false)
-            } as? BeeIMEControlXPC
+            } as? BeeBrokerXPC
 
             guard let proxy else {
                 continuation.resume(returning: false)
@@ -209,7 +293,8 @@ final class BeeInputClient: Sendable {
             proxy.prepareSession(
                 sessionID.uuidString,
                 targetPID: targetPID ?? -1,
-                activationID: activationID
+                activationID: activationID,
+                appInstanceID: appInstanceID
             ) { ok in
                 continuation.resume(returning: ok)
             }
@@ -217,16 +302,16 @@ final class BeeInputClient: Sendable {
     }
 
     private static func sessionStatusXPC(sessionID: UUID) async -> (ready: Bool, clientPID: pid_t?, clientID: String?) {
-        await withCheckedContinuation { continuation in
-            let connection = getXPCConnection()
+        let connection = getXPCConnection()
+        return await withCheckedContinuation { continuation in
             let proxy = connection.remoteObjectProxyWithErrorHandler { error in
-                beeLog("IME XPC sessionStatus error: \(error.localizedDescription)")
+                beeLog("BROKER XPC sessionStatus error: \(error.localizedDescription)")
                 invalidateXPCConnection()
-                continuation.resume(returning: (false, nil, nil))
-            } as? BeeIMEControlXPC
+                continuation.resume(returning: (false, Optional<pid_t>.none, Optional<String>.none))
+            } as? BeeBrokerXPC
 
             guard let proxy else {
-                continuation.resume(returning: (false, nil, nil))
+                continuation.resume(returning: (false, Optional<pid_t>.none, Optional<String>.none))
                 return
             }
 
@@ -257,21 +342,131 @@ final class BeeInputClient: Sendable {
     }
 
     private static func clearSessionXPC(sessionID: UUID) async {
+        let connection = getXPCConnection()
         await withCheckedContinuation { continuation in
-            let connection = getXPCConnection()
             let proxy = connection.remoteObjectProxyWithErrorHandler { error in
-                beeLog("IME XPC clearSession error: \(error.localizedDescription)")
+                beeLog("BROKER XPC clearSession error: \(error.localizedDescription)")
                 invalidateXPCConnection()
                 continuation.resume()
-            } as? BeeIMEControlXPC
+            } as? BeeBrokerXPC
 
             guard let proxy else {
                 continuation.resume()
                 return
             }
 
-            proxy.clearSession(sessionID.uuidString) {
+            proxy.clearSession(sessionID.uuidString, appInstanceID: appInstanceID) {
                 continuation.resume()
+            }
+        }
+    }
+
+    private static func sendHelloIfNeeded() {
+        let shouldSend = xpcLock.withLock { () -> Bool in
+            if helloSent {
+                return false
+            }
+            helloSent = true
+            return true
+        }
+        guard shouldSend else { return }
+
+        let connection = getXPCConnection()
+        let proxy = connection.remoteObjectProxyWithErrorHandler { error in
+            beeLog("BROKER XPC appHello error: \(error.localizedDescription)")
+            invalidateXPCConnection()
+        } as? BeeBrokerXPC
+        proxy?.appHello(appInstanceID) { ok in
+            if !ok {
+                beeLog("BROKER XPC appHello rejected")
+            }
+        }
+    }
+
+    private static func setMarkedTextXPC(_ text: String, sessionID: UUID) {
+        Task.detached {
+            await withCheckedContinuation { continuation in
+                let connection = getXPCConnection()
+                let proxy = connection.remoteObjectProxyWithErrorHandler { error in
+                    beeLog("BROKER XPC setMarkedText error: \(error.localizedDescription)")
+                    invalidateXPCConnection()
+                    continuation.resume()
+                } as? BeeBrokerXPC
+
+                guard let proxy else {
+                    continuation.resume()
+                    return
+                }
+
+                proxy.setMarkedText(sessionID.uuidString, text: text, appInstanceID: appInstanceID) { _ in
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    private static func commitTextXPC(_ text: String, submit: Bool, sessionID: UUID) {
+        Task.detached {
+            await withCheckedContinuation { continuation in
+                let connection = getXPCConnection()
+                let proxy = connection.remoteObjectProxyWithErrorHandler { error in
+                    beeLog("BROKER XPC commitText error: \(error.localizedDescription)")
+                    invalidateXPCConnection()
+                    continuation.resume()
+                } as? BeeBrokerXPC
+
+                guard let proxy else {
+                    continuation.resume()
+                    return
+                }
+
+                proxy.commitText(sessionID.uuidString, text: text, submit: submit, appInstanceID: appInstanceID) { _ in
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    private static func cancelInputXPC(sessionID: UUID) {
+        Task.detached {
+            await withCheckedContinuation { continuation in
+                let connection = getXPCConnection()
+                let proxy = connection.remoteObjectProxyWithErrorHandler { error in
+                    beeLog("BROKER XPC cancelInput error: \(error.localizedDescription)")
+                    invalidateXPCConnection()
+                    continuation.resume()
+                } as? BeeBrokerXPC
+
+                guard let proxy else {
+                    continuation.resume()
+                    return
+                }
+
+                proxy.cancelInput(sessionID.uuidString, appInstanceID: appInstanceID) { _ in
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    private static func stopDictatingXPC(sessionID: UUID) {
+        Task.detached {
+            await withCheckedContinuation { continuation in
+                let connection = getXPCConnection()
+                let proxy = connection.remoteObjectProxyWithErrorHandler { error in
+                    beeLog("BROKER XPC stopDictating error: \(error.localizedDescription)")
+                    invalidateXPCConnection()
+                    continuation.resume()
+                } as? BeeBrokerXPC
+
+                guard let proxy else {
+                    continuation.resume()
+                    return
+                }
+
+                proxy.stopDictating(sessionID.uuidString, appInstanceID: appInstanceID) { _ in
+                    continuation.resume()
+                }
             }
         }
     }

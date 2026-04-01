@@ -17,11 +17,6 @@
     <string>APPL</string>
     <key>CFBundleExecutable</key>
     <string>beeInput</string>
-    <key>MachServices</key>
-    <dict>
-        <key>fasterthanlime.inputmethod.bee.xpc</key>
-        <true/>
-    </dict>
     <key>LSBackgroundOnly</key>
     <true/>
     <key>NSPrincipalClass</key>

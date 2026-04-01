@@ -315,7 +315,7 @@ final class AppState {
     private func startIMEAckTimeoutIfNeeded(session: Session) {
         guard pendingIMEAckTimeoutTask == nil else { return }
         pendingIMEAckTimeoutTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(1200))
+            try? await Task.sleep(for: .milliseconds(2600))
             guard let self else { return }
             defer { self.pendingIMEAckTimeoutTask = nil }
 
@@ -487,11 +487,11 @@ final class AppState {
     // MARK: - External Events
 
     private func installExternalObservers() {
-        let dnc = DistributedNotificationCenter.default()
+        let ncLocal = NotificationCenter.default
         let nc = NSWorkspace.shared.notificationCenter
 
         distributedObservers.append(
-            dnc.addObserver(forName: Self.imeSubmitName, object: nil, queue: .main) { [weak self] notification in
+            ncLocal.addObserver(forName: Self.imeSubmitName, object: nil, queue: .main) { [weak self] notification in
                 let sessionID = Self.extractSessionID(notification.userInfo)
                 Task { @MainActor in
                     self?.handleIMESubmit(sessionID: sessionID)
@@ -499,7 +499,7 @@ final class AppState {
             }
         )
         distributedObservers.append(
-            dnc.addObserver(forName: Self.imeCancelName, object: nil, queue: .main) { [weak self] notification in
+            ncLocal.addObserver(forName: Self.imeCancelName, object: nil, queue: .main) { [weak self] notification in
                 let sessionID = Self.extractSessionID(notification.userInfo)
                 Task { @MainActor in
                     self?.handleIMECancel(sessionID: sessionID)
@@ -507,7 +507,7 @@ final class AppState {
             }
         )
         distributedObservers.append(
-            dnc.addObserver(forName: Self.imeUserTypedName, object: nil, queue: .main) { [weak self] notification in
+            ncLocal.addObserver(forName: Self.imeUserTypedName, object: nil, queue: .main) { [weak self] notification in
                 let sessionID = Self.extractSessionID(notification.userInfo)
                 Task { @MainActor in
                     self?.handleIMEUserTyped(sessionID: sessionID)
@@ -515,7 +515,7 @@ final class AppState {
             }
         )
         distributedObservers.append(
-            dnc.addObserver(forName: Self.imeContextLostName, object: nil, queue: .main) { [weak self] notification in
+            ncLocal.addObserver(forName: Self.imeContextLostName, object: nil, queue: .main) { [weak self] notification in
                 let sessionID = Self.extractSessionID(notification.userInfo)
                 let hadMarkedText = Self.extractBool(notification.userInfo, key: "hadMarkedText")
                 Task { @MainActor in
@@ -524,7 +524,7 @@ final class AppState {
             }
         )
         distributedObservers.append(
-            dnc.addObserver(forName: Self.imeSessionStartedName, object: nil, queue: .main) { [weak self] notification in
+            ncLocal.addObserver(forName: Self.imeSessionStartedName, object: nil, queue: .main) { [weak self] notification in
                 let sessionID = Self.extractSessionID(notification.userInfo)
                 let clientPID = Self.extractPID(notification.userInfo, key: "clientPID")
                 let clientID = Self.extractClientID(notification.userInfo)

@@ -4,12 +4,6 @@ import Carbon.HIToolbox.Events
 
 @objc(BeeInputController)
 class BeeInputController: IMKInputController {
-    private static let imeSessionStartedNotification = NSNotification.Name("fasterthanlime.bee.imeSessionStarted")
-    private static let imeSubmitNotification = NSNotification.Name("fasterthanlime.bee.imeSubmit")
-    private static let imeCancelNotification = NSNotification.Name("fasterthanlime.bee.imeCancel")
-    private static let imeUserTypedNotification = NSNotification.Name("fasterthanlime.bee.imeUserTyped")
-    private static let imeContextLostNotification = NSNotification.Name("fasterthanlime.bee.imeContextLost")
-
     private var currentMarkedText: String = ""
     private var autoCommittedPrefix: String = ""
 
@@ -47,12 +41,9 @@ class BeeInputController: IMKInputController {
 
         if isDictating, let sessionID {
             autoCommittedPrefix = currentMarkedText
-            Self.postNotification(
-                Self.imeContextLostNotification,
-                userInfo: [
-                    "sessionID": sessionID.uuidString,
-                    "hadMarkedText": hadMarkedText,
-                ]
+            BeeBrokerIMEClient.shared.imeContextLost(
+                sessionID: sessionID,
+                hadMarkedText: hadMarkedText
             )
         }
         currentMarkedText = ""
@@ -67,27 +58,18 @@ class BeeInputController: IMKInputController {
 
         switch Int(event.keyCode) {
         case kVK_Return, kVK_ANSI_KeypadEnter:
-            Self.postNotification(
-                Self.imeSubmitNotification,
-                userInfo: ["sessionID": sessionID.uuidString]
-            )
+            BeeBrokerIMEClient.shared.imeSubmit(sessionID: sessionID)
             return true
 
         case kVK_Escape:
-            Self.postNotification(
-                Self.imeCancelNotification,
-                userInfo: ["sessionID": sessionID.uuidString]
-            )
+            BeeBrokerIMEClient.shared.imeCancel(sessionID: sessionID)
             return true
 
         default:
-            Self.postNotification(
-                Self.imeUserTypedNotification,
-                userInfo: [
-                    "sessionID": sessionID.uuidString,
-                    "keyCode": event.keyCode,
-                    "characters": event.characters ?? "",
-                ]
+            BeeBrokerIMEClient.shared.imeUserTyped(
+                sessionID: sessionID,
+                keyCode: event.keyCode,
+                characters: event.characters ?? ""
             )
             return false
         }
@@ -164,15 +146,6 @@ class BeeInputController: IMKInputController {
         )
     }
 
-    private static func postNotification(_ name: NSNotification.Name, userInfo: [AnyHashable: Any]? = nil) {
-        DistributedNotificationCenter.default().postNotificationName(
-            name,
-            object: nil,
-            userInfo: userInfo,
-            deliverImmediately: true
-        )
-    }
-
     private func currentClientIdentity() -> String? {
         guard let client = self.client() else { return nil }
         let opaque = Unmanaged.passUnretained(client as AnyObject).toOpaque()
@@ -183,19 +156,10 @@ class BeeInputController: IMKInputController {
         guard let ack = BeeIMEBridgeState.shared.consumeSessionStartAcknowledgementIfReady() else {
             return
         }
-        var userInfo: [AnyHashable: Any] = ["sessionID": ack.sessionID.uuidString]
-        if let clientPID = ack.clientPID {
-            userInfo["clientPID"] = clientPID
-        }
-        if let clientID = ack.clientIdentity {
-            userInfo["clientID"] = clientID
-        }
-        Self.postNotification(
-            Self.imeSessionStartedNotification,
-            userInfo: userInfo
-        )
-        beeInputLog(
-            "imeSessionStarted: session=\(ack.sessionID.uuidString.prefix(8)) clientPID=\(ack.clientPID.map(String.init) ?? "nil") clientID=\(ack.clientIdentity ?? "nil")"
+        BeeBrokerIMEClient.shared.imeAttach(
+            sessionID: ack.sessionID,
+            clientPID: ack.clientPID,
+            clientID: ack.clientIdentity
         )
     }
 }

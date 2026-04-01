@@ -1,0 +1,74 @@
+import Foundation
+
+@objc
+protocol BeeBrokerXPC {
+    func appHello(_ appInstanceID: String, withReply reply: @escaping (Bool) -> Void)
+    func imeHello(_ imeInstanceID: String, withReply reply: @escaping (Bool) -> Void)
+
+    func prepareSession(
+        _ sessionID: String,
+        targetPID: Int32,
+        activationID: String,
+        appInstanceID: String,
+        withReply reply: @escaping (Bool) -> Void
+    )
+    func sessionStatus(_ sessionID: String, withReply reply: @escaping (Bool, Int32, String) -> Void)
+    func clearSession(_ sessionID: String, appInstanceID: String, withReply reply: @escaping () -> Void)
+
+    func setMarkedText(
+        _ sessionID: String,
+        text: String,
+        appInstanceID: String,
+        withReply reply: @escaping (Bool) -> Void
+    )
+    func commitText(
+        _ sessionID: String,
+        text: String,
+        submit: Bool,
+        appInstanceID: String,
+        withReply reply: @escaping (Bool) -> Void
+    )
+    func cancelInput(_ sessionID: String, appInstanceID: String, withReply reply: @escaping (Bool) -> Void)
+    func stopDictating(_ sessionID: String, appInstanceID: String, withReply reply: @escaping (Bool) -> Void)
+
+    func imeAttach(
+        _ sessionID: String,
+        clientPID: Int32,
+        clientID: String,
+        imeInstanceID: String,
+        withReply reply: @escaping (Bool) -> Void
+    )
+    func imeSubmit(_ sessionID: String, imeInstanceID: String, withReply reply: @escaping () -> Void)
+    func imeCancel(_ sessionID: String, imeInstanceID: String, withReply reply: @escaping () -> Void)
+    func imeUserTyped(
+        _ sessionID: String,
+        keyCode: Int32,
+        characters: String,
+        imeInstanceID: String,
+        withReply reply: @escaping () -> Void
+    )
+    func imeContextLost(
+        _ sessionID: String,
+        hadMarkedText: Bool,
+        imeInstanceID: String,
+        withReply reply: @escaping () -> Void
+    )
+}
+
+@objc
+protocol BeeBrokerPeerXPC {
+    // App -> IME forwarded commands.
+    func handlePrepareSession(_ sessionID: String, targetPID: Int32, activationID: String)
+    func handleClearSession(_ sessionID: String)
+    func handleSetMarkedText(_ sessionID: String, text: String)
+    func handleCommitText(_ sessionID: String, text: String, submit: Bool)
+    func handleCancelInput(_ sessionID: String)
+    func handleStopDictating(_ sessionID: String)
+
+    // IME -> App forwarded events.
+    func handleIMESessionStarted(_ sessionID: String, clientPID: Int32, clientID: String)
+    func handleIMESubmit(_ sessionID: String)
+    func handleIMECancel(_ sessionID: String)
+    func handleIMEUserTyped(_ sessionID: String, keyCode: Int32, characters: String)
+    func handleIMEContextLost(_ sessionID: String, hadMarkedText: Bool)
+}

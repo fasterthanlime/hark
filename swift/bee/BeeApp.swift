@@ -59,7 +59,7 @@ struct BeeApp: App {
         } label: {
             MenuBarLabelView(appState: appState)
         }
-        .menuBarExtraStyle(.menu)
+        .menuBarExtraStyle(.window)
 
         Settings {
             BeeSettingsView(appState: appState)

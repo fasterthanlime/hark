@@ -4,6 +4,7 @@ import SwiftUI
 struct MenuBarView: View {
     @Bindable var appState: AppState
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -16,13 +17,15 @@ struct MenuBarView: View {
                 .font(.body.weight(.medium))
                 .padding(.horizontal, 6)
 
-            HStack(spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: "mic.fill")
-                    .foregroundStyle(.secondary)
-                Text(activeInputLabel)
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(.primary)
+                    .font(.caption)
+                Text(appState.activeInputDeviceName ?? "No input")
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .layoutPriority(1)
+                    .foregroundStyle(.primary)
             }
             .font(.caption)
             .padding(.horizontal, 6)
@@ -30,6 +33,7 @@ struct MenuBarView: View {
             Divider().padding(.horizontal, 2)
 
             Button {
+                dismiss()
                 NSApp.activate(ignoringOtherApps: true)
                 openSettings()
                 DispatchQueue.main.async {
@@ -40,20 +44,21 @@ struct MenuBarView: View {
                 }
             }
             label: {
-                Text("Open settings")
+                MenuActionRow(title: "Open settings", shortcut: "⌘,")
             }
+            .buttonStyle(.plain)
             .keyboardShortcut(",", modifiers: [.command])
 
             Button {
+                dismiss()
                 BeeInputClient.restoreInputSourceIfNeeded()
                 NSApplication.shared.terminate(nil)
             }
             label: {
-                Text("Quit")
+                MenuActionRow(title: "Quit", shortcut: "⌘Q")
             }
+            .buttonStyle(.plain)
             .keyboardShortcut("q", modifiers: [.command])
-
-            Divider().padding(.horizontal, 2)
         }
         .padding(10)
         .frame(width: 240)
@@ -80,14 +85,23 @@ struct MenuBarView: View {
         }
     }
 
-    private var activeInputLabel: String {
-        let raw = appState.activeInputDeviceName ?? "No input"
-        return raw
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\r", with: " ")
-            .replacingOccurrences(of: "\t", with: " ")
-            .split(whereSeparator: \.isWhitespace)
-            .joined(separator: " ")
+}
+
+private struct MenuActionRow: View {
+    let title: String
+    let shortcut: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title)
+            Spacer(minLength: 12)
+            Text(shortcut)
+                .font(.system(.body, design: .rounded))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
     }
 }
 
