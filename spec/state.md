@@ -1,6 +1,6 @@
-# Hark State Management Spec
+# Bee State Management Spec
 
-Hark is a push-to-talk dictation tool for macOS. It runs entirely on-device,
+Bee is a push-to-talk dictation tool for macOS. It runs entirely on-device,
 captures audio, streams it through an ASR model, and inserts the resulting
 text into the frontmost application via a custom IME.
 
@@ -41,13 +41,13 @@ that is discarded unless a session taps into it.
 > indicator lit and use CPU.
 
 > h[audio.device.active-selection]
-> The user may select which input device Hark uses. The selection is
-> independent of the system default — Hark MUST NOT change the system
+> The user may select which input device Bee uses. The selection is
+> independent of the system default — Bee MUST NOT change the system
 > default recording device.
 
 > h[audio.device.hotplug]
 > When input devices appear or disappear, the device list is rebuilt from
-> Core Audio. If the selected device disappeared, Hark falls back to the
+> Core Audio. If the selected device disappeared, Bee falls back to the
 > system default.
 
 ### Internal format
@@ -98,14 +98,14 @@ sessions and tells them how to end.
 
 ### Key event handling
 
-Hark observes all key events via CGEvent tap. By default, events pass
-through to the app — Hark reacts but doesn't prevent the app from seeing
-them. Some events are **swallowed**: Hark prevents the app from receiving
+Bee observes all key events via CGEvent tap. By default, events pass
+through to the app — Bee reacts but doesn't prevent the app from seeing
+them. Some events are **swallowed**: Bee prevents the app from receiving
 them entirely.
 
 > h[ui.swallow-policy]
 > Key events are swallowed only when explicitly marked below. All other
-> events pass through to the app even if Hark reacts to them.
+> events pass through to the app even if Bee reacts to them.
 
 ### States
 
@@ -377,11 +377,76 @@ affects the IME.
 
 ### IME layer
 
-The IME layer manages text insertion via the harkInput InputMethodKit IME.
+#### macOS InputMethodKit background
+
+macOS input methods run as separate processes. The framework provides
+`IMKServer` (one per input method process) and `IMKInputController` (one
+per input session). The system manages controller lifecycles automatically.
+
+**Controller lifecycle.** The OS creates one `IMKInputController` per
+"input session." In practice, this means roughly one controller per
+application — not per window, not per text field. Controllers are created
+lazily on first activation and persist in memory for the lifetime of the
+app's connection. They are never explicitly destroyed by the input method.
+
+**activateServer(sender).** Called by the OS when the input method becomes
+active for a particular client. This happens when: (a) the user switches
+to this input source via `TISSelectInputSource`, (b) a text field gains
+focus while this input source is already selected, or (c) the user switches
+between windows that use different text fields. The `sender` parameter and
+`self.client()` both refer to the `IMKTextInput` proxy for the text field
+that now has focus.
+
+**deactivateServer(sender).** Called when the input method is deactivated
+for a client. This happens when: (a) focus moves to a different text field,
+(b) the user switches to a different input source, or (c) the app loses
+focus. If marked text exists at deactivation time, the client typically
+auto-commits it (standard macOS behavior for marked text on focus loss).
+
+**Important timing characteristics:**
+- `TISSelectInputSource` returns immediately but `activateServer` fires
+  asynchronously — there is a 15–150ms gap between the two.
+- Distributed notifications also arrive asynchronously on the main queue.
+- When switching between windows of the **same app**, the OS may reuse
+  the existing controller without calling `deactivateServer` +
+  `activateServer`. The controller's `client()` silently changes to point
+  to the new window's text field.
+- When switching between **different apps**, the old controller gets
+  `deactivateServer` and the new app's controller gets `activateServer`.
+- Multiple controllers can be live simultaneously (one per app that has
+  used the input method). Only one is "active" at a time.
+
+**Race conditions.** If `TISSelectInputSource` is called while focus is
+shifting between windows/apps (e.g., the user pressed the hotkey while a
+window transition was in progress), the OS may route `activateServer` to
+a different app/window than intended. The input method process has no
+mechanism to specify "activate for app X" — it can only react to what
+the OS gives it.
+
+#### Bee's IME design
+
+Bee uses a custom input method (beeInput) for text insertion. The bee app
+and beeInput are separate processes that communicate via distributed
+notifications.
+
+The IME layer manages text insertion via the beeInput InputMethodKit IME.
 
 > h[ime.activate]
-> When the session is created, Hark saves the current input source and
-> switches to the harkInput IME.
+> When the session is created, Bee saves the current input source and
+> calls `TISSelectInputSource` to switch to the beeInput IME. Because
+> `activateServer` fires asynchronously (15–150ms later), the initial
+> marked text (🐝 cursor) is queued and delivered when the controller
+> activates.
+
+> h[ime.per-app-controller]
+> InputMethodKit creates one controller per application, not per window.
+> When the user switches between windows of the same app, the OS may
+> reuse the existing controller without calling deactivateServer +
+> activateServer. The controller's `client()` may still point to the
+> previous window's text field. This means that if the user has two
+> windows of the same app open, text may be delivered to the wrong
+> window even when the correct window has had focus for a long time.
+> This is a fundamental limitation of InputMethodKit's per-app model.
 
 > h[ime.marked-text]
 > During recording, ASR streaming updates are sent to the IME as marked
@@ -389,10 +454,14 @@ The IME layer manages text insertion via the harkInput InputMethodKit IME.
 > provisional. The full transcript (including checkpointed portions)
 > remains as marked text — checkpoints do not cause IME commits.
 
-> h[ime.typewriter]
-> New characters in marked text updates are revealed progressively
-> (typewriter effect) rather than appearing all at once. The delay per
-> character scales inversely with the generation speed.
+> h[ime.morph-animation]
+> When the transcript changes, the displayed text morphs into the new
+> text via randomized in-place character changes and appends (Matrix
+> style), rather than snapping or using delete-then-insert. Each step
+> randomly picks between: fixing a wrong character in-place, appending
+> the next correct character, or trimming excess characters. The
+> animation is interrupted immediately when a new partial arrives or
+> when the session ends (.done event skips animation entirely).
 
 > h[ime.commit]
 > On session commit, the marked text is replaced with the final transcript
@@ -403,7 +472,7 @@ The IME layer manages text insertion via the harkInput InputMethodKit IME.
 > text is inserted.
 
 > h[ime.deactivate]
-> After commit or cancel, the harkInput IME is deactivated and the
+> After commit or cancel, the beeInput IME is deactivated and the
 > previous input source is restored.
 
 > h[ime.submit]
@@ -450,11 +519,11 @@ The IME layer manages text insertion via the harkInput InputMethodKit IME.
 ## Media
 
 > h[media.pause-on-record]
-> When media pause is enabled, Hark detects active audio output from other
+> When media pause is enabled, Bee detects active audio output from other
 > apps and sends a pause command before recording starts.
 
 > h[media.resume-after-record]
-> After recording ends, Hark resumes media playback only if it was the one
+> After recording ends, Bee resumes media playback only if it was the one
 > that paused it.
 
 ## Language Detection
@@ -462,7 +531,7 @@ The IME layer manages text insertion via the harkInput InputMethodKit IME.
 Language is always auto-detected. There are no overrides.
 
 > h[lang.detect-from-ax]
-> At session creation, Hark walks the AX element tree of the focused
+> At session creation, Bee walks the AX element tree of the focused
 > window (up to 2000 elements), collects text, takes the last 500
 > characters, and runs NLLanguageRecognizer.
 
@@ -484,22 +553,22 @@ Language is always auto-detected. There are no overrides.
 
 ## IME Safety
 
-The harkInput IME is a separate process. Hark switches to it at session
+The beeInput IME is a separate process. Bee switches to it at session
 start and away from it at session end. But things can go wrong: the app
 can crash, the user can quit, or the IME can end up selected with no
 active session. These cases must be handled gracefully.
 
 > h[ime.safety.restore-on-quit]
-> When Hark quits (cleanly), it MUST restore the previous input source
-> if harkInput is currently active.
+> When Bee quits (cleanly), it MUST restore the previous input source
+> if beeInput is currently active.
 
 > h[ime.safety.restore-on-crash]
-> If Hark crashes while harkInput is the active input source, the IME
+> If Bee crashes while beeInput is the active input source, the IME
 > itself MUST detect that no session is active and switch away to the
 > previous input source.
 
 > h[ime.safety.no-session-typing]
-> If the user starts typing while harkInput is the active input source
+> If the user starts typing while beeInput is the active input source
 > but no session is active, the IME MUST immediately switch to the
 > previous input source and let the keystrokes pass through.
 
@@ -517,7 +586,7 @@ active session. These cases must be handled gracefully.
 
 ## Menu Bar
 
-Hark is a menu bar app. The menu bar icon and popover are the only
+Bee is a menu bar app. The menu bar icon and popover are the only
 persistent UI surface.
 
 > h[menubar.status]
@@ -567,7 +636,7 @@ persistent UI surface.
 > finalization begins.
 
 > h[coord.reactivate-locked-app]
-> On commit in locked mode, if the user is in a different app, Hark
+> On commit in locked mode, if the user is in a different app, Bee
 > brings the original app to the front and waits before inserting text.
 
 ## Deprecated Features (non-normative)
