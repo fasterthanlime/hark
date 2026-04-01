@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["staticlib"]
 
 [dependencies]
-qwen3-asr-mlx = { path = "../qwen3-asr-mlx-rs" }
+qwen3-asr-mlx = { path = "../bee-asr" }
 mlx-rs = { version = "0.25", features = ["safetensors", "metal", "accelerate"] }
 tokenizers = { version = "0.22", features = ["onig"] }
 log = "0.4"

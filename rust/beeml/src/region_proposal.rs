@@ -69,7 +69,10 @@ where
 {
     let first = tokens.get(token_start)?;
     let last = tokens.get(token_end.checked_sub(1)?)?;
-    let text = transcript.get(first.char_start..last.char_end)?.trim().to_string();
+    let text = transcript
+        .get(first.char_start..last.char_end)?
+        .trim()
+        .to_string();
     if text.is_empty() {
         return None;
     }
@@ -143,12 +146,9 @@ mod tests {
 
     #[test]
     fn enumerate_transcript_spans_tracks_char_ranges() {
-        let spans = enumerate_transcript_spans_with(
-            "for arc sixty four",
-            4,
-            None,
-            |text| Some(text.split_whitespace().map(|s| s.to_string()).collect()),
-        );
+        let spans = enumerate_transcript_spans_with("for arc sixty four", 4, None, |text| {
+            Some(text.split_whitespace().map(|s| s.to_string()).collect())
+        });
         let whole = spans
             .iter()
             .find(|span| span.token_start == 0 && span.token_end == 4)

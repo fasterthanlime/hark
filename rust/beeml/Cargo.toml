@@ -1,72 +1,10 @@
 [package]
-name = "beeml-api"
+name = "beeml"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "beeml-api"
+name = "beeml"
 path = "src/main.rs"
 
 [dependencies]
-axum = { version = "0.8", features = ["multipart"] }
-tokio = { version = "1", features = ["full"] }
-rusqlite = { version = "0.33", features = ["bundled"] }
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
-tower-http = { version = "0.6", features = ["fs", "cors"] }
-anyhow.workspace = true
-clap = { workspace = true, features = ["derive"] }
-hound.workspace = true
-beeml-pipeline = { path = "../beeml-pipeline" }
-beeml-train = { path = "../beeml-train" }
-beeml-corrupt = { path = "../beeml-corrupt" }
-shellexpand = "3"
-rand = "0.9"
-
-# TTS backends — all compiled in, chosen at runtime
-candle-core = { version = "0.9.2", features = ["metal"] }
-pocket-tts = { version = "0.6", features = ["metal", "quantized"] }
-voice-tts = "0.1"
-voice-g2p = "0.1"
-espeak-ng = { version = "0.1.0", features = ["bundled-data-en"] }
-mlx-rs = "0.25"
-reqwest = { version = "0.12", features = ["json", "blocking"] }
-
-# ASR
-qwen3-asr = { workspace = true, features = ["metal", "hub"] }
-parakeet-rs = "0.3"
-rubato = "0.15"
-crime = { version = "0.5", features = ["ogg"] }
-base64 = "0.22"
-futures = "0.3"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-ogg = "0.9.2"
-opus = "0.3.1"
-rspanphon = "0.1.4"
-
-anyhow.workspace = true
-clap.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-rand = "0.9"
-rayon = "1.10"
-phonetisaurus-g2p = "0.1"
-shellexpand = "3"
-
-anyhow.workspace = true
-clap.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-rand = "0.9"
-ureq = { version = "3", features = ["json"] }
-
-# In-process LLM inference (replaces mlx_lm.server subprocess)
-candle-core = "0.9.2"
-candle-nn = "0.9.2"
-candle-transformers = "0.9.2"
-tokenizers = { version = "0.22", features = ["onig"] }
-hf-hub = "0.4"
-tracing = "0.1"
-peft-rs = { path = "../peft-rs" }
-sysinfo = "0.37"
