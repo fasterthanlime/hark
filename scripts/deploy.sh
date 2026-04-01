@@ -2,8 +2,8 @@
 set -euo pipefail
 
 REMOTE=souffle
-REMOTE_ROOT=~/bearcove/hark/asr-synth
-TMUX_SESSION=synth-dashboard
+REMOTE_ROOT=~/bearcove/bee/asr-synth
+TMUX_SESSION=beeml-api
 TTS_HOST=127.0.0.1
 TTS_PORT=3456
 LOG_DIR="$REMOTE_ROOT/logs"
@@ -27,6 +27,5 @@ ssh "$REMOTE" "/Applications/Tailscale.app/Contents/MacOS/Tailscale serve --bg -
 ssh "$REMOTE" "/Applications/Tailscale.app/Contents/MacOS/Tailscale serve status"
 
 echo
-echo "Dashboard is live at: https://souffle.dropbear-piranha.ts.net/#/author"
 echo "Attach logs with: ssh souffle tmux attach -t $TMUX_SESSION"
 echo "Tail file logs with: ssh souffle tail -f $LOG_PATH"
