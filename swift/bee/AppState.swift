@@ -317,20 +317,14 @@ final class AppState {
             guard self.pendingLockRequest, !self.activeSessionIMEConfirmed else { return }
 
             let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-            self.pendingIMEAckTimeoutCount += 1
-            if self.pendingIMEAckTimeoutCount >= 3 {
-                beeLog(
-                    "SESSION: IME confirm timeout id=\(session.id.uuidString.prefix(8)) targetPID=\(self.activeSessionTargetPID.map(String.init) ?? "nil") frontmostPID=\(frontmostPID.map(String.init) ?? "nil"), aborting"
-                )
-                self.pendingTimer?.cancel()
-                self.transitionToIdle()
-                Task { await session.abort() }
-                return
-            }
             beeLog(
-                "SESSION: IME confirm timeout id=\(session.id.uuidString.prefix(8)) targetPID=\(self.activeSessionTargetPID.map(String.init) ?? "nil") frontmostPID=\(frontmostPID.map(String.init) ?? "nil"), continuing to capture"
+                "SESSION: IME confirm timeout id=\(session.id.uuidString.prefix(8)) targetPID=\(self.activeSessionTargetPID.map(String.init) ?? "nil") frontmostPID=\(frontmostPID.map(String.init) ?? "nil"), aborting"
             )
-            self.startIMEAckTimeoutIfNeeded(session: session)
+            self.pendingIMEAckTimeoutCount += 1
+            self.playStartFailureSound()
+            self.pendingTimer?.cancel()
+            self.transitionToIdle()
+            Task { await session.abort() }
         }
     }
 
@@ -474,6 +468,10 @@ final class AppState {
 
     private func playRecordingStartedSound() {
         SoundEffects.shared.playRecordingStarted()
+    }
+
+    private func playStartFailureSound() {
+        SoundEffects.shared.playStartFailure()
     }
 
     private func pasteLastHistoryEntry() {

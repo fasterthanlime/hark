@@ -7,6 +7,7 @@ final class SoundEffects {
 
     private enum Effect: CaseIterable {
         case recordingStarted
+        case startFailure
         case commit
         case commitSubmit
         case cancel
@@ -14,6 +15,7 @@ final class SoundEffects {
         var fileName: String {
             switch self {
             case .recordingStarted: "bee-recording-started"
+            case .startFailure: "bee-cancel"
             case .commit: "bee-commit"
             case .commitSubmit: "bee-commit-submit"
             case .cancel: "bee-cancel"
@@ -24,6 +26,7 @@ final class SoundEffects {
     private static let logger = Logger(subsystem: "fasterthanlime.bee", category: "SoundEffects")
 
     private var recordingStartedSound: NSSound?
+    private var startFailureSound: NSSound?
     private var commitSound: NSSound?
     private var commitSubmitSound: NSSound?
     private var cancelSound: NSSound?
@@ -39,6 +42,10 @@ final class SoundEffects {
             case .recordingStarted:
                 if recordingStartedSound == nil {
                     recordingStartedSound = load(effect: effect)
+                }
+            case .startFailure:
+                if startFailureSound == nil {
+                    startFailureSound = load(effect: effect)
                 }
             case .commit:
                 if commitSound == nil {
@@ -81,6 +88,10 @@ final class SoundEffects {
 
     func playCommit() {
         play(commitSound, volume: systemVolume())
+    }
+
+    func playStartFailure() {
+        play(startFailureSound, volume: systemVolume())
     }
 
     func playCancel() {
