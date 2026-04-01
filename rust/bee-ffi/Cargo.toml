@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["staticlib"]
 
 [dependencies]
-bee-asr = { path = "../bee-asr" }
+bee-qwen3-asr = { path = "../bee-qwen3-asr" }
 bee-vad = { path = "../bee-vad" }
 log = "0.4"
 env_logger = "0.11"

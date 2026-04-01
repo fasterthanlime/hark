@@ -1,6 +1,6 @@
 use facet::Facet;
 
-use bee_asr::forced_aligner::ForcedAlignItem;
+use bee_qwen3_asr::forced_aligner::ForcedAlignItem;
 
 #[derive(Clone, Debug, Facet)]
 pub struct TranscribeWavResult {

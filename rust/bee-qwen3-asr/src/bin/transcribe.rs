@@ -5,12 +5,12 @@ use mlx_rs::module::ModuleParametersExt;
 use mlx_rs::ops;
 use mlx_rs::Array;
 
-use bee_asr::config::AsrConfig;
-use bee_asr::generate;
-use bee_asr::load;
-use bee_asr::mel::{load_audio_wav, MelExtractor};
-use bee_asr::model::{Qwen3ASRModel, AUDIO_END_TOKEN_ID, AUDIO_PAD_TOKEN_ID, AUDIO_START_TOKEN_ID};
-use bee_asr::streaming::{self, StreamingMode, StreamingOptions, StreamingState};
+use bee_qwen3_asr::config::AsrConfig;
+use bee_qwen3_asr::generate;
+use bee_qwen3_asr::load;
+use bee_qwen3_asr::mel::{load_audio_wav, MelExtractor};
+use bee_qwen3_asr::model::{Qwen3ASRModel, AUDIO_END_TOKEN_ID, AUDIO_PAD_TOKEN_ID, AUDIO_START_TOKEN_ID};
+use bee_qwen3_asr::streaming::{self, StreamingMode, StreamingOptions, StreamingState};
 
 // Chat template token IDs
 const TOK_IM_START: i32 = 151644;
@@ -104,7 +104,7 @@ fn main() -> anyhow::Result<()> {
 
     // Report memory after model load
     {
-        let (active, peak, cache) = bee_asr::streaming::mlx_memory_stats();
+        let (active, peak, cache) = bee_qwen3_asr::streaming::mlx_memory_stats();
         println!(
             "Memory after load: active={:.1}MB peak={:.1}MB cache={:.1}MB",
             active as f64 / 1e6,
@@ -153,7 +153,7 @@ fn run_streaming(
         if aligner_dir.exists() {
             println!("Loading forced aligner for rotate mode...");
             let t0 = Instant::now();
-            let a = bee_asr::forced_aligner::ForcedAligner::load(&aligner_dir, tokenizer.clone())?;
+            let a = bee_qwen3_asr::forced_aligner::ForcedAligner::load(&aligner_dir, tokenizer.clone())?;
             println!("Aligner loaded in {:.0}ms", t0.elapsed().as_millis());
             Some(a)
         } else {
@@ -222,7 +222,7 @@ fn run_align(
     println!("\nLoading forced aligner...");
     let t0 = Instant::now();
     let mut aligner =
-        bee_asr::forced_aligner::ForcedAligner::load(&aligner_dir, tokenizer.clone())?;
+        bee_qwen3_asr::forced_aligner::ForcedAligner::load(&aligner_dir, tokenizer.clone())?;
     println!("Aligner loaded in {:.0}ms", t0.elapsed().as_millis());
 
     // Use a known transcription for testing

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use bee_asr::AsrEngine;
+use bee_qwen3_asr::AsrEngine;
 use beeml::rpc::{BeeMl, TranscribeWavResult};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;

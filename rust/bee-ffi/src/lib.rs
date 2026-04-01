@@ -5,11 +5,11 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Once};
 
-use bee_asr::config::AsrConfig;
-use bee_asr::forced_aligner::ForcedAligner;
-use bee_asr::model::Qwen3ASRModel;
-use bee_asr::streaming::{self, StreamingMode, StreamingOptions, StreamingState};
-use bee_asr::{mlx_rs, tokenizers};
+use bee_qwen3_asr::config::AsrConfig;
+use bee_qwen3_asr::forced_aligner::ForcedAligner;
+use bee_qwen3_asr::model::Qwen3ASRModel;
+use bee_qwen3_asr::streaming::{self, StreamingMode, StreamingOptions, StreamingState};
+use bee_qwen3_asr::{mlx_rs, tokenizers};
 
 static INIT_LOGGER: Once = Once::new();
 
@@ -175,7 +175,7 @@ fn load_engine(model_dir: &Path) -> Result<AsrEngine, String> {
     let mut model =
         Qwen3ASRModel::new(&config.thinker_config).map_err(|e| format!("create model: {e}"))?;
 
-    let stats = bee_asr::load::load_weights(&mut model, model_dir)
+    let stats = bee_qwen3_asr::load::load_weights(&mut model, model_dir)
         .map_err(|e| format!("load weights: {e}"))?;
 
     use mlx_rs::module::ModuleParametersExt;

@@ -4,7 +4,7 @@ members = [
   # one per line plz
   "rust/bee-phonetic",
   "rust/beeml",
-  "rust/bee-asr",
+  "rust/bee-qwen3-asr",
   "rust/bee-vad",
   "rust/bee-ffi",
 ]

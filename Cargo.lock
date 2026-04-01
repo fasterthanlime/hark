@@ -135,7 +135,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 
 [[package]]
-name = "bee-asr"
+name = "bee-ffi"
+version = "0.1.0"
+dependencies = [
+ "bee-qwen3-asr",
+ "bee-vad",
+ "dirs",
+ "env_logger",
+ "log",
+ "serde_json",
+]
+
+[[package]]
+name = "bee-phonetic"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "bee-qwen3-asr"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -157,26 +177,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bee-ffi"
-version = "0.1.0"
-dependencies = [
- "bee-asr",
- "bee-vad",
- "dirs",
- "env_logger",
- "log",
- "serde_json",
-]
-
-[[package]]
-name = "bee-phonetic"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "bee-vad"
 version = "0.1.0"
 dependencies = [
@@ -189,8 +189,8 @@ name = "beeml"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bee-asr",
  "bee-phonetic",
+ "bee-qwen3-asr",
  "facet",
  "tokio",
  "vox",
