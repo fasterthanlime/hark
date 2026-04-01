@@ -5,7 +5,8 @@ func beeInputLog(_ msg: String) {
     let ts = ProcessInfo.processInfo.systemUptime
     let line = String(format: "[%.3f] IME: %@\n", ts, msg)
     if let data = line.data(using: .utf8),
-       let fh = FileHandle(forWritingAtPath: "/tmp/bee.log") {
+        let fh = FileHandle(forWritingAtPath: "/tmp/bee.log")
+    {
         fh.seekToEndOfFile()
         fh.write(data)
         fh.closeFile()
@@ -18,8 +19,11 @@ class BeeInputAppDelegate: NSObject, NSApplicationDelegate {
     var server: IMKServer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard let connectionName = Bundle.main.infoDictionary?["InputMethodConnectionName"] as? String,
-              let bundleIdentifier = Bundle.main.bundleIdentifier else {
+        guard
+            let connectionName = Bundle.main.infoDictionary?["InputMethodConnectionName"]
+                as? String,
+            let bundleIdentifier = Bundle.main.bundleIdentifier
+        else {
             beeInputLog("failed to initialize IMKServer: missing bundle metadata")
             return
         }

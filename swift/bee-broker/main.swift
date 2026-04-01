@@ -4,7 +4,8 @@ private func brokerLog(_ msg: String) {
     let ts = ProcessInfo.processInfo.systemUptime
     let line = String(format: "[%.3f] BROKER: %@\n", ts, msg)
     if let data = line.data(using: .utf8),
-       let fh = FileHandle(forWritingAtPath: "/tmp/bee.log") {
+        let fh = FileHandle(forWritingAtPath: "/tmp/bee.log")
+    {
         fh.seekToEndOfFile()
         fh.write(data)
         fh.closeFile()
@@ -66,7 +67,9 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
         queue.async {
             self.imeConnections[imeInstanceID] = conn
             self.activeIMEInstanceID = imeInstanceID
-            brokerLog("imeHello: id=\(imeInstanceID.prefix(8)) flushing \(self.imeWaiters.count) waiter(s)")
+            brokerLog(
+                "imeHello: id=\(imeInstanceID.prefix(8)) flushing \(self.imeWaiters.count) waiter(s)"
+            )
             let waiters = self.imeWaiters
             self.imeWaiters.removeAll()
             for waiter in waiters {
@@ -120,7 +123,9 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
         }
     }
 
-    func sessionStatus(_ sessionID: String, withReply reply: @escaping (Bool, Int32, String) -> Void) {
+    func sessionStatus(
+        _ sessionID: String, withReply reply: @escaping (Bool, Int32, String) -> Void
+    ) {
         queue.async {
             guard let s = self.sessions[sessionID] else {
                 reply(false, -1, "")
@@ -170,7 +175,9 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
         }
     }
 
-    func clearSession(_ sessionID: String, appInstanceID: String, withReply reply: @escaping () -> Void) {
+    func clearSession(
+        _ sessionID: String, appInstanceID: String, withReply reply: @escaping () -> Void
+    ) {
         queue.async {
             if let ime = self.imeProxy() {
                 ime.handleClearSession(sessionID)
@@ -187,7 +194,9 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
         withReply reply: @escaping (Bool) -> Void
     ) {
         queue.async {
-            guard let s = self.sessions[sessionID], s.appInstanceID == appInstanceID, let ime = self.imeProxy() else {
+            guard let s = self.sessions[sessionID], s.appInstanceID == appInstanceID,
+                let ime = self.imeProxy()
+            else {
                 reply(false)
                 return
             }
@@ -204,7 +213,9 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
         withReply reply: @escaping (Bool) -> Void
     ) {
         queue.async {
-            guard let s = self.sessions[sessionID], s.appInstanceID == appInstanceID, let ime = self.imeProxy() else {
+            guard let s = self.sessions[sessionID], s.appInstanceID == appInstanceID,
+                let ime = self.imeProxy()
+            else {
                 reply(false)
                 return
             }
@@ -214,9 +225,13 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
         }
     }
 
-    func cancelInput(_ sessionID: String, appInstanceID: String, withReply reply: @escaping (Bool) -> Void) {
+    func cancelInput(
+        _ sessionID: String, appInstanceID: String, withReply reply: @escaping (Bool) -> Void
+    ) {
         queue.async {
-            guard let s = self.sessions[sessionID], s.appInstanceID == appInstanceID, let ime = self.imeProxy() else {
+            guard let s = self.sessions[sessionID], s.appInstanceID == appInstanceID,
+                let ime = self.imeProxy()
+            else {
                 reply(false)
                 return
             }
@@ -226,9 +241,13 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
         }
     }
 
-    func stopDictating(_ sessionID: String, appInstanceID: String, withReply reply: @escaping (Bool) -> Void) {
+    func stopDictating(
+        _ sessionID: String, appInstanceID: String, withReply reply: @escaping (Bool) -> Void
+    ) {
         queue.async {
-            guard let s = self.sessions[sessionID], s.appInstanceID == appInstanceID, let ime = self.imeProxy() else {
+            guard let s = self.sessions[sessionID], s.appInstanceID == appInstanceID,
+                let ime = self.imeProxy()
+            else {
                 reply(false)
                 return
             }
@@ -259,7 +278,9 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
                 return
             }
             if let target = s.targetPID, target >= 0, clientPID >= 0, target != clientPID {
-                brokerLog("imeAttach: pid mismatch session=\(sessionID.prefix(8)) target=\(target) got=\(clientPID)")
+                brokerLog(
+                    "imeAttach: pid mismatch session=\(sessionID.prefix(8)) target=\(target) got=\(clientPID)"
+                )
                 reply(false)
                 return
             }
@@ -272,7 +293,9 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
         }
     }
 
-    func imeSubmit(_ sessionID: String, imeInstanceID: String, withReply reply: @escaping () -> Void) {
+    func imeSubmit(
+        _ sessionID: String, imeInstanceID: String, withReply reply: @escaping () -> Void
+    ) {
         queue.async {
             if let s = self.sessions[sessionID], let app = self.appProxy(s.appInstanceID) {
                 app.handleIMESubmit(sessionID)
@@ -281,7 +304,9 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
         }
     }
 
-    func imeCancel(_ sessionID: String, imeInstanceID: String, withReply reply: @escaping () -> Void) {
+    func imeCancel(
+        _ sessionID: String, imeInstanceID: String, withReply reply: @escaping () -> Void
+    ) {
         queue.async {
             if let s = self.sessions[sessionID], let app = self.appProxy(s.appInstanceID) {
                 app.handleIMECancel(sessionID)
@@ -323,7 +348,9 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
 private final class BeeBrokerDelegate: NSObject, NSXPCListenerDelegate {
     private let service = BeeBrokerService()
 
-    func listener(_ listener: NSXPCListener, shouldAcceptNewConnection newConnection: NSXPCConnection) -> Bool {
+    func listener(
+        _ listener: NSXPCListener, shouldAcceptNewConnection newConnection: NSXPCConnection
+    ) -> Bool {
         newConnection.exportedInterface = NSXPCInterface(with: BeeBrokerXPC.self)
         newConnection.exportedObject = service
         newConnection.remoteObjectInterface = NSXPCInterface(with: BeeBrokerPeerXPC.self)

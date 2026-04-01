@@ -141,7 +141,9 @@ final class BeeInputClient: Sendable {
         // Simulated Event: post a Shift key-up to force the target app's
         // NSTextInputContext to notice the new input source.
         let src = CGEventSource(stateID: .hidSystemState)
-        if let shiftUp = CGEvent(keyboardEventSource: src, virtualKey: UInt16(kVK_Shift), keyDown: false) {
+        if let shiftUp = CGEvent(
+            keyboardEventSource: src, virtualKey: UInt16(kVK_Shift), keyDown: false)
+        {
             shiftUp.post(tap: .cghidEventTap)
         }
 

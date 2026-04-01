@@ -857,7 +857,7 @@ enum SessionResult: Sendable {
 /// Log to the shared bee log file.
 func beeLog(_ msg: String) {
     let ts = ProcessInfo.processInfo.systemUptime
-    let line = String(format: "[%.3f] %@\n", ts, msg)
+    let line = String(format: "[%.3f] APP: %@\n", ts, msg)
     if let data = line.data(using: .utf8),
         let fh = FileHandle(forWritingAtPath: "/tmp/bee.log")
     {
@@ -879,7 +879,7 @@ private final class IMELog: Sendable {
 
     func write(_ msg: String) {
         let ts = ProcessInfo.processInfo.systemUptime
-        let line = String(format: "[%.3f] %@\n", ts, msg)
+        let line = String(format: "[%.3f] APP/IME: %@\n", ts, msg)
         if let data = line.data(using: .utf8),
             let fh = FileHandle(forWritingAtPath: path)
         {

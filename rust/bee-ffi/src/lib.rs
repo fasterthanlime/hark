@@ -82,7 +82,7 @@ fn ffi_log(msg: &str) {
     {
         let _ = writeln!(
             f,
-            "[{:.3}] {}",
+            "[{:.3}] FFI: {}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -100,7 +100,11 @@ fn find_vad_dir() -> Option<PathBuf> {
         }
     }
     let dir = dirs::home_dir()?.join("Library/Caches/qwen3-asr/aitytech--Silero-VAD-v5-MLX");
-    if dir.exists() { Some(dir) } else { None }
+    if dir.exists() {
+        Some(dir)
+    } else {
+        None
+    }
 }
 
 fn resolve_engine_config(model_dir: &Path) -> Result<EngineConfig<'static>, String> {
@@ -111,7 +115,10 @@ fn resolve_engine_config(model_dir: &Path) -> Result<EngineConfig<'static>, Stri
         model_dir.join("tokenizer.json")
     };
     if !tokenizer_path.exists() {
-        return Err(format!("tokenizer not found at {}", tokenizer_path.display()));
+        return Err(format!(
+            "tokenizer not found at {}",
+            tokenizer_path.display()
+        ));
     }
 
     // Aligner: env var, then well-known locations
@@ -124,7 +131,8 @@ fn resolve_engine_config(model_dir: &Path) -> Result<EngineConfig<'static>, Stri
             "mlx-community--Qwen3-ForcedAligner-0.6B-4bit",
             "Qwen--Qwen3-ForcedAligner-0.6B",
         ];
-        candidates.iter()
+        candidates
+            .iter()
             .map(|n| base.join(n))
             .find(|p| p.exists())
             .ok_or("forced aligner not found")?
@@ -226,7 +234,10 @@ pub unsafe extern "C" fn asr_engine_from_pretrained(
     let model_dir = PathBuf::from(cache_dir).join(&dir_name);
 
     if !model_dir.exists() {
-        set_err(out_err, &format!("model not found at {}", model_dir.display()));
+        set_err(
+            out_err,
+            &format!("model not found at {}", model_dir.display()),
+        );
         return std::ptr::null_mut();
     }
 
@@ -247,7 +258,10 @@ pub extern "C" fn asr_engine_from_gguf(
     _cache_dir: *const c_char,
     out_err: *mut *mut c_char,
 ) -> *mut AsrEngine {
-    set_err(out_err, "GGUF not supported by MLX backend — use safetensors models");
+    set_err(
+        out_err,
+        "GGUF not supported by MLX backend — use safetensors models",
+    );
     std::ptr::null_mut()
 }
 
@@ -287,13 +301,31 @@ pub unsafe extern "C" fn asr_session_create(
     let engine_ref = unsafe { &*engine };
     let arc = engine_ref.inner.clone();
 
-    let chunk_duration = if opts.chunk_size_sec > 0.0 { opts.chunk_size_sec } else { 0.4 };
-    let max_streaming = if opts.max_new_tokens_streaming > 0 { opts.max_new_tokens_streaming as usize } else { 32 };
-    let max_final = if opts.max_new_tokens_final > 0 { opts.max_new_tokens_final as usize } else { 512 };
+    let chunk_duration = if opts.chunk_size_sec > 0.0 {
+        opts.chunk_size_sec
+    } else {
+        0.4
+    };
+    let max_streaming = if opts.max_new_tokens_streaming > 0 {
+        opts.max_new_tokens_streaming as usize
+    } else {
+        32
+    };
+    let max_final = if opts.max_new_tokens_final > 0 {
+        opts.max_new_tokens_final as usize
+    } else {
+        512
+    };
 
     let language = if !opts.language.is_null() {
-        let s = unsafe { CStr::from_ptr(opts.language) }.to_str().unwrap_or("");
-        if s.is_empty() { Language::default() } else { Language(s.to_string()) }
+        let s = unsafe { CStr::from_ptr(opts.language) }
+            .to_str()
+            .unwrap_or("");
+        if s.is_empty() {
+            Language::default()
+        } else {
+            Language(s.to_string())
+        }
     } else {
         Language::default()
     };
@@ -393,22 +425,25 @@ fn feed_impl(
             }
             session.last_text = update.text.clone();
 
-            let committed_utf16_len = update.text[..update.committed_len]
-                .encode_utf16()
-                .count();
+            let committed_utf16_len = update.text[..update.committed_len].encode_utf16().count();
 
             let alignments_json = if update.alignments.is_empty() {
                 std::ptr::null_mut()
             } else {
                 let json = serde_json::to_string(
-                    &update.alignments.iter().map(|a| {
-                        serde_json::json!({
-                            "word": a.word,
-                            "start": (a.start * 1000.0).round() / 1000.0,
-                            "end": (a.end * 1000.0).round() / 1000.0,
+                    &update
+                        .alignments
+                        .iter()
+                        .map(|a| {
+                            serde_json::json!({
+                                "word": a.word,
+                                "start": (a.start * 1000.0).round() / 1000.0,
+                                "end": (a.end * 1000.0).round() / 1000.0,
+                            })
                         })
-                    }).collect::<Vec<_>>(),
-                ).unwrap_or_else(|_| "[]".to_string());
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap_or_else(|_| "[]".to_string());
                 to_c_string(&json)
             };
 
