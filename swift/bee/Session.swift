@@ -20,7 +20,7 @@ private let logger = Logger(subsystem: "fasterthanlime.bee", category: "Session"
 /// - commit: drain → finalize → IME commits text
 actor Session {
     let id: UUID
-    let targetBundleID: String?
+    let targetProcessID: pid_t?
     let createdAt: Date
 
     // Layer states — observable by the debug overlay
@@ -60,14 +60,14 @@ actor Session {
         audioEngine: AudioEngine,
         transcriptionService: TranscriptionService,
         inputClient: BeeInputClient,
-        targetBundleID: String?
+        targetProcessID: pid_t?
     ) {
         self.id = UUID()
         self.createdAt = Date()
         self.audioEngine = audioEngine
         self.transcriptionService = transcriptionService
         self.inputClient = inputClient
-        self.targetBundleID = targetBundleID
+        self.targetProcessID = targetProcessID
     }
 
     // MARK: - Start
@@ -95,16 +95,23 @@ actor Session {
         self.ch1 = ch1
         self.ch2 = ch2
 
-        // Register with AudioEngine (Channel 0 starts flowing)
-        audioEngine.startCapture(for: self.id, pipeline: ch0)
-        capture = .buffering
-
         // IME: activate and show bee cursor
-        beeLog("SESSION START: target=\(self.targetBundleID ?? "nil")")
-        await MainActor.run { inputClient.activate() }
+        beeLog("SESSION START: targetPID=\(self.targetProcessID.map(String.init) ?? "nil")")
+        let imeActivated = await MainActor.run {
+            inputClient.activate(expectedTargetPID: targetProcessID)
+        }
+        guard imeActivated else {
+            logger.error("[\(self.id)] Failed to activate IME for target pid")
+            onComplete?(.aborted(id: id))
+            return
+        }
         beeLog("SESSION: IME activated, sending 🐝")
         inputClient.setMarkedText("🐝")
         ime = .active
+
+        // Register with AudioEngine (Channel 0 starts flowing)
+        audioEngine.startCapture(for: self.id, pipeline: ch0)
+        capture = .buffering
 
         // ASR: create session
         var config = asrConfig

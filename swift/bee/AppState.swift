@@ -11,9 +11,18 @@ import SwiftUI
 @Observable
 @MainActor
 final class AppState {
+    private static let imeSubmitName = NSNotification.Name("fasterthanlime.bee.imeSubmit")
+    private static let imeCancelName = NSNotification.Name("fasterthanlime.bee.imeCancel")
+    private static let imeUserTypedName = NSNotification.Name("fasterthanlime.bee.imeUserTyped")
+    private static let imeContextLostName = NSNotification.Name("fasterthanlime.bee.imeContextLost")
+
     private(set) var uiState: UIState = .idle
     private var pendingTimer: Task<Void, Never>?
     private var consumeNextROptUp = false
+    private var activeSessionID: UUID?
+    private var activeSessionTargetPID: pid_t?
+    private var distributedObservers: [NSObjectProtocol] = []
+    private var workspaceObservers: [NSObjectProtocol] = []
 
     // Shared infrastructure
     let audioEngine: AudioEngine
@@ -71,6 +80,18 @@ final class AppState {
         self.audioEngine = audioEngine
         self.transcriptionService = transcriptionService
         self.inputClient = inputClient
+        installExternalObservers()
+    }
+
+    deinit {
+        let dnc = DistributedNotificationCenter.default()
+        let nc = NSWorkspace.shared.notificationCenter
+        for observer in distributedObservers {
+            dnc.removeObserver(observer)
+        }
+        for observer in workspaceObservers {
+            nc.removeObserver(observer)
+        }
     }
 
     // MARK: - State
@@ -105,7 +126,10 @@ final class AppState {
     func handleROptDown() -> Bool {
         switch uiState {
         case .idle:
-            let session = createSession()
+            let targetPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            let session = createSession(targetProcessID: targetPID)
+            activeSessionID = session.id
+            activeSessionTargetPID = targetPID
             uiState = .pending(session)
             startPendingTimer(session: session)
             let config = TranscriptionService.SessionConfig(
@@ -139,12 +163,12 @@ final class AppState {
             return false
 
         case .pushToTalk(let session):
-            uiState = .idle
+            transitionToIdle()
             Task { await session.commit(submit: false) }
             return true // swallowed
 
         case .lockedOptionHeld(let session):
-            uiState = .idle
+            transitionToIdle()
             Task { await session.commit(submit: false) }
             return true // swallowed
 
@@ -168,7 +192,7 @@ final class AppState {
     func handleEscape() -> Bool {
         switch uiState {
         case .pushToTalk(let session):
-            uiState = .idle
+            transitionToIdle()
             Task { await session.cancel() }
             return true // swallowed
 
@@ -176,7 +200,7 @@ final class AppState {
             return false // passthrough
 
         case .lockedOptionHeld(let session):
-            uiState = .idle
+            transitionToIdle()
             Task { await session.cancel() }
             return true // swallowed
 
@@ -188,7 +212,7 @@ final class AppState {
     func handleEnter() -> Bool {
         switch uiState {
         case .locked(let session):
-            uiState = .idle
+            transitionToIdle()
             Task { await session.commit(submit: true) }
             return true // swallowed
 
@@ -201,7 +225,7 @@ final class AppState {
         switch uiState {
         case .pending(let session):
             pendingTimer?.cancel()
-            uiState = .idle
+            transitionToIdle()
 
             // ROpt+P = paste last history entry
             if keyCode == 0x23 /* kVK_ANSI_P */ {
@@ -239,7 +263,7 @@ final class AppState {
             try? await Task.sleep(for: .seconds(300))
             guard !Task.isCancelled else { return }
             if uiState.session?.id == session.id {
-                uiState = .idle
+                transitionToIdle()
                 await session.commit(submit: false)
             }
         }
@@ -247,13 +271,12 @@ final class AppState {
 
     // MARK: - Session Factory
 
-    private func createSession() -> Session {
-        let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+    private func createSession(targetProcessID: pid_t?) -> Session {
         let session = Session(
             audioEngine: audioEngine,
             transcriptionService: transcriptionService,
             inputClient: inputClient,
-            targetBundleID: bundleID
+            targetProcessID: targetProcessID
         )
 
         Task {
@@ -270,19 +293,28 @@ final class AppState {
     }
 
     private func handleSessionResult(_ result: SessionResult) {
+        let resultID: UUID
         switch result {
-        case .aborted:
+        case .aborted(let id):
+            resultID = id
             break // no trace
-        case .cancelled(_, let text):
+        case .cancelled(let id, let text):
+            resultID = id
             SoundEffects.shared.playCancel()
             if !text.isEmpty {
                 addHistoryEntry(text: text)
             }
-        case .committed(_, let text, _):
+        case .committed(let id, let text, _):
+            resultID = id
             SoundEffects.shared.playCommit()
             if !text.isEmpty {
                 addHistoryEntry(text: text)
             }
+        }
+
+        if activeSessionID == resultID {
+            activeSessionID = nil
+            activeSessionTargetPID = nil
         }
     }
 
@@ -346,6 +378,118 @@ final class AppState {
 
     private func pasteLastHistoryEntry() {
         // TODO: look up most recent history entry, paste via IME
+    }
+
+    // MARK: - External Events
+
+    private func installExternalObservers() {
+        let dnc = DistributedNotificationCenter.default()
+        let nc = NSWorkspace.shared.notificationCenter
+
+        distributedObservers.append(
+            dnc.addObserver(forName: Self.imeSubmitName, object: nil, queue: .main) { [weak self] _ in
+                self?.handleIMESubmit()
+            }
+        )
+        distributedObservers.append(
+            dnc.addObserver(forName: Self.imeCancelName, object: nil, queue: .main) { [weak self] _ in
+                self?.handleIMECancel()
+            }
+        )
+        distributedObservers.append(
+            dnc.addObserver(forName: Self.imeUserTypedName, object: nil, queue: .main) { [weak self] _ in
+                self?.handleIMEUserTyped()
+            }
+        )
+        distributedObservers.append(
+            dnc.addObserver(forName: Self.imeContextLostName, object: nil, queue: .main) { [weak self] _ in
+                self?.handleIMEContextLost()
+            }
+        )
+        workspaceObservers.append(
+            nc.addObserver(
+                forName: NSWorkspace.didActivateApplicationNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                self?.handleDidActivateApplication(notification)
+            }
+        )
+    }
+
+    private func handleIMESubmit() {
+        switch uiState {
+        case .pending(let session):
+            pendingTimer?.cancel()
+            transitionToIdle()
+            Task { await session.abort() }
+        case .pushToTalk(let session), .locked(let session), .lockedOptionHeld(let session):
+            transitionToIdle()
+            Task { await session.commit(submit: true) }
+        case .idle:
+            break
+        }
+    }
+
+    private func handleIMECancel() {
+        switch uiState {
+        case .pending(let session):
+            pendingTimer?.cancel()
+            transitionToIdle()
+            Task { await session.abort() }
+        case .pushToTalk(let session), .locked(let session), .lockedOptionHeld(let session):
+            transitionToIdle()
+            Task { await session.cancel() }
+        case .idle:
+            break
+        }
+    }
+
+    private func handleIMEUserTyped() {
+        switch uiState {
+        case .pending(let session):
+            pendingTimer?.cancel()
+            transitionToIdle()
+            Task { await session.abort() }
+        case .pushToTalk(let session), .locked(let session), .lockedOptionHeld(let session):
+            transitionToIdle()
+            Task { await session.cancel() }
+        case .idle:
+            break
+        }
+    }
+
+    private func handleIMEContextLost() {
+        switch uiState {
+        case .pending(let session):
+            pendingTimer?.cancel()
+            transitionToIdle()
+            Task { await session.abort() }
+        case .pushToTalk(let session), .locked(let session), .lockedOptionHeld(let session):
+            transitionToIdle()
+            Task { await session.cancel() }
+        case .idle:
+            break
+        }
+    }
+
+    private func handleDidActivateApplication(_ notification: Notification) {
+        guard let session = uiState.session else { return }
+        guard activeSessionID == session.id else { return }
+        guard let targetPID = activeSessionTargetPID else { return }
+        guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else {
+            return
+        }
+        guard app.processIdentifier != targetPID else { return }
+
+        beeLog("SESSION: active app changed targetPID=\(targetPID) newPID=\(app.processIdentifier), cancelling")
+        transitionToIdle()
+        Task { await session.cancel() }
+    }
+
+    private func transitionToIdle() {
+        uiState = .idle
+        pendingTimer?.cancel()
     }
 }
 

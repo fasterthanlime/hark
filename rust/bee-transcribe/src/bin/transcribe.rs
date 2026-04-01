@@ -41,8 +41,14 @@ fn main() -> anyhow::Result<()> {
         t0.elapsed().as_millis()
     );
 
-    // Create session
-    let options = SessionOptions::default();
+    // Create session with env var overrides
+    let mut options = SessionOptions::default();
+    if let Ok(v) = std::env::var("BEE_CHUNK_DURATION") { options.chunk_duration = v.parse().unwrap(); }
+    if let Ok(v) = std::env::var("BEE_VAD_THRESHOLD") { options.vad_threshold = v.parse().unwrap(); }
+    if let Ok(v) = std::env::var("BEE_ROLLBACK_TOKENS") { options.rollback_tokens = v.parse().unwrap(); }
+    if let Ok(v) = std::env::var("BEE_COMMIT_TOKENS") { options.commit_token_count = v.parse().unwrap(); }
+    if let Ok(v) = std::env::var("BEE_MAX_TOKENS_STREAMING") { options.max_tokens_streaming = v.parse().unwrap(); }
+    if let Ok(v) = std::env::var("BEE_MAX_TOKENS_FINAL") { options.max_tokens_final = v.parse().unwrap(); }
     let chunk_samples = (options.chunk_duration * 16000.0) as usize;
     let mut session = engine.session(options);
 

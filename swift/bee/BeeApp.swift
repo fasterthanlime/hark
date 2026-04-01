@@ -1,7 +1,15 @@
+import AppKit
 import SwiftUI
+
+final class BeeLifecycleDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        BeeInputClient.switchAwayFromBeeInputIfNeeded()
+    }
+}
 
 @main
 struct BeeApp: App {
+    @NSApplicationDelegateAdaptor(BeeLifecycleDelegate.self) private var lifecycleDelegate
     @State private var appState: AppState
     @State private var hotkeyMonitor = HotkeyMonitor()
 

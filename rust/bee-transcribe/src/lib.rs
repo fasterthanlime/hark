@@ -431,12 +431,18 @@ impl<'a> Session<'a> {
             return Ok(());
         }
 
-        // Walk back from the fixed boundary to a word boundary
-        let Some((commit_count, commit_text)) =
-            find_word_boundary(&self.token_ids, fixed_count, &self.engine.tokenizer)
-        else {
+        // Commit the fixed tokens, but ensure the seed has at least
+        // rollback_tokens + 1 so there's always a locked prefix token
+        // after rotation (otherwise the model regenerates from scratch
+        // and may lose whitespace).
+        let max_commit = self.token_ids.len().saturating_sub(self.options.rollback_tokens + 1);
+        let commit_count = fixed_count.min(max_commit);
+        if commit_count == 0 {
             return Ok(());
-        };
+        }
+        let commit_text = self.engine.tokenizer
+            .decode(&self.token_ids[..commit_count], true)
+            .unwrap_or_default();
 
         // Run forced aligner to find precise audio boundary
         let items = self.engine.aligner.align(&self.audio, &commit_text)

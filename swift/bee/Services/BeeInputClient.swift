@@ -1,9 +1,11 @@
+import AppKit
 import Carbon
 import Foundation
 
 /// Communicates with the bee-input IME process via distributed notifications.
 final class BeeInputClient: Sendable {
     private static let dnc = DistributedNotificationCenter.default()
+    private static let beeBundleID = "fasterthanlime.inputmethod.bee" as CFString
 
     private static let setMarkedTextName = NSNotification.Name("fasterthanlime.bee.setMarkedText")
     private static let commitTextName = NSNotification.Name("fasterthanlime.bee.commitText")
@@ -14,21 +16,38 @@ final class BeeInputClient: Sendable {
 
     // MARK: - Input Source Switching
 
-    func activate() {
+    @discardableResult
+    func activate(expectedTargetPID: pid_t? = nil) -> Bool {
         guard let beeSource = Self.findBeeInputSource() else {
             beeLog("IME ACTIVATE: bee input source NOT FOUND")
-            return
+            return false
         }
-        Self.previousInputSource = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue()
+
+        if let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+           !Self.isBeeInputSource(current) {
+            Self.previousInputSource = current
+        }
+
         let result = TISSelectInputSource(beeSource)
         beeLog("IME ACTIVATE: TISSelectInputSource result=\(result)")
+        guard result == noErr else {
+            return false
+        }
+
+        if let expectedTargetPID {
+            let actualPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            if actualPID != expectedTargetPID {
+                beeLog("IME ACTIVATE: target mismatch expected=\(expectedTargetPID) actual=\(actualPID.map(String.init) ?? "nil"), restoring input source")
+                Self.switchAwayFromBeeInputIfNeeded()
+                return false
+            }
+        }
+
+        return true
     }
 
     func deactivate() {
-        if let previous = Self.previousInputSource {
-            TISSelectInputSource(previous)
-            Self.previousInputSource = nil
-        }
+        Self.switchAwayFromBeeInputIfNeeded()
     }
 
     // MARK: - Distributed Notifications
@@ -107,15 +126,81 @@ final class BeeInputClient: Sendable {
     }
 
     static func restoreInputSourceIfNeeded() {
-        if let previous = previousInputSource {
-            TISSelectInputSource(previous)
+        switchAwayFromBeeInputIfNeeded()
+    }
+
+    static func switchAwayFromBeeInputIfNeeded() {
+        if let previous = previousInputSource, !isBeeInputSource(previous) {
+            let result = TISSelectInputSource(previous)
+            beeLog("IME DEACTIVATE: restore previous result=\(result)")
             previousInputSource = nil
+            if result == noErr { return }
         }
+        previousInputSource = nil
+
+        guard let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+              isBeeInputSource(current) else {
+            return
+        }
+
+        guard let fallback = fallbackInputSource(current: current) else {
+            beeLog("IME DEACTIVATE: no fallback input source available")
+            return
+        }
+
+        let result = TISSelectInputSource(fallback)
+        beeLog("IME DEACTIVATE: fallback select result=\(result)")
+    }
+
+    private static func fallbackInputSource(current: TISInputSource) -> TISInputSource? {
+        if let next = nextInputSource(after: current) {
+            return next
+        }
+
+        if let ascii = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
+           !isBeeInputSource(ascii) {
+            return ascii
+        }
+
+        return selectCapableInputSources().first(where: { !isBeeInputSource($0) })
+    }
+
+    private static func nextInputSource(after current: TISInputSource) -> TISInputSource? {
+        let sources = selectCapableInputSources()
+        guard !sources.isEmpty else { return nil }
+
+        guard let currentIndex = sources.firstIndex(where: { CFEqual($0, current) }) else {
+            return sources.first(where: { !isBeeInputSource($0) })
+        }
+
+        for offset in 1...sources.count {
+            let index = (currentIndex + offset) % sources.count
+            let candidate = sources[index]
+            if !isBeeInputSource(candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private static func selectCapableInputSources() -> [TISInputSource] {
+        let properties: [CFString: Any] = [
+            kTISPropertyInputSourceIsSelectCapable: true,
+        ]
+        return (TISCreateInputSourceList(properties as CFDictionary, false)?
+            .takeRetainedValue() as? [TISInputSource]) ?? []
+    }
+
+    private static func isBeeInputSource(_ source: TISInputSource?) -> Bool {
+        guard let source, let beeSource = findBeeInputSource() else {
+            return false
+        }
+        return CFEqual(source, beeSource)
     }
 
     private static func findBeeInputSource() -> TISInputSource? {
         let properties: [CFString: Any] = [
-            kTISPropertyBundleID: "fasterthanlime.inputmethod.bee" as CFString,
+            kTISPropertyBundleID: beeBundleID,
         ]
         guard let sources = TISCreateInputSourceList(properties as CFDictionary, false)?.takeRetainedValue() as? [TISInputSource],
               let source = sources.first else {

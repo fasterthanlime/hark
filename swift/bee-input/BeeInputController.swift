@@ -4,32 +4,48 @@ import Carbon.HIToolbox.Events
 
 @objc(BeeInputController)
 class BeeInputController: IMKInputController {
+    private static let imeSubmitNotification = NSNotification.Name("fasterthanlime.bee.imeSubmit")
+    private static let imeCancelNotification = NSNotification.Name("fasterthanlime.bee.imeCancel")
+    private static let imeUserTypedNotification = NSNotification.Name("fasterthanlime.bee.imeUserTyped")
+    private static let imeContextLostNotification = NSNotification.Name("fasterthanlime.bee.imeContextLost")
+
     private var currentMarkedText: String = ""
     private var autoCommittedPrefix: String = ""
 
     override func activateServer(_ sender: Any!) {
         super.activateServer(sender)
         BeeXPCService.shared.activeController = self
-        BeeXPCService.shared.lastController = self
         let clientName = (self.client() as? NSObject)?.description.prefix(80) ?? "nil"
         beeInputLog("activateServer: client=\(clientName)")
         BeeXPCService.shared.flushPending()
+
+        // If beeInput was selected manually (outside a dictation session),
+        // immediately switch back to a regular keyboard source.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self else { return }
+            guard BeeXPCService.shared.activeController === self else { return }
+            guard !BeeXPCService.shared.isDictating,
+                  BeeXPCService.shared.pendingText == nil else {
+                return
+            }
+            beeInputLog("activateServer: unexpected/manual activation, switching away")
+            BeeXPCService.shared.switchAwayFromBeeInput()
+        }
     }
 
     override func deactivateServer(_ sender: Any!) {
         beeInputLog("deactivateServer: hadMarkedText=\(!currentMarkedText.isEmpty) isDictating=\(BeeXPCService.shared.isDictating)")
         let hadMarkedText = !currentMarkedText.isEmpty
 
+        if BeeXPCService.shared.activeController === self {
+            BeeXPCService.shared.activeController = nil
+        }
+
         if hadMarkedText && BeeXPCService.shared.isDictating {
             autoCommittedPrefix = currentMarkedText
+            Self.postNotification(Self.imeContextLostNotification)
         }
         currentMarkedText = ""
-
-        if !hadMarkedText {
-            if BeeXPCService.shared.activeController === self {
-                BeeXPCService.shared.activeController = nil
-            }
-        }
         super.deactivateServer(sender)
     }
 
@@ -40,20 +56,24 @@ class BeeInputController: IMKInputController {
 
         switch Int(event.keyCode) {
         case kVK_Return, kVK_ANSI_KeypadEnter:
-            DistributedNotificationCenter.default().postNotificationName(
-                NSNotification.Name("fasterthanlime.bee.imeSubmit"),
-                object: nil, userInfo: nil, deliverImmediately: true
-            )
+            BeeXPCService.shared.isDictating = false
+            Self.postNotification(Self.imeSubmitNotification)
             return true
 
         case kVK_Escape:
-            DistributedNotificationCenter.default().postNotificationName(
-                NSNotification.Name("fasterthanlime.bee.imeCancel"),
-                object: nil, userInfo: nil, deliverImmediately: true
-            )
+            BeeXPCService.shared.isDictating = false
+            Self.postNotification(Self.imeCancelNotification)
             return true
 
         default:
+            BeeXPCService.shared.isDictating = false
+            Self.postNotification(
+                Self.imeUserTypedNotification,
+                userInfo: [
+                    "keyCode": event.keyCode,
+                    "characters": event.characters ?? "",
+                ]
+            )
             return false
         }
     }
@@ -119,6 +139,15 @@ class BeeInputController: IMKInputController {
             "",
             selectionRange: NSRange(location: 0, length: 0),
             replacementRange: NSRange(location: NSNotFound, length: 0)
+        )
+    }
+
+    private static func postNotification(_ name: NSNotification.Name, userInfo: [AnyHashable: Any]? = nil) {
+        DistributedNotificationCenter.default().postNotificationName(
+            name,
+            object: nil,
+            userInfo: userInfo,
+            deliverImmediately: true
         )
     }
 }
