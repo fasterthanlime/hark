@@ -305,6 +305,21 @@ impl<'a> Session<'a> {
             self.decode_step(self.options.max_tokens_final)?;
         }
 
+        // Align any remaining uncommitted text
+        let remaining_text = self.current_text();
+        if !remaining_text.trim().is_empty() && !self.audio.is_empty() {
+            if let Ok(items) = self.engine.aligner.align(&self.audio, &remaining_text) {
+                let offset = self.committed_audio_offset;
+                for item in &items {
+                    self.committed_alignments.push(AlignedWord {
+                        word: item.word.clone(),
+                        start: item.start_time + offset,
+                        end: item.end_time + offset,
+                    });
+                }
+            }
+        }
+
         Ok(self.make_update())
     }
 
