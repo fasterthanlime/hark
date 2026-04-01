@@ -125,18 +125,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "beeml"
-version = "0.1.0"
-dependencies = [
- "beeml-phonetic",
-]
-
-[[package]]
-name = "beeml-phonetic"
+name = "bee-phonetic"
 version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "beeml"
+version = "0.1.0"
+dependencies = [
+ "bee-phonetic",
 ]
 
 [[package]]

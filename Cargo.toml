@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
   # one per line plz
-  "rust/beeml-phonetic",
+  "rust/bee-phonetic",
   "rust/beeml",
   "rust/bee-asr",
   "rust/bee-ffi",
