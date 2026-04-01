@@ -28,15 +28,15 @@ hark-*.zip
 bee-*.zip
 default.profraw
 target/
-beeml/models/
-beeml/output*.wav
-beeml/target/
-beeml/voices/*.wav
-beeml/voices/*.m4a
-beeml/data/
-beeml/training/data/
-beeml/training/adapters/
-beeml/scripts/__pycache__/
+models/
+output*.wav
+target/
+voices/*.wav
+voices/*.m4a
+data/
+training/data/
+training/adapters/
+scripts/__pycache__/
 
 # env vars
 .env
