@@ -3,8 +3,7 @@ resolver = "2"
 members = [
   "rust/peft-rs",
   "rust/beeml-corrupt",
-  "rust/beeml-api",
-  "rust/beeml-parakeet",
+  "rust/beeml",
   "rust/beeml-pipeline",
   "rust/beeml-train",
   "rust/qwen3-asr-mlx-rs",
