@@ -24,7 +24,7 @@ impl Weights {
                 entry
                     .path()
                     .extension()
-                    .map_or(false, |ext| ext == "safetensors")
+                    .is_some_and(|ext| ext == "safetensors")
             })
             .collect();
         files.sort_by_key(|e| e.file_name());
@@ -38,13 +38,16 @@ impl Weights {
 
         for entry in &files {
             let path = entry.path();
-            let file_tensors = Array::load_safetensors(&path).map_err(|e| {
-                AsrError::ModelLoad(format!("load {}: {e}", path.display()))
-            })?;
+            let file_tensors = Array::load_safetensors(&path)
+                .map_err(|e| AsrError::ModelLoad(format!("load {}: {e}", path.display())))?;
             tensors.extend(file_tensors);
         }
 
-        info!("Loaded {} tensors from {} files", tensors.len(), files.len());
+        info!(
+            "Loaded {} tensors from {} files",
+            tensors.len(),
+            files.len()
+        );
 
         // Remap keys: strip thinker. prefix, transpose conv2d weights
         let remapped = remap_weights(tensors);
@@ -72,6 +75,10 @@ impl Weights {
     /// Number of loaded tensors.
     pub fn len(&self) -> usize {
         self.tensors.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tensors.is_empty()
     }
 }
 

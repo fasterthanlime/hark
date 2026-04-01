@@ -19,7 +19,6 @@ extern "C" {
     fn mlx_get_active_memory(res: *mut usize) -> std::ffi::c_int;
     fn mlx_get_peak_memory(res: *mut usize) -> std::ffi::c_int;
     fn mlx_get_cache_memory(res: *mut usize) -> std::ffi::c_int;
-    fn mlx_reset_peak_memory() -> std::ffi::c_int;
 }
 
 pub fn mlx_memory_stats() -> (usize, usize, usize) {
@@ -34,8 +33,20 @@ pub fn mlx_memory_stats() -> (usize, usize, usize) {
 
 fn stream_log(msg: &str) {
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/bee.log") {
-        let _ = writeln!(f, "[{:.3}] {}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64(), msg);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/bee.log")
+    {
+        let _ = writeln!(
+            f,
+            "[{:.3}] {}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64(),
+            msg
+        );
     }
 }
 
@@ -117,19 +128,58 @@ impl Default for StreamingOptions {
 }
 
 impl StreamingOptions {
-    pub fn with_mode(mut self, v: StreamingMode) -> Self { self.mode = v; self }
-    pub fn with_chunk_size_sec(mut self, v: f32) -> Self { self.chunk_size_sec = v; self }
-    pub fn with_unfixed_chunk_num(mut self, v: usize) -> Self { self.unfixed_chunk_num = v; self }
-    pub fn with_unfixed_token_num(mut self, v: usize) -> Self { self.unfixed_token_num = v; self }
-    pub fn with_max_new_tokens_streaming(mut self, v: usize) -> Self { self.max_new_tokens_streaming = v; self }
-    pub fn with_max_new_tokens_final(mut self, v: usize) -> Self { self.max_new_tokens_final = v; self }
-    pub fn with_language(mut self, v: impl Into<String>) -> Self { self.language = Some(v.into()); self }
-    pub fn with_initial_text(mut self, v: impl Into<String>) -> Self { self.initial_text = Some(v.into()); self }
-    pub fn with_overlap_sec(mut self, v: f32) -> Self { self.overlap_sec = v; self }
-    pub fn with_commit_after_stable(mut self, v: usize) -> Self { self.commit_after_stable = v; self }
-    pub fn with_commit_token_count(mut self, v: usize) -> Self { self.commit_token_count = v; self }
-    pub fn with_min_trailing_tokens(mut self, v: usize) -> Self { self.min_trailing_tokens = v; self }
-    pub fn with_vad_threshold(mut self, v: f32) -> Self { self.vad_threshold = v; self }
+    pub fn with_mode(mut self, v: StreamingMode) -> Self {
+        self.mode = v;
+        self
+    }
+    pub fn with_chunk_size_sec(mut self, v: f32) -> Self {
+        self.chunk_size_sec = v;
+        self
+    }
+    pub fn with_unfixed_chunk_num(mut self, v: usize) -> Self {
+        self.unfixed_chunk_num = v;
+        self
+    }
+    pub fn with_unfixed_token_num(mut self, v: usize) -> Self {
+        self.unfixed_token_num = v;
+        self
+    }
+    pub fn with_max_new_tokens_streaming(mut self, v: usize) -> Self {
+        self.max_new_tokens_streaming = v;
+        self
+    }
+    pub fn with_max_new_tokens_final(mut self, v: usize) -> Self {
+        self.max_new_tokens_final = v;
+        self
+    }
+    pub fn with_language(mut self, v: impl Into<String>) -> Self {
+        self.language = Some(v.into());
+        self
+    }
+    pub fn with_initial_text(mut self, v: impl Into<String>) -> Self {
+        self.initial_text = Some(v.into());
+        self
+    }
+    pub fn with_overlap_sec(mut self, v: f32) -> Self {
+        self.overlap_sec = v;
+        self
+    }
+    pub fn with_commit_after_stable(mut self, v: usize) -> Self {
+        self.commit_after_stable = v;
+        self
+    }
+    pub fn with_commit_token_count(mut self, v: usize) -> Self {
+        self.commit_token_count = v;
+        self
+    }
+    pub fn with_min_trailing_tokens(mut self, v: usize) -> Self {
+        self.min_trailing_tokens = v;
+        self
+    }
+    pub fn with_vad_threshold(mut self, v: f32) -> Self {
+        self.vad_threshold = v;
+        self
+    }
 }
 
 // ── StreamingState ──────────────────────────────────────────────────────
@@ -197,10 +247,17 @@ pub struct StreamingState {
 }
 
 impl StreamingState {
-    pub fn new(options: StreamingOptions, tokenizer: tokenizers::Tokenizer, aligner: Option<ForcedAligner>) -> Self {
+    pub fn new(
+        options: StreamingOptions,
+        tokenizer: tokenizers::Tokenizer,
+        aligner: Option<ForcedAligner>,
+    ) -> Self {
         let chunk_size_samples = (options.chunk_size_sec * 16000.0) as usize;
         let overlap_samples = (options.overlap_sec * 16000.0) as usize;
-        let language = options.language.clone().unwrap_or_else(|| "English".to_string());
+        let language = options
+            .language
+            .clone()
+            .unwrap_or_else(|| "English".to_string());
 
         let lang_header = format!("language {language}");
         let language_tokens = tokenize_to_i32(&tokenizer, &lang_header);
@@ -269,7 +326,9 @@ pub fn finish_streaming(
     state: &mut StreamingState,
 ) -> Result<String, Exception> {
     match state.options.mode {
-        StreamingMode::Accumulate | StreamingMode::Rotate | StreamingMode::RotateCached => finish_accumulate(model, state),
+        StreamingMode::Accumulate | StreamingMode::Rotate | StreamingMode::RotateCached => {
+            finish_accumulate(model, state)
+        }
         StreamingMode::Overlap => finish_overlap(model, state),
     }
 }
@@ -285,8 +344,7 @@ fn feed_audio_inner(
     // VAD gate: use Silero VAD if available, else fall back to RMS
     if !state.speech_detected {
         if let Some(ref mut vad) = state.vad {
-            let prob = vad.process_audio(samples)
-                .unwrap_or(0.0);
+            let prob = vad.process_audio(samples).unwrap_or(0.0);
             if prob >= state.options.vad_threshold {
                 state.speech_detected = true;
                 state.buffer.extend_from_slice(samples);
@@ -331,7 +389,10 @@ fn feed_accumulate(
             let prob = vad.process_audio(&chunk).unwrap_or(0.0);
             (prob < state.options.vad_threshold, Some(prob))
         } else {
-            (compute_rms(&chunk) < POST_SPEECH_SILENCE_RMS_THRESHOLD, None)
+            (
+                compute_rms(&chunk) < POST_SPEECH_SILENCE_RMS_THRESHOLD,
+                None,
+            )
         };
         if let Some(prob) = vad_prob {
             state.debug_events.push(format!(
@@ -356,7 +417,9 @@ fn run_accumulate_step(
     let t_step = std::time::Instant::now();
 
     let t0 = std::time::Instant::now();
-    let (mel_data, n_mels, n_frames) = state.mel_extractor.extract(&state.audio_accum)
+    let (mel_data, n_mels, n_frames) = state
+        .mel_extractor
+        .extract(&state.audio_accum)
         .map_err(|e| Exception::custom(format!("mel: {e}")))?;
     let mel_ms = t0.elapsed().as_millis();
 
@@ -390,7 +453,11 @@ fn run_accumulate_step(
             full_prompt.len(),
         );
     } else {
-        log::debug!("chunk {}: no prefix (cold start), prompt {} tokens", state.chunk_id, full_prompt.len());
+        log::debug!(
+            "chunk {}: no prefix (cold start), prompt {} tokens",
+            state.chunk_id,
+            full_prompt.len()
+        );
     }
 
     let t0 = std::time::Instant::now();
@@ -406,7 +473,9 @@ fn run_accumulate_step(
     let decode_ms = t0.elapsed().as_millis();
     // Explicitly drop the KV cache and clear MLX memory cache
     drop(cache);
-    unsafe { mlx_clear_cache(); }
+    unsafe {
+        mlx_clear_cache();
+    }
 
     log::info!(
         "step {}: mel={:.0}ms enc={:.0}ms decode={:.0}ms total={:.0}ms (audio={:.1}s, prompt={} tokens, gen={} tokens)",
@@ -414,7 +483,12 @@ fn run_accumulate_step(
         state.audio_accum.len() as f64 / 16000.0, full_prompt.len(), generated.len(),
     );
 
-    log::debug!("chunk {}: generated {} tokens: {:?}", state.chunk_id, generated.len(), &generated[..generated.len().min(10)]);
+    log::debug!(
+        "chunk {}: generated {} tokens: {:?}",
+        state.chunk_id,
+        generated.len(),
+        &generated[..generated.len().min(10)]
+    );
 
     let all_ids = combine_prefix_and_generated(state, &generated);
 
@@ -441,7 +515,7 @@ fn finish_accumulate(
     state: &mut StreamingState,
 ) -> Result<String, Exception> {
     if !state.buffer.is_empty() {
-        state.audio_accum.extend(state.buffer.drain(..));
+        state.audio_accum.append(&mut state.buffer);
         state.chunk_id += 1;
     }
     if state.audio_accum.is_empty() {
@@ -453,7 +527,10 @@ fn finish_accumulate(
     if state.options.mode == StreamingMode::Rotate && !state.committed_token_ids.is_empty() {
         let skip = find_token_overlap(&state.committed_token_ids, &state.raw_token_ids);
         let remaining_ids: Vec<u32> = state.raw_token_ids[skip..].to_vec();
-        let new_text = state.tokenizer.decode(&remaining_ids, true).unwrap_or_default();
+        let new_text = state
+            .tokenizer
+            .decode(&remaining_ids, true)
+            .unwrap_or_default();
         state.text = join_committed(&state.committed_text, &new_text);
     }
 
@@ -467,7 +544,10 @@ fn compute_prefix_ids(state: &StreamingState) -> Option<&[u32]> {
     if state.raw_token_ids.is_empty() {
         return None;
     }
-    let keep = state.raw_token_ids.len().saturating_sub(state.options.unfixed_token_num);
+    let keep = state
+        .raw_token_ids
+        .len()
+        .saturating_sub(state.options.unfixed_token_num);
     if keep == 0 {
         return None;
     }
@@ -478,11 +558,17 @@ fn combine_prefix_and_generated(state: &StreamingState, generated: &[i32]) -> Ve
     if state.raw_token_ids.is_empty() || state.chunk_id <= state.options.unfixed_chunk_num {
         return generated.to_vec();
     }
-    let keep = state.raw_token_ids.len().saturating_sub(state.options.unfixed_token_num);
+    let keep = state
+        .raw_token_ids
+        .len()
+        .saturating_sub(state.options.unfixed_token_num);
     if keep == 0 {
         return generated.to_vec();
     }
-    let mut combined: Vec<i32> = state.raw_token_ids[..keep].iter().map(|&t| t as i32).collect();
+    let mut combined: Vec<i32> = state.raw_token_ids[..keep]
+        .iter()
+        .map(|&t| t as i32)
+        .collect();
     combined.extend_from_slice(generated);
     combined
 }
@@ -521,7 +607,9 @@ fn feed_overlap(
     state.prev_chunk_tail = chunk[chunk.len() - overlap..].to_vec();
 
     // Encode just this chunk (with overlap)
-    let (mel_data, n_mels, n_frames) = state.mel_extractor.extract(&encode_samples)
+    let (mel_data, n_mels, n_frames) = state
+        .mel_extractor
+        .extract(&encode_samples)
         .map_err(|e| Exception::custom(format!("mel: {e}")))?;
     let mel = Array::from_slice(&mel_data, &[n_mels as i32, n_frames as i32]);
     let audio_features = model.encode_audio(&mel)?;
@@ -549,7 +637,12 @@ fn feed_overlap(
     log::debug!("chunk {}: chunk_text={:?}", state.chunk_id, chunk_text);
     let prev = state.text.clone();
     state.text = append_chunk_text(&state.text, &chunk_text);
-    log::debug!("chunk {}: merged={:?} (prev={:?})", state.chunk_id, state.text, prev);
+    log::debug!(
+        "chunk {}: merged={:?} (prev={:?})",
+        state.chunk_id,
+        state.text,
+        prev
+    );
     Ok(Some(state.text.clone()))
 }
 
@@ -570,7 +663,9 @@ fn finish_overlap(
     }
     encode_samples.extend_from_slice(&tail);
 
-    let (mel_data, n_mels, n_frames) = state.mel_extractor.extract(&encode_samples)
+    let (mel_data, n_mels, n_frames) = state
+        .mel_extractor
+        .extract(&encode_samples)
         .map_err(|e| Exception::custom(format!("mel: {e}")))?;
     let mel = Array::from_slice(&mel_data, &[n_mels as i32, n_frames as i32]);
     let audio_features = model.encode_audio(&mel)?;
@@ -601,20 +696,29 @@ fn finish_overlap(
 fn append_chunk_text(current: &str, addition: &str) -> String {
     let curr = current.trim();
     let add = addition.trim();
-    if add.is_empty() { return curr.to_string(); }
-    if curr.is_empty() { return add.to_string(); }
-    if curr == add || curr.ends_with(add) { return curr.to_string(); }
-    if add.starts_with(curr) { return add.to_string(); }
+    if add.is_empty() {
+        return curr.to_string();
+    }
+    if curr.is_empty() {
+        return add.to_string();
+    }
+    if curr == add || curr.ends_with(add) {
+        return curr.to_string();
+    }
+    if add.starts_with(curr) {
+        return add.to_string();
+    }
 
     let curr_words: Vec<&str> = curr.split_whitespace().collect();
     let add_words: Vec<&str> = add.split_whitespace().collect();
 
     // Superset detection: if first 3 words match and addition is longer, replace
     let prefix_check = 3.min(curr_words.len()).min(add_words.len());
-    if prefix_check > 0 && curr_words[..prefix_check] == add_words[..prefix_check] {
-        if add_words.len() >= curr_words.len() {
-            return add.to_string();
-        }
+    if prefix_check > 0
+        && curr_words[..prefix_check] == add_words[..prefix_check]
+        && add_words.len() >= curr_words.len()
+    {
+        return add.to_string();
     }
 
     // Overlap detection: find longest suffix of current that matches prefix of addition
@@ -642,7 +746,10 @@ fn feed_rotate(
 
     if result.is_some() && !state.raw_token_ids.is_empty() {
         // Track stability of the first N tokens
-        let n = state.options.commit_token_count.min(state.raw_token_ids.len());
+        let n = state
+            .options
+            .commit_token_count
+            .min(state.raw_token_ids.len());
         let current_prefix: Vec<u32> = state.raw_token_ids[..n].to_vec();
 
         if current_prefix == state.last_prefix_tokens {
@@ -654,21 +761,30 @@ fn feed_rotate(
 
         log::debug!(
             "chunk {}: {} tokens, prefix stable for {}/{} rounds (need {} tokens)",
-            state.chunk_id, state.raw_token_ids.len(), state.stable_count,
-            state.options.commit_after_stable, state.options.commit_token_count,
+            state.chunk_id,
+            state.raw_token_ids.len(),
+            state.stable_count,
+            state.options.commit_after_stable,
+            state.options.commit_token_count,
         );
         let total = state.raw_token_ids.len();
         let need = state.options.commit_token_count + state.options.min_trailing_tokens;
         stream_log(&format!(
             "chunk {}: {} tokens (need {}), prefix[..{}] stable {}/{}, mode={:?}",
-            state.chunk_id, total, need, n, state.stable_count,
-            state.options.commit_after_stable, state.options.mode,
+            state.chunk_id,
+            total,
+            need,
+            n,
+            state.stable_count,
+            state.options.commit_after_stable,
+            state.options.mode,
         ));
 
         // Commit when prefix is stable AND we have enough tokens
         if state.stable_count >= state.options.commit_after_stable
             && n >= state.options.commit_token_count
-            && state.raw_token_ids.len() >= state.options.commit_token_count + state.options.min_trailing_tokens
+            && state.raw_token_ids.len()
+                >= state.options.commit_token_count + state.options.min_trailing_tokens
         {
             // Back up to a word boundary so we never commit mid-word.
             let Some((n, current_prefix, committed_text_new)) =
@@ -686,30 +802,43 @@ fn feed_rotate(
                 let t_align = std::time::Instant::now();
                 let result = aligner.align(&state.audio_accum, &committed_text_new);
                 let align_ms = t_align.elapsed().as_millis();
-                log::info!("Aligner took {align_ms}ms on {:.1}s audio",
-                    state.audio_accum.len() as f64 / 16000.0);
+                log::info!(
+                    "Aligner took {align_ms}ms on {:.1}s audio",
+                    state.audio_accum.len() as f64 / 16000.0
+                );
                 match result {
                     Ok(items) if !items.is_empty() => {
                         let last_word = &items[items.len() - 1];
                         let samples = (last_word.end_time * 16000.0) as usize;
-                        log::info!("Aligner: boundary at {:.3}s, last word: {:?}",
-                            last_word.end_time, last_word.word);
+                        log::info!(
+                            "Aligner: boundary at {:.3}s, last word: {:?}",
+                            last_word.end_time,
+                            last_word.word
+                        );
                         // Store alignments with absolute timestamps
                         let offset = state.committed_audio_offset;
                         for item in &items {
-                            state.committed_alignments.push(crate::forced_aligner::ForcedAlignItem {
-                                word: item.word.clone(),
-                                start_time: item.start_time + offset,
-                                end_time: item.end_time + offset,
-                            });
+                            state.committed_alignments.push(
+                                crate::forced_aligner::ForcedAlignItem {
+                                    word: item.word.clone(),
+                                    start_time: item.start_time + offset,
+                                    end_time: item.end_time + offset,
+                                },
+                            );
                         }
                         state.debug_events.push(format!(
                             r#"{{"type":"align","ms":{},"words":{},"boundary":{:.3}}}"#,
-                            align_ms, items.len(), last_word.end_time + offset,
+                            align_ms,
+                            items.len(),
+                            last_word.end_time + offset,
                         ));
                         samples
                     }
-                    _ => estimate_audio_boundary(&committed_text_new, &state.text, state.audio_accum.len()),
+                    _ => estimate_audio_boundary(
+                        &committed_text_new,
+                        &state.text,
+                        state.audio_accum.len(),
+                    ),
                 }
             } else {
                 estimate_audio_boundary(&committed_text_new, &state.text, state.audio_accum.len())
@@ -730,20 +859,23 @@ fn feed_rotate(
 
             state.debug_events.push(format!(
                 r#"{{"type":"commit","tokens":{},"text":{},"audio_offset":{:.3}}}"#,
-                n, serde_json::to_string(&state.committed_text).unwrap_or_default(),
+                n,
+                serde_json::to_string(&state.committed_text).unwrap_or_default(),
                 state.committed_audio_offset,
             ));
 
             log::info!(
                 "Committed {} tokens: {:?} | audio: kept {:.1}s of {:.1}s (boundary at {:.1}s)",
-                n, state.committed_text,
+                n,
+                state.committed_text,
                 remaining_audio.len() as f64 / 16000.0,
                 state.audio_accum.len() as f64 / 16000.0,
                 keep_from as f64 / 16000.0,
             );
             stream_log(&format!(
                 "COMMIT {} tokens: {:?} | kept {:.1}s of {:.1}s",
-                n, state.committed_text,
+                n,
+                state.committed_text,
                 remaining_audio.len() as f64 / 16000.0,
                 state.audio_accum.len() as f64 / 16000.0,
             ));
@@ -764,7 +896,9 @@ fn feed_rotate(
             state.stable_count = 0;
             state.last_prefix_tokens.clear();
 
-            unsafe { mlx_clear_cache(); }
+            unsafe {
+                mlx_clear_cache();
+            }
             log_memory("after rotation");
         }
 
@@ -775,12 +909,18 @@ fn feed_rotate(
             let new_ids = &state.raw_token_ids;
             let skip = find_token_overlap(&state.committed_token_ids, new_ids);
             if skip > 0 {
-                stream_log(&format!("TOKEN DEDUP: stripping {} overlapping tokens from session start", skip));
+                stream_log(&format!(
+                    "TOKEN DEDUP: stripping {} overlapping tokens from session start",
+                    skip
+                ));
             }
             // Decode the new (non-overlapping) tokens separately, then join at text level
             // to preserve proper spacing (concatenating token IDs loses inter-segment spaces).
             let remaining_ids: Vec<u32> = new_ids[skip..].to_vec();
-            let new_text = state.tokenizer.decode(&remaining_ids, true).unwrap_or_default();
+            let new_text = state
+                .tokenizer
+                .decode(&remaining_ids, true)
+                .unwrap_or_default();
             state.text = join_committed(&state.committed_text, &new_text);
         }
     }
@@ -792,7 +932,6 @@ fn feed_rotate(
 /// Uses proportional character count as approximation.
 /// TODO: replace with forced aligner for precise word-level timestamps.
 // ── Mode: RotateCached ──────────────────────────────────────────────────
-
 fn feed_rotate_cached(
     model: &mut Qwen3ASRModel,
     state: &mut StreamingState,
@@ -818,7 +957,9 @@ fn feed_rotate_cached(
     let t_step = std::time::Instant::now();
     let t0 = std::time::Instant::now();
 
-    let (mel_data, n_mels, n_frames) = state.mel_extractor.extract(&chunk)
+    let (mel_data, n_mels, n_frames) = state
+        .mel_extractor
+        .extract(&chunk)
         .map_err(|e| Exception::custom(format!("mel: {e}")))?;
     let mel = Array::from_slice(&mel_data, &[n_mels as i32, n_frames as i32]);
     let audio_features = model.encode_audio(&mel)?;
@@ -840,9 +981,10 @@ fn feed_rotate_cached(
     } else {
         // Truncate KV cache: roll back unfixed tokens from previous generation
         if let Some(ref mut cache) = state.decoder_cache {
-            let rollback = state.options.unfixed_token_num.min(
-                state.decoder_next_pos.saturating_sub(1)
-            );
+            let rollback = state
+                .options
+                .unfixed_token_num
+                .min(state.decoder_next_pos.saturating_sub(1));
             if rollback > 0 {
                 let new_len = state.decoder_next_pos - rollback;
                 cache.truncate(new_len);
@@ -873,10 +1015,13 @@ fn feed_rotate_cached(
     state.decoder_next_pos = new_pos;
 
     // Accumulate tokens
-    state.raw_token_ids.extend(generated.iter().map(|&t| t as u32));
+    state
+        .raw_token_ids
+        .extend(generated.iter().map(|&t| t as u32));
 
     // Decode all tokens to text
-    let text = state.tokenizer
+    let text = state
+        .tokenizer
         .decode(&state.raw_token_ids, true)
         .unwrap_or_default();
     state.text = text;
@@ -889,7 +1034,10 @@ fn feed_rotate_cached(
 
     // --- Commit logic (same as rotate mode) ---
     if !state.raw_token_ids.is_empty() {
-        let n = state.options.commit_token_count.min(state.raw_token_ids.len());
+        let n = state
+            .options
+            .commit_token_count
+            .min(state.raw_token_ids.len());
         let current_prefix: Vec<u32> = state.raw_token_ids[..n].to_vec();
 
         if current_prefix == state.last_prefix_tokens {
@@ -901,10 +1049,11 @@ fn feed_rotate_cached(
 
         if state.stable_count >= state.options.commit_after_stable
             && n >= state.options.commit_token_count
-            && state.raw_token_ids.len() >= state.options.commit_token_count + state.options.min_trailing_tokens
+            && state.raw_token_ids.len()
+                >= state.options.commit_token_count + state.options.min_trailing_tokens
         {
             // Back up to a word boundary so we never commit mid-word.
-            let Some((n, current_prefix, committed_text_new)) =
+            let Some((n, _current_prefix, committed_text_new)) =
                 find_word_boundary_commit(&state.raw_token_ids, n, &state.tokenizer)
             else {
                 state.stable_count = 0;
@@ -915,17 +1064,27 @@ fn feed_rotate_cached(
             let committed_audio_samples = if let Some(ref mut aligner) = state.aligner {
                 let t_align = std::time::Instant::now();
                 let result = aligner.align(&state.audio_accum, &committed_text_new);
-                log::info!("Aligner took {:.0}ms on {:.1}s audio",
-                    t_align.elapsed().as_millis(), state.audio_accum.len() as f64 / 16000.0);
+                log::info!(
+                    "Aligner took {:.0}ms on {:.1}s audio",
+                    t_align.elapsed().as_millis(),
+                    state.audio_accum.len() as f64 / 16000.0
+                );
                 match result {
                     Ok(items) if !items.is_empty() => {
                         let last_word = &items[items.len() - 1];
                         let samples = (last_word.end_time * 16000.0) as usize;
-                        log::info!("Aligner: boundary at {:.3}s, last word: {:?}",
-                            last_word.end_time, last_word.word);
+                        log::info!(
+                            "Aligner: boundary at {:.3}s, last word: {:?}",
+                            last_word.end_time,
+                            last_word.word
+                        );
                         samples
                     }
-                    _ => estimate_audio_boundary(&committed_text_new, &state.text, state.audio_accum.len()),
+                    _ => estimate_audio_boundary(
+                        &committed_text_new,
+                        &state.text,
+                        state.audio_accum.len(),
+                    ),
                 }
             } else {
                 estimate_audio_boundary(&committed_text_new, &state.text, state.audio_accum.len())
@@ -960,7 +1119,9 @@ fn feed_rotate_cached(
             state.decoder_next_pos = 0;
             state.is_first_step = true;
 
-            unsafe { mlx_clear_cache(); }
+            unsafe {
+                mlx_clear_cache();
+            }
             log_memory("after rotation");
         }
 
@@ -987,21 +1148,6 @@ fn estimate_audio_boundary(
     let boundary = (fraction * total_audio_samples as f64) as usize;
     // Clamp: don't go past the audio, and leave at least 1s
     boundary.min(total_audio_samples.saturating_sub(16000))
-}
-
-/// Find the first complete sentence (ending with . ! ? or similar).
-fn find_first_complete_sentence(text: &str) -> Option<&str> {
-    let text = text.trim();
-    for (i, c) in text.char_indices() {
-        if (c == '.' || c == '!' || c == '?') && i > 0 {
-            // Make sure it's not an abbreviation (check next char is space/end)
-            let rest = &text[i + c.len_utf8()..];
-            if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\n') {
-                return Some(&text[..=i]);
-            }
-        }
-    }
-    None
 }
 
 // ── VAD ─────────────────────────────────────────────────────────────────
@@ -1032,8 +1178,12 @@ fn detect_speech_onset(samples: &[f32]) -> Option<usize> {
 fn join_committed(committed: &str, new: &str) -> String {
     let committed = committed.trim();
     let new = new.trim();
-    if new.is_empty() { return committed.to_string(); }
-    if committed.is_empty() { return new.to_string(); }
+    if new.is_empty() {
+        return committed.to_string();
+    }
+    if committed.is_empty() {
+        return new.to_string();
+    }
 
     // Fix capitalization at boundary
     let needs_lowercase = !matches!(
@@ -1067,16 +1217,22 @@ fn join_committed(committed: &str, new: &str) -> String {
     for suffix_len in (2..=max_suffix).rev() {
         // Try both with and without the last committed word (it may be a fragment)
         for skip_last in [0usize, 1] {
-            if suffix_len <= skip_last { continue; }
+            if suffix_len <= skip_last {
+                continue;
+            }
             let end = committed_words.len() - skip_last;
             let start_idx = end.saturating_sub(suffix_len);
             let comm_suffix = &committed_words[start_idx..end];
             let match_len = comm_suffix.len();
-            if match_len < 2 { continue; }
+            if match_len < 2 {
+                continue;
+            }
 
             for start in 0..=new_words.len().saturating_sub(match_len) {
                 let candidate = &new_words[start..start + match_len];
-                if comm_suffix.iter().zip(candidate.iter())
+                if comm_suffix
+                    .iter()
+                    .zip(candidate.iter())
                     .all(|(a, b)| strip_punct(&a.to_lowercase()) == strip_punct(&b.to_lowercase()))
                 {
                     // Found match — keep everything after the match
@@ -1117,9 +1273,7 @@ fn find_word_boundary_commit(
         let trimmed = text.trim_end();
         // A word boundary: text ends with non-alphanumeric (space, punctuation)
         // or is empty
-        if trimmed.is_empty()
-            || matches!(trimmed.chars().last(), Some(c) if !c.is_alphanumeric())
-        {
+        if trimmed.is_empty() || matches!(trimmed.chars().last(), Some(c) if !c.is_alphanumeric()) {
             return Some((n, prefix.to_vec(), text));
         }
         n -= 1;
@@ -1128,7 +1282,9 @@ fn find_word_boundary_commit(
 }
 
 fn strip_punct(s: &str) -> String {
-    s.chars().filter(|c| c.is_alphanumeric() || *c == '\'').collect()
+    s.chars()
+        .filter(|c| c.is_alphanumeric() || *c == '\'')
+        .collect()
 }
 
 /// Find how many tokens at the start of `new_ids` overlap with a suffix of `committed_ids`.

@@ -2,12 +2,12 @@
 
 use mlx_rs::error::Exception;
 use mlx_rs::ops;
-use mlx_rs::ops::indexing::{self, IndexOp};
+use mlx_rs::ops::indexing::{self};
 use mlx_rs::Array;
 
 use crate::decoder::KVCache;
 use crate::model::{Qwen3ASRModel, EOS_TOKEN_IDS};
-use crate::model::{AUDIO_START_TOKEN_ID, AUDIO_PAD_TOKEN_ID, AUDIO_END_TOKEN_ID};
+use crate::model::{AUDIO_END_TOKEN_ID, AUDIO_PAD_TOKEN_ID, AUDIO_START_TOKEN_ID};
 
 const REPETITION_THRESHOLD: usize = 20;
 
@@ -41,7 +41,7 @@ pub fn generate(
 
     for step in 1..max_new_tokens {
         let next_ids = Array::from_slice(&[token], &[1, 1]);
-        let pos = (seq_len as i32) + (step as i32);
+        let pos = seq_len + step as i32;
         let pos_arr = Array::from_slice(&[pos, pos, pos], &[1, 3, 1]);
 
         let logits = model.step(&next_ids, &pos_arr, &mut cache)?;
@@ -75,15 +75,24 @@ pub fn build_initial_prompt(
     asr_text_tokens: &[i32],
 ) -> Vec<i32> {
     let mut prompt: Vec<i32> = vec![
-        TOK_IM_START, TOK_SYSTEM, TOK_NEWLINE,
-        TOK_IM_END, TOK_NEWLINE,
-        TOK_IM_START, TOK_USER, TOK_NEWLINE,
+        TOK_IM_START,
+        TOK_SYSTEM,
+        TOK_NEWLINE,
+        TOK_IM_END,
+        TOK_NEWLINE,
+        TOK_IM_START,
+        TOK_USER,
+        TOK_NEWLINE,
         AUDIO_START_TOKEN_ID,
     ];
     prompt.extend(std::iter::repeat_n(AUDIO_PAD_TOKEN_ID, n_audio_tokens));
     prompt.extend_from_slice(&[
-        AUDIO_END_TOKEN_ID, TOK_IM_END, TOK_NEWLINE,
-        TOK_IM_START, TOK_ASSISTANT, TOK_NEWLINE,
+        AUDIO_END_TOKEN_ID,
+        TOK_IM_END,
+        TOK_NEWLINE,
+        TOK_IM_START,
+        TOK_ASSISTANT,
+        TOK_NEWLINE,
     ]);
     prompt.extend_from_slice(language_tokens);
     prompt.extend_from_slice(asr_text_tokens);
@@ -103,14 +112,21 @@ pub fn build_followup_prompt(
     asr_text_tokens: &[i32],
 ) -> Vec<i32> {
     let mut prompt: Vec<i32> = vec![
-        TOK_IM_END, TOK_NEWLINE,
-        TOK_IM_START, TOK_USER, TOK_NEWLINE,
+        TOK_IM_END,
+        TOK_NEWLINE,
+        TOK_IM_START,
+        TOK_USER,
+        TOK_NEWLINE,
         AUDIO_START_TOKEN_ID,
     ];
     prompt.extend(std::iter::repeat_n(AUDIO_PAD_TOKEN_ID, n_audio_tokens));
     prompt.extend_from_slice(&[
-        AUDIO_END_TOKEN_ID, TOK_IM_END, TOK_NEWLINE,
-        TOK_IM_START, TOK_ASSISTANT, TOK_NEWLINE,
+        AUDIO_END_TOKEN_ID,
+        TOK_IM_END,
+        TOK_NEWLINE,
+        TOK_IM_START,
+        TOK_ASSISTANT,
+        TOK_NEWLINE,
     ]);
     prompt.extend_from_slice(language_tokens);
     prompt.extend_from_slice(asr_text_tokens);

@@ -11,7 +11,7 @@ use mlx_rs::quantization::MaybeQuantized;
 use mlx_rs::Array;
 
 use crate::config::ThinkerConfig;
-use crate::decoder::{self, KVCache, TextDecoder};
+use crate::decoder::{KVCache, TextDecoder};
 use crate::encoder::AudioEncoder;
 
 /// Audio pad token ID used in Qwen3-ASR prompts.
@@ -39,12 +39,14 @@ impl Qwen3ASRModel {
     pub fn new(config: &ThinkerConfig) -> Result<Self, Exception> {
         let audio_tower = AudioEncoder::new(&config.audio_config)?;
         let model = TextDecoder::new(&config.text_config)?;
-        let lm_head = MaybeQuantized::new(nn::LinearBuilder::new(
-            config.text_config.hidden_size as i32,
-            config.text_config.vocab_size as i32,
-        )
-        .bias(false)
-        .build()?);
+        let lm_head = MaybeQuantized::new(
+            nn::LinearBuilder::new(
+                config.text_config.hidden_size as i32,
+                config.text_config.vocab_size as i32,
+            )
+            .bias(false)
+            .build()?,
+        );
 
         Ok(Self {
             audio_tower,
@@ -73,16 +75,13 @@ impl Qwen3ASRModel {
         let embeds = self.model.embed_tokens.forward(input_ids)?;
 
         // Inject audio features at placeholder positions
-        let audio_mask = input_ids.eq(&Array::from_int(self.audio_token_id))?;
+        let audio_mask = input_ids.eq(Array::from_int(self.audio_token_id))?;
         let embeds = inject_audio_features(&embeds, audio_features, &audio_mask)?;
 
         // Run decoder
-        let hidden = self.model.forward_decoder(
-            None,
-            Some(&embeds),
-            position_ids,
-            cache,
-        )?;
+        let hidden = self
+            .model
+            .forward_decoder(None, Some(&embeds), position_ids, cache)?;
 
         // Logits for last position
         let last = hidden.index((.., -1.., ..));
@@ -97,12 +96,9 @@ impl Qwen3ASRModel {
         cache: &mut Option<KVCache>,
     ) -> Result<Array, Exception> {
         let embeds = self.model.embed_tokens.forward(input_ids)?;
-        let hidden = self.model.forward_decoder(
-            None,
-            Some(&embeds),
-            position_ids,
-            cache,
-        )?;
+        let hidden = self
+            .model
+            .forward_decoder(None, Some(&embeds), position_ids, cache)?;
         self.lm_head.forward(&hidden)
     }
 
@@ -129,21 +125,24 @@ fn inject_audio_features(
     let b = embeds.shape()[0];
 
     // cumulative index: map each placeholder to its audio feature index
-    let cum_idx = audio_mask.as_dtype(mlx_rs::Dtype::Int32)?.cumsum(1, None, None)?
-        .subtract(&Array::from_int(1))?;
-    let cum_idx = ops::maximum(&cum_idx, &Array::from_int(0))?;
+    let cum_idx = audio_mask
+        .as_dtype(mlx_rs::Dtype::Int32)?
+        .cumsum(1, None, None)?
+        .subtract(Array::from_int(1))?;
+    let cum_idx = ops::maximum(&cum_idx, Array::from_int(0))?;
 
     // Gather audio features per batch element
     let mut parts: Vec<Array> = Vec::with_capacity(b as usize);
     for bi in 0..b {
         let idx = cum_idx.index((bi, ..)); // (L,)
         let audio_b = audio_features.index((bi, ..)); // (N_audio, D)
-        // audio_b[idx] → (L, D)
+                                                      // audio_b[idx] → (L, D)
         let expanded = audio_b.index(idx);
         parts.push(expanded);
     }
     // Stack by adding batch dim to each and concatenating
-    let expanded: Vec<Array> = parts.iter()
+    let expanded: Vec<Array> = parts
+        .iter()
         .map(|p| ops::expand_dims(p, 0).unwrap())
         .collect();
     let refs: Vec<&Array> = expanded.iter().collect();

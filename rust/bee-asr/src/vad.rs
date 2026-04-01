@@ -28,15 +28,15 @@ pub struct SileroVad {
     // LSTM
     lstm_wx: Array,   // [512, 128]
     lstm_wh: Array,   // [512, 128]
-    lstm_bias: Array,  // [512]
+    lstm_bias: Array, // [512]
 
     // Decoder: Conv1d [128→1, k=1]
     decoder_weight: Array, // [1, 1, 128]
     decoder_bias: Array,   // [1]
 
     // Streaming state
-    h: Option<Array>, // LSTM hidden state
-    c: Option<Array>, // LSTM cell state
+    h: Option<Array>,  // LSTM hidden state
+    c: Option<Array>,  // LSTM cell state
     context: Vec<f32>, // Last 64 samples for context
 }
 
@@ -53,9 +53,12 @@ impl SileroVad {
     }
 
     /// Construct from pre-loaded tensors (avoids re-reading safetensors from disk).
-    pub fn from_tensors(tensors: &std::collections::HashMap<String, Array>) -> Result<Self, Exception> {
+    pub fn from_tensors(
+        tensors: &std::collections::HashMap<String, Array>,
+    ) -> Result<Self, Exception> {
         let get = |key: &str| -> Result<Array, Exception> {
-            tensors.get(key)
+            tensors
+                .get(key)
                 .cloned()
                 .ok_or_else(|| Exception::custom(format!("VAD: missing key {key}")))
         };
@@ -81,7 +84,10 @@ impl SileroVad {
 
         log::info!(
             "Silero VAD loaded: stft={:?} encoder=4 layers, lstm=[{:?},{:?}], decoder={:?}",
-            stft_weight.shape(), lstm_wx.shape(), lstm_wh.shape(), decoder_weight.shape(),
+            stft_weight.shape(),
+            lstm_wx.shape(),
+            lstm_wh.shape(),
+            decoder_weight.shape(),
         );
 
         Ok(SileroVad {
@@ -105,7 +111,11 @@ impl SileroVad {
     /// For streaming use: call repeatedly with 512-sample chunks.
     /// LSTM state persists between calls.
     pub fn process_chunk(&mut self, samples: &[f32]) -> Result<f32, Exception> {
-        assert!(samples.len() == CHUNK_SIZE, "VAD expects {CHUNK_SIZE} samples, got {}", samples.len());
+        assert!(
+            samples.len() == CHUNK_SIZE,
+            "VAD expects {CHUNK_SIZE} samples, got {}",
+            samples.len()
+        );
 
         // Prepend context
         let mut input = Vec::with_capacity(CONTEXT_SIZE + CHUNK_SIZE);
@@ -113,7 +123,8 @@ impl SileroVad {
         input.extend_from_slice(samples);
 
         // Update context for next call
-        self.context.copy_from_slice(&samples[CHUNK_SIZE - CONTEXT_SIZE..]);
+        self.context
+            .copy_from_slice(&samples[CHUNK_SIZE - CONTEXT_SIZE..]);
 
         // Input shape: [1, N, 1] (batch, time, channels)
         let n = input.len() as i32;
@@ -134,9 +145,16 @@ impl SileroVad {
         for i in 0..4 {
             // Conv1d: padding = kernel_size/2 for 'same-ish' padding
             let padding = 1; // kernel_size=3, padding=1
-            h = ops::conv1d(&h, &self.encoder_weights[i], self.encoder_strides[i], padding, 1, 1)?;
+            h = ops::conv1d(
+                &h,
+                &self.encoder_weights[i],
+                self.encoder_strides[i],
+                padding,
+                1,
+                1,
+            )?;
             h = ops::add(&h, &self.encoder_biases[i])?;
-            h = ops::maximum(&h, &Array::from_f32(0.0))?; // ReLU
+            h = ops::maximum(&h, Array::from_f32(0.0))?; // ReLU
         }
         // h shape: [1, T', 128]
 
@@ -177,9 +195,9 @@ impl SileroVad {
     /// Manual LSTM step using loaded weights.
     fn lstm_step(&self, x: &Array) -> Result<(Array, Array), Exception> {
         // gates = x @ Wx.T + h @ Wh.T + bias
-        let xw = ops::matmul(x, &self.lstm_wx.t())?;
+        let xw = ops::matmul(x, self.lstm_wx.t())?;
         let gates = if let Some(ref h) = self.h {
-            let hw = ops::matmul(h, &self.lstm_wh.t())?;
+            let hw = ops::matmul(h, self.lstm_wh.t())?;
             ops::add(&ops::add(&xw, &hw)?, &self.lstm_bias)?
         } else {
             ops::add(&xw, &self.lstm_bias)?
@@ -194,7 +212,10 @@ impl SileroVad {
 
         // Cell update
         let new_c = if let Some(ref c) = self.c {
-            ops::add(&ops::multiply(&f_gate, c)?, &ops::multiply(&i_gate, &g_gate)?)?
+            ops::add(
+                &ops::multiply(&f_gate, c)?,
+                &ops::multiply(&i_gate, &g_gate)?,
+            )?
         } else {
             ops::multiply(&i_gate, &g_gate)?
         };

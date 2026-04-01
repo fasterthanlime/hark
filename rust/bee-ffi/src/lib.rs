@@ -24,7 +24,6 @@ fn init_logger() {
 struct AsrEngineInner {
     model: Qwen3ASRModel,
     tokenizer: tokenizers::Tokenizer,
-    model_dir: PathBuf,
     /// Pre-loaded VAD tensors (loaded once at engine init, used per session).
     vad_tensors: Option<std::collections::HashMap<String, mlx_rs::Array>>,
 }
@@ -141,8 +140,10 @@ fn find_aligner_dir() -> Option<PathBuf> {
 
 // ── Engine API ──────────────────────────────────────────────────────────
 
+/// # Safety
+/// `model_dir` must be a valid, nul-terminated UTF-8 pointer.
 #[no_mangle]
-pub extern "C" fn asr_engine_load(
+pub unsafe extern "C" fn asr_engine_load(
     model_dir: *const c_char,
     out_err: *mut *mut c_char,
 ) -> *mut AsrEngine {
@@ -159,7 +160,7 @@ pub extern "C" fn asr_engine_load(
     match load_engine(&model_dir) {
         Ok(engine) => Box::into_raw(Box::new(engine)),
         Err(e) => {
-            set_err(out_err, &format!("{e}"));
+            set_err(out_err, &e.to_string());
             std::ptr::null_mut()
         }
     }
@@ -208,7 +209,6 @@ fn load_engine(model_dir: &Path) -> Result<AsrEngine, String> {
     let inner = AsrEngineInner {
         model,
         tokenizer,
-        model_dir: model_dir.to_path_buf(),
         vad_tensors,
     };
 
@@ -217,8 +217,10 @@ fn load_engine(model_dir: &Path) -> Result<AsrEngine, String> {
     })
 }
 
+/// # Safety
+/// `model_id` and `cache_dir` must be valid, nul-terminated UTF-8 pointers.
 #[no_mangle]
-pub extern "C" fn asr_engine_from_pretrained(
+pub unsafe extern "C" fn asr_engine_from_pretrained(
     model_id: *const c_char,
     cache_dir: *const c_char,
     out_err: *mut *mut c_char,
@@ -258,7 +260,7 @@ pub extern "C" fn asr_engine_from_pretrained(
     match load_engine(&model_dir) {
         Ok(engine) => Box::into_raw(Box::new(engine)),
         Err(e) => {
-            set_err(out_err, &format!("{e}"));
+            set_err(out_err, &e.to_string());
             std::ptr::null_mut()
         }
     }
@@ -290,8 +292,10 @@ pub extern "C" fn asr_engine_transcribe_samples(
     std::ptr::null_mut()
 }
 
+/// # Safety
+/// `engine` must be a pointer returned by this module and not yet freed.
 #[no_mangle]
-pub extern "C" fn asr_engine_free(engine: *mut AsrEngine) {
+pub unsafe extern "C" fn asr_engine_free(engine: *mut AsrEngine) {
     if !engine.is_null() {
         unsafe { drop(Box::from_raw(engine)) };
     }
@@ -299,8 +303,10 @@ pub extern "C" fn asr_engine_free(engine: *mut AsrEngine) {
 
 // ── Session API ─────────────────────────────────────────────────────────
 
+/// # Safety
+/// `engine` must be a valid engine pointer.
 #[no_mangle]
-pub extern "C" fn asr_session_create(
+pub unsafe extern "C" fn asr_session_create(
     engine: *const AsrEngine,
     opts: AsrSessionOptions,
 ) -> *mut AsrSession {
@@ -515,7 +521,7 @@ fn feed_impl(
         },
         Err(e) => {
             ffi_log(&format!("FEED => error: {e}"));
-            set_err(out_err, &format!("{e}"));
+            set_err(out_err, &e.to_string());
             AsrFeedResult {
                 text: std::ptr::null_mut(),
                 committed_utf16_len: 0,
@@ -545,8 +551,10 @@ pub extern "C" fn asr_feed_result_free(result: AsrFeedResult) {
     }
 }
 
+/// # Safety
+/// `session` must be a valid session pointer and `out_err` a valid pointer.
 #[no_mangle]
-pub extern "C" fn asr_session_finish(
+pub unsafe extern "C" fn asr_session_finish(
     session: *mut AsrSession,
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
@@ -565,14 +573,16 @@ pub extern "C" fn asr_session_finish(
             to_c_string(&text)
         }
         Err(e) => {
-            set_err(out_err, &format!("{e}"));
+            set_err(out_err, &e.to_string());
             std::ptr::null_mut()
         }
     }
 }
 
+/// # Safety
+/// `session` must be a valid session pointer.
 #[no_mangle]
-pub extern "C" fn asr_session_last_language(session: *const AsrSession) -> *mut c_char {
+pub unsafe extern "C" fn asr_session_last_language(session: *const AsrSession) -> *mut c_char {
     if session.is_null() {
         return std::ptr::null_mut();
     }
@@ -583,7 +593,7 @@ pub extern "C" fn asr_session_last_language(session: *const AsrSession) -> *mut 
 #[no_mangle]
 pub extern "C" fn asr_session_set_language(
     session: *mut AsrSession,
-    language: *const c_char,
+    _language: *const c_char,
     _out_err: *mut *mut c_char,
 ) -> bool {
     if session.is_null() {
@@ -594,15 +604,19 @@ pub extern "C" fn asr_session_set_language(
     true
 }
 
+/// # Safety
+/// `session` must be a valid session pointer and previously returned by this module.
 #[no_mangle]
-pub extern "C" fn asr_session_free(session: *mut AsrSession) {
+pub unsafe extern "C" fn asr_session_free(session: *mut AsrSession) {
     if !session.is_null() {
         unsafe { drop(Box::from_raw(session)) };
     }
 }
 
+/// # Safety
+/// `s` must be either null or a pointer returned by this module.
 #[no_mangle]
-pub extern "C" fn asr_string_free(s: *mut c_char) {
+pub unsafe extern "C" fn asr_string_free(s: *mut c_char) {
     if !s.is_null() {
         unsafe { drop(CString::from_raw(s)) };
     }

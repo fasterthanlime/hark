@@ -58,10 +58,26 @@ impl AudioAttention {
     fn new(d_model: i32, num_heads: i32) -> Result<Self, Exception> {
         let head_dim = d_model / num_heads;
         Ok(Self {
-            q_proj: MaybeQuantized::new(nn::LinearBuilder::new(d_model, d_model).bias(true).build()?),
-            k_proj: MaybeQuantized::new(nn::LinearBuilder::new(d_model, d_model).bias(true).build()?),
-            v_proj: MaybeQuantized::new(nn::LinearBuilder::new(d_model, d_model).bias(true).build()?),
-            out_proj: MaybeQuantized::new(nn::LinearBuilder::new(d_model, d_model).bias(true).build()?),
+            q_proj: MaybeQuantized::new(
+                nn::LinearBuilder::new(d_model, d_model)
+                    .bias(true)
+                    .build()?,
+            ),
+            k_proj: MaybeQuantized::new(
+                nn::LinearBuilder::new(d_model, d_model)
+                    .bias(true)
+                    .build()?,
+            ),
+            v_proj: MaybeQuantized::new(
+                nn::LinearBuilder::new(d_model, d_model)
+                    .bias(true)
+                    .build()?,
+            ),
+            out_proj: MaybeQuantized::new(
+                nn::LinearBuilder::new(d_model, d_model)
+                    .bias(true)
+                    .build()?,
+            ),
             num_heads,
             head_dim,
         })
@@ -87,13 +103,21 @@ impl Module<AudioAttentionInput<'_>> for AudioAttention {
         let v = self.v_proj.forward(x)?;
 
         // (B, L, D) → (B, L, H, Dh) → (B, H, L, Dh)
-        let q = q.reshape(&[b, l, self.num_heads, self.head_dim])?.transpose_axes(&[0, 2, 1, 3])?;
-        let k = k.reshape(&[b, l, self.num_heads, self.head_dim])?.transpose_axes(&[0, 2, 1, 3])?;
-        let v = v.reshape(&[b, l, self.num_heads, self.head_dim])?.transpose_axes(&[0, 2, 1, 3])?;
+        let q = q
+            .reshape(&[b, l, self.num_heads, self.head_dim])?
+            .transpose_axes(&[0, 2, 1, 3])?;
+        let k = k
+            .reshape(&[b, l, self.num_heads, self.head_dim])?
+            .transpose_axes(&[0, 2, 1, 3])?;
+        let v = v
+            .reshape(&[b, l, self.num_heads, self.head_dim])?
+            .transpose_axes(&[0, 2, 1, 3])?;
 
         // Scaled dot-product attention
         let scale = Array::from_f32(1.0 / (self.head_dim as f32).sqrt());
-        let attn = q.matmul(&k.transpose_axes(&[0, 1, 3, 2])?)?.multiply(&scale)?;
+        let attn = q
+            .matmul(&k.transpose_axes(&[0, 1, 3, 2])?)?
+            .multiply(&scale)?;
 
         let attn = match mask {
             Some(m) => attn.add(m)?,
@@ -136,18 +160,25 @@ impl AudioEncoderLayer {
             self_attn_layer_norm: nn::LayerNorm::new(d_model)?,
             self_attn: AudioAttention::new(d_model, num_heads)?,
             final_layer_norm: nn::LayerNorm::new(d_model)?,
-            fc1: MaybeQuantized::new(nn::LinearBuilder::new(d_model, ffn_dim).bias(true).build()?),
-            fc2: MaybeQuantized::new(nn::LinearBuilder::new(ffn_dim, d_model).bias(true).build()?),
+            fc1: MaybeQuantized::new(
+                nn::LinearBuilder::new(d_model, ffn_dim)
+                    .bias(true)
+                    .build()?,
+            ),
+            fc2: MaybeQuantized::new(
+                nn::LinearBuilder::new(ffn_dim, d_model)
+                    .bias(true)
+                    .build()?,
+            ),
         })
     }
 
     fn forward_with_mask(&mut self, x: &Array, mask: Option<&Array>) -> Result<Array, Exception> {
         // Self-attention (pre-norm)
         let normed = self.self_attn_layer_norm.forward(x)?;
-        let attn_out = self.self_attn.forward(AudioAttentionInput {
-            x: &normed,
-            mask,
-        })?;
+        let attn_out = self
+            .self_attn
+            .forward(AudioAttentionInput { x: &normed, mask })?;
         let x = x.add(&attn_out)?;
 
         // FFN (pre-norm)
@@ -209,14 +240,23 @@ impl AudioEncoder {
         let dhs = if config.d_model >= 1024 { 480 } else { 384 };
 
         let conv2d1 = nn::Conv2dBuilder::new(1, dhs as i32, 3)
-            .stride(2).padding(1).build()?;
+            .stride(2)
+            .padding(1)
+            .build()?;
         let conv2d2 = nn::Conv2dBuilder::new(dhs as i32, dhs as i32, 3)
-            .stride(2).padding(1).build()?;
+            .stride(2)
+            .padding(1)
+            .build()?;
         let conv2d3 = nn::Conv2dBuilder::new(dhs as i32, dhs as i32, 3)
-            .stride(2).padding(1).build()?;
+            .stride(2)
+            .padding(1)
+            .build()?;
 
-        let conv_out = MaybeQuantized::new(nn::LinearBuilder::new((dhs * freq_after_conv) as i32, config.d_model as i32)
-            .bias(false).build()?);
+        let conv_out = MaybeQuantized::new(
+            nn::LinearBuilder::new((dhs * freq_after_conv) as i32, config.d_model as i32)
+                .bias(false)
+                .build()?,
+        );
 
         let sinusoidal_pe = build_sinusoidal_pe(config.max_source_positions, config.d_model);
 
@@ -230,10 +270,16 @@ impl AudioEncoder {
         }
 
         let ln_post = nn::LayerNorm::new(config.d_model as i32)?;
-        let proj1 = MaybeQuantized::new(nn::LinearBuilder::new(config.d_model as i32, config.d_model as i32)
-            .bias(true).build()?);
-        let proj2 = MaybeQuantized::new(nn::LinearBuilder::new(config.d_model as i32, config.output_dim as i32)
-            .bias(true).build()?);
+        let proj1 = MaybeQuantized::new(
+            nn::LinearBuilder::new(config.d_model as i32, config.d_model as i32)
+                .bias(true)
+                .build()?,
+        );
+        let proj2 = MaybeQuantized::new(
+            nn::LinearBuilder::new(config.d_model as i32, config.output_dim as i32)
+                .bias(true)
+                .build()?,
+        );
 
         Ok(Self {
             conv2d1,
@@ -276,7 +322,8 @@ impl AudioEncoder {
             // (n_full, F', T', C) → (n_full, T', C, F') → (n_full*T', C*F')
             let sh = x.shape();
             let (n, f_d, t_d, c_d) = (sh[0], sh[1], sh[2], sh[3]);
-            let x = x.transpose_axes(&[0, 2, 3, 1])?
+            let x = x
+                .transpose_axes(&[0, 2, 3, 1])?
                 .reshape(&[n * t_d, c_d * f_d])?;
 
             chunk_conv_outputs.push(x);
@@ -296,7 +343,8 @@ impl AudioEncoder {
 
             let sh = x.shape();
             let (f_d, t_d, c_d) = (sh[1], sh[2], sh[3]);
-            let x = x.transpose_axes(&[0, 2, 3, 1])?
+            let x = x
+                .transpose_axes(&[0, 2, 3, 1])?
                 .reshape(&[t_d, c_d * f_d])?;
             chunk_token_lens.push(t_d as usize);
             chunk_conv_outputs.push(x);
@@ -403,7 +451,10 @@ impl EncoderCache {
     }
 
     pub fn cached_tokens(&self) -> usize {
-        self.completed_windows.iter().map(|a| a.shape()[0] as usize).sum()
+        self.completed_windows
+            .iter()
+            .map(|a| a.shape()[0] as usize)
+            .sum()
     }
 }
 
@@ -470,7 +521,7 @@ impl AudioEncoder {
             return Err(Exception::custom("no audio tokens produced"));
         }
 
-        ops::concatenate_axis(&all_parts, 0).map_err(Into::into)
+        ops::concatenate_axis(&all_parts, 0)
     }
 
     /// Encode a single complete attention window (chunks_per_window full chunks).
@@ -512,7 +563,9 @@ impl AudioEncoder {
             let x = self.apply_conv_stem(&x)?;
             let sh = x.shape();
             let (n, _f_d, t_d, c_d) = (sh[0], sh[1], sh[2], sh[3]);
-            let x = x.transpose_axes(&[0, 2, 3, 1])?.reshape(&[n * t_d, c_d * _f_d])?;
+            let x = x
+                .transpose_axes(&[0, 2, 3, 1])?
+                .reshape(&[n * t_d, c_d * _f_d])?;
             chunk_conv_outputs.push(x);
             for _ in 0..n_full_chunks {
                 chunk_token_lens.push(t_d as usize);
@@ -528,7 +581,9 @@ impl AudioEncoder {
             let x = self.apply_conv_stem(&x)?;
             let sh = x.shape();
             let (_f_d, t_d, c_d) = (sh[1], sh[2], sh[3]);
-            let x = x.transpose_axes(&[0, 2, 3, 1])?.reshape(&[t_d, c_d * _f_d])?;
+            let x = x
+                .transpose_axes(&[0, 2, 3, 1])?
+                .reshape(&[t_d, c_d * _f_d])?;
             chunk_token_lens.push(t_d as usize);
             chunk_conv_outputs.push(x);
         }
@@ -574,9 +629,15 @@ fn create_windowed_mask(seq_len: usize, cu_seqlens: &[usize]) -> Option<Array> {
 
     let mut mask_data = vec![0.0f32; seq_len * seq_len];
     for i in 0..seq_len {
-        let win_i = cu_seqlens.windows(2).position(|w| i >= w[0] && i < w[1]).unwrap();
+        let win_i = cu_seqlens
+            .windows(2)
+            .position(|w| i >= w[0] && i < w[1])
+            .unwrap();
         for j in 0..seq_len {
-            let win_j = cu_seqlens.windows(2).position(|w| j >= w[0] && j < w[1]).unwrap();
+            let win_j = cu_seqlens
+                .windows(2)
+                .position(|w| j >= w[0] && j < w[1])
+                .unwrap();
             if win_i != win_j {
                 mask_data[i * seq_len + j] = -1e9;
             }

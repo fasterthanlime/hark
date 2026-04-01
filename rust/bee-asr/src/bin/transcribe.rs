@@ -244,7 +244,7 @@ fn run_align(
 }
 
 fn run_batch(
-    mut model: &mut Qwen3ASRModel,
+    model: &mut Qwen3ASRModel,
     samples: &[f32],
     tokenizer: &tokenizers::Tokenizer,
 ) -> anyhow::Result<()> {
@@ -287,6 +287,7 @@ fn run_batch(
 
     let seq_len = prompt_tokens.len();
     let input_ids = Array::from_slice(&prompt_tokens, &[1, seq_len as i32]);
+    let input_ids = &input_ids;
     let positions: Vec<i32> = (0..seq_len as i32).collect();
     let pos_arr = Array::from_slice(&positions, &[1, 1, seq_len as i32]);
     let position_ids = ops::broadcast_to(&pos_arr, &[1, 3, seq_len as i32])?;
@@ -298,7 +299,7 @@ fn run_batch(
         let enc_ms = t0.elapsed().as_millis();
         let af = mlx_rs::ops::expand_dims(&af, 0)?;
 
-        let output_tokens = generate::generate(&mut model, &input_ids, &af, &position_ids, 512)?;
+        let output_tokens = generate::generate(model, input_ids, &af, &position_ids, 512)?;
         let total_ms = t0.elapsed().as_millis();
         let gen_ms = total_ms - enc_ms;
         println!(
@@ -312,8 +313,7 @@ fn run_batch(
         );
     }
 
-    let output_tokens =
-        generate::generate(&mut model, &input_ids, &audio_features, &position_ids, 512)?;
+    let output_tokens = generate::generate(model, input_ids, &audio_features, &position_ids, 512)?;
     let ids: Vec<u32> = output_tokens.iter().map(|&t| t as u32).collect();
     let text = tokenizer
         .decode(&ids, true)

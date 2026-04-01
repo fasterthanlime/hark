@@ -63,20 +63,16 @@ impl KVCache {
     /// Truncate the cache to keep only the first `seq_len` positions.
     /// Keys/values have shape (B, num_heads, seq_len, head_dim).
     pub fn truncate(&mut self, seq_len: usize) {
-        for layer_k in &mut self.keys {
-            if let Some(k) = layer_k {
-                let current = k.shape()[2] as usize;
-                if seq_len < current {
-                    *k = k.index((.., .., ..seq_len as i32, ..));
-                }
+        for layer_k in self.keys.iter_mut().flatten() {
+            let current = layer_k.shape()[2] as usize;
+            if seq_len < current {
+                *layer_k = layer_k.index((.., .., ..seq_len as i32, ..));
             }
         }
-        for layer_v in &mut self.values {
-            if let Some(v) = layer_v {
-                let current = v.shape()[2] as usize;
-                if seq_len < current {
-                    *v = v.index((.., .., ..seq_len as i32, ..));
-                }
+        for layer_v in self.values.iter_mut().flatten() {
+            let current = layer_v.shape()[2] as usize;
+            if seq_len < current {
+                *layer_v = layer_v.index((.., .., ..seq_len as i32, ..));
             }
         }
         self.offset = seq_len;
@@ -122,8 +118,12 @@ impl TextAttention {
             k_proj: MaybeQuantized::new(nn::LinearBuilder::new(h, nkv * hd).bias(bias).build()?),
             v_proj: MaybeQuantized::new(nn::LinearBuilder::new(h, nkv * hd).bias(bias).build()?),
             o_proj: MaybeQuantized::new(nn::LinearBuilder::new(nh * hd, h).bias(bias).build()?),
-            q_norm: nn::RmsNormBuilder::new(hd).eps(config.rms_norm_eps as f32).build()?,
-            k_norm: nn::RmsNormBuilder::new(hd).eps(config.rms_norm_eps as f32).build()?,
+            q_norm: nn::RmsNormBuilder::new(hd)
+                .eps(config.rms_norm_eps as f32)
+                .build()?,
+            k_norm: nn::RmsNormBuilder::new(hd)
+                .eps(config.rms_norm_eps as f32)
+                .build()?,
             num_heads: nh,
             num_kv_heads: nkv,
             head_dim: hd,
@@ -181,7 +181,9 @@ impl TextAttention {
 
         // Scaled dot-product attention
         let scale = Array::from_f32(1.0 / (self.head_dim as f32).sqrt());
-        let attn = q.matmul(&k.transpose_axes(&[0, 1, 3, 2])?)?.multiply(&scale)?;
+        let attn = q
+            .matmul(&k.transpose_axes(&[0, 1, 3, 2])?)?
+            .multiply(&scale)?;
         let attn = match mask {
             Some(m) => attn.add(m)?,
             None => attn,
@@ -226,9 +228,21 @@ pub struct SwiGLU {
 impl SwiGLU {
     fn new(hidden_size: i32, intermediate_size: i32) -> Result<Self, Exception> {
         Ok(Self {
-            gate_proj: MaybeQuantized::new(nn::LinearBuilder::new(hidden_size, intermediate_size).bias(false).build()?),
-            up_proj: MaybeQuantized::new(nn::LinearBuilder::new(hidden_size, intermediate_size).bias(false).build()?),
-            down_proj: MaybeQuantized::new(nn::LinearBuilder::new(intermediate_size, hidden_size).bias(false).build()?),
+            gate_proj: MaybeQuantized::new(
+                nn::LinearBuilder::new(hidden_size, intermediate_size)
+                    .bias(false)
+                    .build()?,
+            ),
+            up_proj: MaybeQuantized::new(
+                nn::LinearBuilder::new(hidden_size, intermediate_size)
+                    .bias(false)
+                    .build()?,
+            ),
+            down_proj: MaybeQuantized::new(
+                nn::LinearBuilder::new(intermediate_size, hidden_size)
+                    .bias(false)
+                    .build()?,
+            ),
         })
     }
 }
@@ -285,7 +299,9 @@ impl TextDecoderLayer {
     ) -> Result<Array, Exception> {
         // Self-attention
         let normed = self.input_layernorm.forward(x)?;
-        let attn_out = self.self_attn.forward_attn(&normed, cos, sin, mask, cache, layer_idx)?;
+        let attn_out = self
+            .self_attn
+            .forward_attn(&normed, cos, sin, mask, cache, layer_idx)?;
         let x = x.add(&attn_out)?;
 
         // FFN
@@ -338,11 +354,7 @@ impl TextDecoder {
             embed_tokens: MaybeQuantized::new(nn::Embedding::new(config.vocab_size as i32, h)?),
             layers,
             norm: nn::RmsNormBuilder::new(h).eps(eps).build()?,
-            rotary_emb: InterleavedMRoPE::new(
-                config.head_dim,
-                config.rope_theta,
-                &mrope_section,
-            ),
+            rotary_emb: InterleavedMRoPE::new(config.head_dim, config.rope_theta, &mrope_section),
             config: config.clone(),
         })
     }
@@ -402,11 +414,7 @@ impl TextDecoder {
         let mut h = h;
         let num_layers = self.layers.len();
         for i in 0..num_layers {
-            h = self.layers[i].forward_layer(
-                &h, &cos, &sin, mask.as_ref(),
-                cache.as_mut(),
-                i,
-            )?;
+            h = self.layers[i].forward_layer(&h, &cos, &sin, mask.as_ref(), cache.as_mut(), i)?;
         }
 
         self.norm.forward(&h)

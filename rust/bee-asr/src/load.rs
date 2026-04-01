@@ -16,15 +16,12 @@ use crate::model::Qwen3ASRModel;
 /// For pre-quantized MLX models (e.g. mlx-community/Qwen3-ASR-1.7B-4bit),
 /// layers with .scales/.biases keys are loaded as QuantizedLinear directly
 /// from the pre-quantized data — no re-quantization needed.
-pub fn load_weights(
-    model: &mut Qwen3ASRModel,
-    model_dir: &Path,
-) -> Result<LoadStats, Exception> {
+pub fn load_weights(model: &mut Qwen3ASRModel, model_dir: &Path) -> Result<LoadStats, Exception> {
     // Find and load all safetensors files
     let mut st_files: Vec<_> = std::fs::read_dir(model_dir)
         .map_err(|e| Exception::custom(format!("read dir: {e}")))?
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "safetensors"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "safetensors"))
         .map(|e| e.path())
         .collect();
     st_files.sort();
@@ -68,11 +65,13 @@ pub fn load_weights(
         let config_path = model_dir.join("config.json");
         if let Ok(config_str) = std::fs::read_to_string(&config_path) {
             if let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_str) {
-                let gs = config.get("quantization")
+                let gs = config
+                    .get("quantization")
                     .and_then(|q| q.get("group_size"))
                     .and_then(|v| v.as_i64())
                     .unwrap_or(64) as i32;
-                let b = config.get("quantization")
+                let b = config
+                    .get("quantization")
                     .and_then(|q| q.get("bits"))
                     .and_then(|v| v.as_i64())
                     .unwrap_or(4) as i32;
@@ -164,7 +163,12 @@ pub fn load_weights(
             weights.get("model.embed_tokens.biases"),
         ) {
             let ql = QuantizedLinear::from_parts(
-                w.clone(), None, s.clone(), b.clone(), group_size, bits,
+                w.clone(),
+                None,
+                s.clone(),
+                b.clone(),
+                group_size,
+                bits,
             );
             model.lm_head.set_quantized(ql);
             log::info!("lm_head weight-tied to embed_tokens (quantized)");

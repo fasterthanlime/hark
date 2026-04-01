@@ -5,15 +5,13 @@
 
 use mlx_rs::error::Exception;
 use mlx_rs::ops;
-use mlx_rs::ops::indexing::{Ellipsis, IndexOp, NewAxis};
+use mlx_rs::ops::indexing::{IndexOp, NewAxis};
 use mlx_rs::Array;
 
 pub const MROPE_SECTION: [usize; 3] = [24, 20, 20];
 
 #[derive(Debug, Clone)]
 pub struct InterleavedMRoPE {
-    head_dim: usize,
-    half_dim: usize,
     inv_freq: Array,
     /// Overwrite masks for height and width dimensions
     overwrite_masks: Vec<Array>,
@@ -48,14 +46,15 @@ impl InterleavedMRoPE {
             }
 
             // Convert to f32 mask (1.0 where true, 0.0 where false) for mx.where emulation
-            let mask_f32: Vec<f32> = mask_data.iter().map(|&b| if b { 1.0 } else { 0.0 }).collect();
+            let mask_f32: Vec<f32> = mask_data
+                .iter()
+                .map(|&b| if b { 1.0 } else { 0.0 })
+                .collect();
             let mask = Array::from_slice(&mask_f32, &[1, 1, half_dim as i32]);
             overwrite_masks.push(mask);
         }
 
         Self {
-            head_dim,
-            half_dim,
             inv_freq,
             overwrite_masks,
         }
@@ -67,7 +66,8 @@ impl InterleavedMRoPE {
     /// Returns: (cos, sin) each (batch, seq_len, head_dim)
     pub fn forward(&self, position_ids: &Array) -> Result<(Array, Array), Exception> {
         // position_ids: (B, 3, L) → transpose → (3, B, L)
-        let pos = position_ids.as_dtype(mlx_rs::Dtype::Float32)?
+        let pos = position_ids
+            .as_dtype(mlx_rs::Dtype::Float32)?
             .transpose_axes(&[1, 0, 2])?;
 
         // (3, B, L, 1) * (half_dim,) → (3, B, L, half_dim)
@@ -127,7 +127,7 @@ pub fn apply_rotary_pos_emb(
 }
 
 fn rotate_half(x: &Array) -> Result<Array, Exception> {
-    let mid = x.shape()[x.ndim() as usize - 1] / 2;
+    let mid = x.shape()[x.ndim() - 1] / 2;
     let x1 = x.index((.., .., .., ..mid));
     let x2 = x.index((.., .., .., mid..));
     let neg_x2 = x2.negative()?;

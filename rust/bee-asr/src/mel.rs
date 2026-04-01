@@ -143,12 +143,7 @@ pub struct MelExtractor {
 }
 
 impl MelExtractor {
-    pub fn new(
-        n_fft: usize,
-        hop_length: usize,
-        num_mel_bins: usize,
-        sample_rate: u32,
-    ) -> Self {
+    pub fn new(n_fft: usize, hop_length: usize, num_mel_bins: usize, sample_rate: u32) -> Self {
         let n_freqs = n_fft / 2 + 1;
         let mel_filters = create_mel_filterbank(
             num_mel_bins,
@@ -233,57 +228,6 @@ impl MelExtractor {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_hann_window_edges() {
-        let w = hann_window(5);
-        assert_eq!(w.len(), 5);
-        assert!(w[0].abs() < 1e-6, "window[0] should be 0");
-        assert!(w[4].abs() < 1e-6, "window[n-1] should be ~0");
-        // Center: x = 2π*2/4 = π → cos(π) = -1 → 0.5*(1-(-1)) = 1.0
-        assert!((w[2] - 1.0).abs() < 1e-6, "window[center] should be 1");
-    }
-
-    #[test]
-    fn test_reflection_pad_basic() {
-        let signal = vec![1.0f32, 2.0, 3.0];
-        let padded = reflection_pad(&signal, 1);
-        assert_eq!(padded, vec![2.0f32, 1.0, 2.0, 3.0, 2.0]);
-    }
-
-    #[test]
-    fn test_mel_filterbank_shape_and_nonneg() {
-        let num_mels = 128;
-        let n_fft = 400;
-        let sr = 16000u32;
-        let n_freqs = n_fft / 2 + 1; // 201
-        let filters = create_mel_filterbank(num_mels, n_fft, sr, 0.0, sr as f64 / 2.0);
-        assert_eq!(filters.len(), num_mels * n_freqs);
-        assert!(
-            filters.iter().all(|&v| v >= 0.0),
-            "all filterbank values must be >= 0"
-        );
-    }
-
-    #[test]
-    fn test_mel_extractor_silent_signal() {
-        // 1 second of silence at 16 kHz
-        let samples = vec![0.0f32; 16000];
-        let extractor = MelExtractor::new(400, 160, 128, 16000);
-        let (mel, n_mels, n_frames) = extractor.extract(&samples).unwrap();
-        assert_eq!(n_mels, 128);
-        assert!(n_frames > 0, "n_frames should be positive");
-        assert_eq!(mel.len(), n_mels * n_frames);
-        assert!(
-            mel.iter().all(|v| v.is_finite()),
-            "all mel values must be finite"
-        );
-    }
-}
-
 /// Load audio from WAV file, convert to 16kHz mono f32 samples.
 pub fn load_audio_wav(path: &str, target_sr: u32) -> crate::Result<Vec<f32>> {
     load_audio_wav_impl(path, target_sr).map_err(crate::error::AsrError::AudioDecode)
@@ -345,4 +289,55 @@ fn load_audio_wav_impl(path: &str, target_sr: u32) -> anyhow::Result<Vec<f32>> {
 
     let output = resampler.process(&[mono], None)?;
     Ok(output.into_iter().next().unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hann_window_edges() {
+        let w = hann_window(5);
+        assert_eq!(w.len(), 5);
+        assert!(w[0].abs() < 1e-6, "window[0] should be 0");
+        assert!(w[4].abs() < 1e-6, "window[n-1] should be ~0");
+        // Center: x = 2π*2/4 = π → cos(π) = -1 → 0.5*(1-(-1)) = 1.0
+        assert!((w[2] - 1.0).abs() < 1e-6, "window[center] should be 1");
+    }
+
+    #[test]
+    fn test_reflection_pad_basic() {
+        let signal = vec![1.0f32, 2.0, 3.0];
+        let padded = reflection_pad(&signal, 1);
+        assert_eq!(padded, vec![2.0f32, 1.0, 2.0, 3.0, 2.0]);
+    }
+
+    #[test]
+    fn test_mel_filterbank_shape_and_nonneg() {
+        let num_mels = 128;
+        let n_fft = 400;
+        let sr = 16000u32;
+        let n_freqs = n_fft / 2 + 1; // 201
+        let filters = create_mel_filterbank(num_mels, n_fft, sr, 0.0, sr as f64 / 2.0);
+        assert_eq!(filters.len(), num_mels * n_freqs);
+        assert!(
+            filters.iter().all(|&v| v >= 0.0),
+            "all filterbank values must be >= 0"
+        );
+    }
+
+    #[test]
+    fn test_mel_extractor_silent_signal() {
+        // 1 second of silence at 16 kHz
+        let samples = vec![0.0f32; 16000];
+        let extractor = MelExtractor::new(400, 160, 128, 16000);
+        let (mel, n_mels, n_frames) = extractor.extract(&samples).unwrap();
+        assert_eq!(n_mels, 128);
+        assert!(n_frames > 0, "n_frames should be positive");
+        assert_eq!(mel.len(), n_mels * n_frames);
+        assert!(
+            mel.iter().all(|v| v.is_finite()),
+            "all mel values must be finite"
+        );
+    }
 }
