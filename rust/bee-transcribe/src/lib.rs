@@ -57,22 +57,11 @@ pub struct SessionOptions {
     /// steps. Default: 5
     pub rollback_tokens: usize,
 
-    /// Number of leading tokens to monitor for stability. When these
-    /// tokens stay identical across `commit_stability_rounds` consecutive
-    /// decode steps, they are considered final: we run the forced aligner,
-    /// trim the audio at the word boundary, and rotate the session.
-    /// Default: 12
+    /// Minimum number of fixed tokens (total minus `rollback_tokens`)
+    /// before we commit and rotate the session. When the fixed portion
+    /// reaches this threshold, we find a word boundary, run the aligner,
+    /// and start a fresh session. Default: 12
     pub commit_token_count: usize,
-
-    /// How many consecutive decode steps the leading tokens must be
-    /// unchanged before triggering a commit and session rotation.
-    /// Default: 3
-    pub commit_stability_rounds: usize,
-
-    /// Minimum tokens beyond `commit_token_count` required before
-    /// committing. Ensures we don't commit when the model has barely
-    /// started generating past the stability window. Default: 6
-    pub min_trailing_tokens: usize,
 
     /// Max tokens to generate per streaming step. Default: 32
     pub max_tokens_streaming: usize,
@@ -91,8 +80,6 @@ impl Default for SessionOptions {
             vad_threshold: 0.5,
             rollback_tokens: 5,
             commit_token_count: 12,
-            commit_stability_rounds: 3,
-            min_trailing_tokens: 6,
             max_tokens_streaming: 32,
             max_tokens_final: 512,
             language: Language::default(),
@@ -203,8 +190,6 @@ impl Engine {
             committed_tokens: Vec::new(),
             committed_alignments: Vec::new(),
             committed_audio_offset: 0.0,
-            prefix_tokens: Vec::new(),
-            stable_rounds: 0,
             language_tokens,
             asr_text_tokens,
             options,
@@ -238,10 +223,6 @@ pub struct Session<'a> {
     committed_tokens: Vec<u32>,
     committed_alignments: Vec<AlignedWord>,
     committed_audio_offset: f64,
-
-    // Stability tracking
-    prefix_tokens: Vec<u32>,
-    stable_rounds: usize,
 
     // Precomputed prompt tokens
     language_tokens: Vec<i32>,
@@ -390,41 +371,24 @@ impl<'a> Session<'a> {
         Some(self.token_ids[..keep].to_vec())
     }
 
-    /// Check if leading tokens are stable enough to commit,
-    /// and if so, perform a session rotation.
+    /// Commit fixed tokens and rotate the session if we have enough.
+    ///
+    /// The fixed portion is everything except the last `rollback_tokens`.
+    /// We commit when that fixed portion >= `commit_token_count`.
     fn maybe_commit(&mut self) -> Result<(), Exception> {
-        if self.token_ids.is_empty() {
+        let fixed_count = self
+            .token_ids
+            .len()
+            .saturating_sub(self.options.rollback_tokens);
+
+        if fixed_count < self.options.commit_token_count {
             return Ok(());
         }
 
-        let n = self
-            .options
-            .commit_token_count
-            .min(self.token_ids.len());
-        let current_prefix: Vec<u32> = self.token_ids[..n].to_vec();
-
-        if current_prefix == self.prefix_tokens {
-            self.stable_rounds += 1;
-        } else {
-            self.prefix_tokens = current_prefix;
-            self.stable_rounds = 1;
-        }
-
-        let should_commit = self.stable_rounds >= self.options.commit_stability_rounds
-            && n >= self.options.commit_token_count
-            && self.token_ids.len() >= self.options.commit_token_count + self.options.min_trailing_tokens;
-
-        if !should_commit {
-            return Ok(());
-        }
-
-        // Find a word boundary to commit at
+        // Walk back from the fixed boundary to a word boundary
         let Some((commit_count, commit_text)) =
-            find_word_boundary(&self.token_ids, n, &self.engine.tokenizer)
+            find_word_boundary(&self.token_ids, fixed_count, &self.engine.tokenizer)
         else {
-            // No clean word boundary — reset stability and wait
-            self.stable_rounds = 0;
-            self.prefix_tokens.clear();
             return Ok(());
         };
 
@@ -433,9 +397,6 @@ impl<'a> Session<'a> {
             .map_err(|e| Exception::custom(format!("aligner: {e}")))?;
 
         if items.is_empty() {
-            // Aligner returned no words — reset stability and wait
-            self.stable_rounds = 0;
-            self.prefix_tokens.clear();
             return Ok(());
         }
 
@@ -470,8 +431,6 @@ impl<'a> Session<'a> {
         self.token_ids = self.token_ids[commit_count..].to_vec();
         // Skip warm-up so prefix rollback kicks in immediately
         self.chunk_count = 3;
-        self.stable_rounds = 0;
-        self.prefix_tokens.clear();
 
         log::info!(
             "Committed: {:?} | kept {:.1}s audio, {} seed tokens",
