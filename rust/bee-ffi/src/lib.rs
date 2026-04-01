@@ -171,6 +171,9 @@ pub unsafe extern "C" fn asr_engine_load(
 }
 
 fn load_engine(model_dir: &Path) -> Result<AsrEngine, String> {
+    // Cap MLX's Metal buffer cache at 2GB to prevent unbounded memory growth
+    bee_transcribe::set_mlx_cache_limit(2 * 1024 * 1024 * 1024);
+
     let config = resolve_engine_config(model_dir)?;
     let engine = Engine::load(&config).map_err(|e| format!("load engine: {e}"))?;
 

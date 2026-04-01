@@ -9,6 +9,18 @@
 use std::io::Cursor;
 use std::path::Path;
 
+extern "C" {
+    fn mlx_set_cache_limit(res: *mut usize, limit: usize) -> std::ffi::c_int;
+}
+
+/// Set the MLX Metal buffer cache limit. Buffers beyond this are returned
+/// to the system instead of being pooled for reuse.
+pub fn set_mlx_cache_limit(limit: usize) -> usize {
+    let mut prev = 0usize;
+    unsafe { mlx_set_cache_limit(&mut prev, limit); }
+    prev
+}
+
 use bee_qwen3_asr::config::AsrConfig;
 use bee_qwen3_asr::encoder::EncoderCache;
 use bee_qwen3_asr::forced_aligner::ForcedAligner;
