@@ -285,7 +285,7 @@ impl Module<&Array> for Glu {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         glu(x, self.axis)
     }
 
@@ -310,7 +310,7 @@ impl Module<&Array> for Sigmoid {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         sigmoid(x)
     }
 
@@ -336,7 +336,7 @@ impl Module<&Array> for Mish {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         mish(x)
     }
 
@@ -358,7 +358,7 @@ impl Module<&Array> for Relu {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         relu(x)
     }
 
@@ -393,7 +393,7 @@ impl Module<&Array> for LeakyRelu {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         leaky_relu(x, self.neg_slope)
     }
 
@@ -415,7 +415,7 @@ impl Module<&Array> for Relu6 {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         relu6(x)
     }
 
@@ -450,7 +450,7 @@ impl Module<&Array> for Softmax {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         crate::ops::softmax_axis(x, self.axis, None)
     }
 
@@ -472,7 +472,7 @@ impl Module<&Array> for Softplus {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         softplus(x)
     }
 
@@ -494,7 +494,7 @@ impl Module<&Array> for Softsign {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         softsign(x)
     }
 
@@ -530,7 +530,7 @@ impl Module<&Array> for Celu {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         celu(x, self.alpha)
     }
 
@@ -552,7 +552,7 @@ impl Module<&Array> for Silu {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         silu(x)
     }
 
@@ -587,7 +587,7 @@ impl Module<&Array> for LogSoftmax {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         log_softmax(x, self.axis)
     }
 
@@ -609,7 +609,7 @@ impl Module<&Array> for LogSigmoid {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         log_sigmoid(x)
     }
 
@@ -671,7 +671,7 @@ impl Module<&Array> for Prelu {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         prelu(x, &self.weight)
     }
 
@@ -715,7 +715,7 @@ impl Module<&Array> for Gelu {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         match self.approximate {
             GeluApprox::None => gelu(x),
             GeluApprox::Precise => gelu_approximate(x),
@@ -735,7 +735,7 @@ impl Module<&Array> for Tanh {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         crate::ops::tanh(x)
     }
 
@@ -757,7 +757,7 @@ impl Module<&Array> for HardSwish {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         hard_swish(x)
     }
 
@@ -795,7 +795,7 @@ impl Module<&Array> for Step {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         step(x, self.threshold)
     }
 
@@ -817,7 +817,7 @@ impl Module<&Array> for Selu {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array> {
+    fn forward(&self, x: &Array) -> Result<Array> {
         selu(x)
     }
 

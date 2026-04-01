@@ -123,7 +123,7 @@ impl Rnn {
     pub const DEFAULT_NONLINEARITY: Option<Arc<NonLinearity>> = None;
 
     /// Apply a single step of the RNN.
-    pub fn step(&mut self, x: &Array, hidden: Option<&Array>) -> Result<Array, Exception> {
+    pub fn step(&self, x: &Array, hidden: Option<&Array>) -> Result<Array, Exception> {
         let x = if let Some(bias) = &self.bias.value {
             addmm(bias, x, self.wxh.t(), None, None)?
         } else {
@@ -206,7 +206,7 @@ where
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, input: Input) -> Result<Array, Exception> {
+    fn forward(&self, input: Input) -> Result<Array, Exception> {
         let input = input.into();
         self.step(input.x, input.hidden)
     }
@@ -297,7 +297,7 @@ impl Gru {
     pub const DEFAULT_BIAS: bool = true;
 
     /// Apply a single step of the GRU.
-    pub fn step(&mut self, x: &Array, hidden: Option<&Array>) -> Result<Array, Exception> {
+    pub fn step(&self, x: &Array, hidden: Option<&Array>) -> Result<Array, Exception> {
         let x = if let Some(b) = &self.bias.value {
             addmm(b, x, self.wx.t(), None, None)?
         } else {
@@ -368,7 +368,7 @@ where
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, input: Input) -> Result<Array, Exception> {
+    fn forward(&self, input: Input) -> Result<Array, Exception> {
         let input = input.into();
         self.step(input.x, input.hidden)
     }
@@ -517,7 +517,7 @@ impl Lstm {
 
     /// Apply a single step of the LSTM.
     pub fn step(
-        &mut self,
+        &self,
         x: &Array,
         hidden: Option<&Array>,
         cell: Option<&Array>,
@@ -569,7 +569,7 @@ where
     type Output = (Array, Array);
     type Error = Exception;
 
-    fn forward(&mut self, input: Input) -> Result<(Array, Array), Exception> {
+    fn forward(&self, input: Input) -> Result<(Array, Array), Exception> {
         let input = input.into();
         self.step(input.x, input.hidden, input.cell)
     }

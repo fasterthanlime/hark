@@ -26,10 +26,10 @@ impl Module<&Array> for Sequential {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&self, x: &Array) -> Result<Array, Self::Error> {
         let mut x = Cow::Borrowed(x);
 
-        for layer in &mut self.layers {
+        for layer in &self.layers {
             x = Cow::Owned(layer.forward(x.as_ref())?);
         }
 

@@ -251,7 +251,7 @@ impl Module<&Array> for SwiGLU {
     type Output = Array;
     type Error = Exception;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Exception> {
+    fn forward(&self, x: &Array) -> Result<Array, Exception> {
         let gate = nn::silu(self.gate_proj.forward(x)?)?;
         let up = self.up_proj.forward(x)?;
         self.down_proj.forward(&gate.multiply(&up)?)

@@ -224,7 +224,7 @@ where
 
     type Error = <M as Module<Input>>::Error;
 
-    fn forward(&mut self, x: Input) -> Result<Self::Output, Self::Error> {
+    fn forward(&self, x: Input) -> Result<Self::Output, Self::Error> {
         match self {
             MaybeQuantized::Original(m) => m.forward(x),
             MaybeQuantized::Quantized(q) => q.forward(x),

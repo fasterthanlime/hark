@@ -93,7 +93,7 @@ impl Module<AudioAttentionInput<'_>> for AudioAttention {
     type Output = Array;
     type Error = Exception;
 
-    fn forward(&mut self, input: AudioAttentionInput<'_>) -> Result<Array, Exception> {
+    fn forward(&self, input: AudioAttentionInput<'_>) -> Result<Array, Exception> {
         let AudioAttentionInput { x, mask } = input;
         let b = x.shape()[0];
         let l = x.shape()[1];

@@ -219,7 +219,7 @@ where
     type Output = Array;
 
     #[allow(non_snake_case)]
-    fn forward(&mut self, input: Input) -> Result<Self::Output, Self::Error> {
+    fn forward(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let input = input.into();
         let queries = self.query_proj.forward(input.queries)?;
         let keys = self.key_proj.forward(input.keys)?;
@@ -412,7 +412,7 @@ where
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, input: Input) -> Result<Self::Output, Self::Error> {
+    fn forward(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let input = input.into();
         let x = input.x;
         let mask = input.mask;
@@ -552,14 +552,14 @@ where
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, input: Input) -> Result<Self::Output, Self::Error> {
+    fn forward(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let input = input.into();
         let x = input.x;
         let mask = input.mask;
 
         let mut x = Cow::Borrowed(x);
 
-        for l in &mut self.layers {
+        for l in &self.layers {
             let layer_input = TransformerEncoderInput::from((&*x, mask));
             x = Cow::Owned(l.forward(layer_input)?);
         }
@@ -741,7 +741,7 @@ where
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, input: Input) -> Result<Self::Output, Self::Error> {
+    fn forward(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let input = input.into();
         let x = input.x;
         let memory = input.memory;
@@ -912,7 +912,7 @@ where
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, input: Input) -> Result<Self::Output, Self::Error> {
+    fn forward(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let input = input.into();
         let x = input.x;
         let memory = input.memory;
@@ -921,7 +921,7 @@ where
 
         let mut x = Cow::Borrowed(x);
 
-        for l in &mut self.layers {
+        for l in &self.layers {
             let layer_input = TransformerDecoderInput::from((&*x, memory, x_mask, memory_mask));
             x = Cow::Owned(l.forward(layer_input)?);
         }
@@ -1118,7 +1118,7 @@ where
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, input: Input) -> Result<Self::Output, Self::Error> {
+    fn forward(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let input = input.into();
         let source = input.source;
         let target = input.target;

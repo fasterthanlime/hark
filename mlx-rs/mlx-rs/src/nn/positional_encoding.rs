@@ -117,7 +117,7 @@ where
 
     type Output = Array;
 
-    fn forward(&mut self, input: Input) -> Result<Self::Output, Self::Error> {
+    fn forward(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let RopeInput { x, offset } = input.into();
         let shape = x.shape();
         let x = x.reshape(&[-1, x.dim(-2), x.dim(-1)])?;
@@ -236,7 +236,7 @@ impl Module<&Array> for Sinpe {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Self::Output, Self::Error> {
+    fn forward(&self, x: &Array) -> Result<Self::Output, Self::Error> {
         let mut y = x
             .expand_dims_axes(&[-1])
             .and_then(|x| x.multiply(&self.sigmas))?;
@@ -393,7 +393,7 @@ where
     type Output = Array;
     type Error = Exception;
 
-    fn forward(&mut self, input: Input) -> Result<Self::Output, Self::Error> {
+    fn forward(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let AlibiInput {
             attention_scores,
             offset,

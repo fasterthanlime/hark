@@ -80,7 +80,7 @@ impl Module<&Array> for Pool {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&self, x: &Array) -> Result<Array, Self::Error> {
         let shape = x.shape();
         let rest = &shape[1..shape.len() - 1];
 
@@ -131,7 +131,7 @@ macro_rules! impl_module {
             type Output = Array;
             type Error = Exception;
 
-            fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+            fn forward(&self, x: &Array) -> Result<Array, Self::Error> {
                 self.inner.forward(x)
             }
 

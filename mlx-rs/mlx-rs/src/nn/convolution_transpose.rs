@@ -124,7 +124,7 @@ impl Module<&Array> for ConvTranspose1d {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&self, x: &Array) -> Result<Array, Self::Error> {
         let mut y = conv_transpose1d(
             x,
             self.weight.as_ref(),
@@ -263,7 +263,7 @@ impl Module<&Array> for ConvTranspose2d {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&self, x: &Array) -> Result<Array, Self::Error> {
         let mut y = conv_transpose2d(
             x,
             self.weight.as_ref(),
@@ -404,7 +404,7 @@ impl Module<&Array> for ConvTranspose3d {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&self, x: &Array) -> Result<Array, Self::Error> {
         let mut y = conv_transpose3d(
             x,
             self.weight.as_ref(),
