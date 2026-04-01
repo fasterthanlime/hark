@@ -36,6 +36,8 @@ final class AppState {
     fileprivate var activeSessionTargetAppIcon: NSImage?
     private var activeSessionIMEConfirmed = false
     private var pendingLockRequest = false
+    private var loggedWaitingForIME = false
+    private var pendingIMEAckTimeoutTask: Task<Void, Never>?
     private var isSessionParked = false
     private var distributedObservers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -147,6 +149,7 @@ final class AppState {
         case .idle:
             let targetApp = NSWorkspace.shared.frontmostApplication
             let targetPID = targetApp?.processIdentifier
+            beeLog("APP: hotkey down targetPID=\(targetPID.map(String.init) ?? "nil") targetApp=\(targetApp?.localizedName ?? "nil")")
             let session = createSession(targetProcessID: targetPID)
             activeSessionID = session.id
             activeSessionTargetPID = targetPID
@@ -154,6 +157,9 @@ final class AppState {
             activeSessionTargetAppIcon = targetApp?.icon
             activeSessionIMEConfirmed = false
             pendingLockRequest = false
+            loggedWaitingForIME = false
+            pendingIMEAckTimeoutTask?.cancel()
+            pendingIMEAckTimeoutTask = nil
             isSessionParked = false
             parkedOverlayText = ""
             uiState = .pending(session)
@@ -185,7 +191,11 @@ final class AppState {
         case .pending(let session):
             guard activeSessionIMEConfirmed else {
                 pendingLockRequest = true
-                beeLog("SESSION: ROpt up while IME unconfirmed, waiting")
+                if !loggedWaitingForIME {
+                    beeLog("SESSION: ROpt up while IME unconfirmed, waiting")
+                    loggedWaitingForIME = true
+                }
+                startIMEAckTimeoutIfNeeded(session: session)
                 return false
             }
             pendingTimer?.cancel()
@@ -291,6 +301,25 @@ final class AppState {
                 playRecordingStartedSound()
                 return
             }
+        }
+    }
+
+    private func startIMEAckTimeoutIfNeeded(session: Session) {
+        guard pendingIMEAckTimeoutTask == nil else { return }
+        pendingIMEAckTimeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(1200))
+            guard let self else { return }
+            defer { self.pendingIMEAckTimeoutTask = nil }
+
+            guard case .pending(let s) = self.uiState, s.id == session.id else { return }
+            guard self.pendingLockRequest, !self.activeSessionIMEConfirmed else { return }
+
+            let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            beeLog(
+                "SESSION: IME confirm timeout id=\(session.id.uuidString.prefix(8)) targetPID=\(self.activeSessionTargetPID.map(String.init) ?? "nil") frontmostPID=\(frontmostPID.map(String.init) ?? "nil"), aborting"
+            )
+            self.transitionToIdle()
+            Task { await session.abort() }
         }
     }
 

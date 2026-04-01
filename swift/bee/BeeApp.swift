@@ -1,9 +1,26 @@
 import AppKit
 import SwiftUI
 
+extension Notification.Name {
+    static let beeOpenMainWindowRequest = Notification.Name("fasterthanlime.bee.openMainWindowRequest")
+}
+
 final class BeeLifecycleDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         BeeInputClient.switchAwayFromBeeInputIfNeeded()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        NotificationCenter.default.post(name: .beeOpenMainWindowRequest, object: nil)
+        return false
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        let hasVisibleNormalWindow = NSApp.windows.contains { window in
+            window.isVisible && !(window is NSPanel)
+        }
+        guard !hasVisibleNormalWindow else { return }
+        NotificationCenter.default.post(name: .beeOpenMainWindowRequest, object: nil)
     }
 }
 
@@ -41,75 +58,26 @@ struct BeeApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("Bee", id: "bee-main") {
-            BeeMainWindowView(appState: appState)
-        }
-        .defaultSize(width: 640, height: 520)
-
         Settings {
             BeeSettingsView(appState: appState)
         }
     }
 }
 
-private struct BeeMainWindowView: View {
-    @Bindable var appState: AppState
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("Status") {
-                    LabeledContent("State", value: statusLabel)
-                    LabeledContent("Model", value: modelLabel)
-                    LabeledContent("Input", value: appState.activeInputDeviceName ?? "None")
-                }
-
-                Section("Recent Transcripts") {
-                    if appState.transcriptionHistory.isEmpty {
-                        Text("No transcripts yet")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(appState.transcriptionHistory.prefix(20)) { item in
-                            Text(item.text)
-                                .textSelection(.enabled)
-                                .lineLimit(3)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Bee")
-        }
-    }
-
-    private var statusLabel: String {
-        switch appState.uiState {
-        case .idle: return "Idle"
-        case .pending: return "Pending"
-        case .pushToTalk: return "Push To Talk"
-        case .locked: return "Locked"
-        case .lockedOptionHeld: return "Locked (Option Held)"
-        }
-    }
-
-    private var modelLabel: String {
-        switch appState.modelStatus {
-        case .notLoaded: return "Not Loaded"
-        case .downloading(let progress): return "Downloading (\(Int(progress * 100))%)"
-        case .loading: return "Loading"
-        case .loaded: return "Loaded"
-        case .error(let message): return "Error: \(message)"
-        }
-    }
-}
-
 private struct MenuBarLabelView: View {
     @Bindable var appState: AppState
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        if isActivelyRecording {
-            Image(nsImage: recordingMenuBarImage)
-        } else {
-            Image("MenuBarIcon")
+        Group {
+            if isActivelyRecording {
+                Image(nsImage: recordingMenuBarImage)
+            } else {
+                Image("MenuBarIcon")
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .beeOpenMainWindowRequest)) { _ in
+            openSettings()
         }
     }
 

@@ -40,7 +40,7 @@ final class BeeXPCService: NSObject {
     func flushPending() {
         guard let text = pendingText else { return }
         guard canRouteToCurrentController() else {
-            beeInputLog("flushPending: route not ready, keeping pending")
+            beeInputLog("flushPending: route not ready, keeping pending (\(routingDebugInfo()))")
             return
         }
         guard let ctrl = controller else {
@@ -64,7 +64,7 @@ final class BeeXPCService: NSObject {
 
             guard self.canRouteToCurrentController() else {
                 beeInputLog(
-                    "setMarkedText: route not ready (frontmost/controller mismatch), queuing \(text.prefix(40).debugDescription)"
+                    "setMarkedText: route not ready, queuing \(text.prefix(40).debugDescription) (\(self.routingDebugInfo()))"
                 )
                 self.pendingText = text
                 return
@@ -162,6 +162,11 @@ final class BeeXPCService: NSObject {
 
     private func canRouteToCurrentController() -> Bool {
         isExpectedTargetFrontmost() && isControllerOnExpectedTarget()
+    }
+
+    private func routingDebugInfo() -> String {
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        return "expected=\(expectedTargetPID.map(String.init) ?? "nil") frontmost=\(frontmostPID.map(String.init) ?? "nil") controller=\(activeControllerPID.map(String.init) ?? "nil") hasController=\(activeController != nil)"
     }
 
     func switchAwayFromBeeInput() {

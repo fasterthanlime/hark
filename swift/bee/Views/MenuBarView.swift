@@ -3,23 +3,11 @@ import SwiftUI
 
 struct MenuBarView: View {
     @Bindable var appState: AppState
-    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Button {
-                openWindow(id: "bee-main")
-            } label: {
-                Label("Open Bee", systemImage: "app.badge")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
             SettingsLink {
-                Label("Settings…", systemImage: "gearshape")
+                Label("Open Bee", systemImage: "app.badge")
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 4)
@@ -57,6 +45,12 @@ struct BeeSettingsView: View {
         NavigationSplitView {
             List {
                 NavigationLink {
+                    BeeOverviewView(appState: appState)
+                } label: {
+                    Label("Bee", systemImage: "app.badge")
+                }
+
+                NavigationLink {
                     HowBeeWorksView()
                 } label: {
                     Label("How Bee Works", systemImage: "book")
@@ -74,9 +68,57 @@ struct BeeSettingsView: View {
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 200)
         } detail: {
-            HowBeeWorksView()
+            BeeOverviewView(appState: appState)
         }
         .frame(minWidth: 760, minHeight: 520)
+    }
+}
+
+private struct BeeOverviewView: View {
+    @Bindable var appState: AppState
+
+    var body: some View {
+        List {
+            Section("Status") {
+                LabeledContent("State", value: statusLabel)
+                LabeledContent("Model", value: modelLabel)
+                LabeledContent("Input", value: appState.activeInputDeviceName ?? "None")
+            }
+
+            Section("Recent Transcripts") {
+                if appState.transcriptionHistory.isEmpty {
+                    Text("No transcripts yet")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(appState.transcriptionHistory.prefix(20)) { item in
+                        Text(item.text)
+                            .textSelection(.enabled)
+                            .lineLimit(3)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Bee")
+    }
+
+    private var statusLabel: String {
+        switch appState.uiState {
+        case .idle: return "Idle"
+        case .pending: return "Pending"
+        case .pushToTalk: return "Push To Talk"
+        case .locked: return "Locked"
+        case .lockedOptionHeld: return "Locked (Option Held)"
+        }
+    }
+
+    private var modelLabel: String {
+        switch appState.modelStatus {
+        case .notLoaded: return "Not Loaded"
+        case .downloading(let progress): return "Downloading (\(Int(progress * 100))%)"
+        case .loading: return "Loading"
+        case .loaded: return "Loaded"
+        case .error(let message): return "Error: \(message)"
+        }
     }
 }
 
