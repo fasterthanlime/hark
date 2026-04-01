@@ -7,17 +7,25 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
+            Text("CURRENT STATE")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+
+            Text(currentStateLabel)
+                .font(.body.weight(.medium))
+                .padding(.horizontal, 6)
+
+            HStack(spacing: 6) {
                 Image(systemName: "mic.fill")
                     .foregroundStyle(.secondary)
                 Text(appState.activeInputDeviceName ?? "No input")
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .foregroundStyle(.secondary)
             }
             .font(.caption)
             .padding(.horizontal, 6)
-            .padding(.vertical, 2)
+            .fixedSize(horizontal: false, vertical: true)
 
             Divider().padding(.horizontal, 2)
 
@@ -30,31 +38,46 @@ struct MenuBarView: View {
                     }
                     normalWindow?.makeKeyAndOrderFront(nil)
                 }
-            } label: {
-                Label("Open bee", systemImage: "app.badge")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-
-            Divider().padding(.horizontal, 2)
+            label: {
+                Text("Open settings")
+            }
+            .keyboardShortcut(",", modifiers: [.command])
 
             Button {
                 BeeInputClient.restoreInputSourceIfNeeded()
                 NSApplication.shared.terminate(nil)
-            } label: {
-                Label("Quit bee", systemImage: "power")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            label: {
+                Text("Quit")
+            }
+            .keyboardShortcut("q", modifiers: [.command])
+
+            Divider().padding(.horizontal, 2)
         }
         .padding(10)
-        .frame(width: 220)
+        .frame(width: 240)
+    }
+
+    private var currentStateLabel: String {
+        switch appState.uiState {
+        case .idle:
+            switch appState.modelStatus {
+            case .loaded: return "Ready"
+            case .loading: return "Loading model"
+            case .downloading: return "Downloading model"
+            case .notLoaded: return "No model"
+            case .error(let message): return "Error: \(message)"
+            }
+        case .pending:
+            return "Starting session"
+        case .pushToTalk:
+            return "Listening"
+        case .locked:
+            return "Listening (locked)"
+        case .lockedOptionHeld:
+            return "Listening (option held)"
+        }
     }
 }
 
@@ -210,10 +233,10 @@ private struct HowBeeWorksView: View {
                     .font(.title2.weight(.semibold))
 
                 SettingsCard("Core flow") {
-                    FlowRow(shortcuts: ["Right ⌥"], text: "Hold to start listening")
-                    FlowRow(shortcuts: ["Right ⌘"], text: "While holding, tap to lock")
-                    FlowRow(shortcuts: ["⏎ Enter"], text: "Submit")
-                    FlowRow(shortcuts: ["Esc"], text: "Cancel")
+                    ShortcutRow(action: "Start listening", keys: ["⌥", "→"])
+                    ShortcutRow(action: "Lock listening", keys: ["⌘", "→"])
+                    ShortcutRow(action: "Submit", keys: ["↩"])
+                    ShortcutRow(action: "Cancel", keys: ["esc"])
                 }
             }
             .frame(maxWidth: 760, alignment: .leading)
@@ -424,38 +447,40 @@ private struct TranscriptRow: View {
     }
 }
 
-private struct FlowRow: View {
-    let shortcuts: [String]
-    let text: String
+private struct ShortcutRow: View {
+    let action: String
+    let keys: [String]
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(spacing: 12) {
+            Text(action)
+                .foregroundStyle(.secondary)
+            Spacer()
             HStack(spacing: 6) {
-                ForEach(shortcuts, id: \.self) { value in
-                    ShortcutPill(text: value)
+                ForEach(Array(keys.enumerated()), id: \.offset) { _, key in
+                    ShortcutKeycap(text: key)
                 }
             }
-            Text(text)
-                .foregroundStyle(.secondary)
         }
     }
 }
 
-private struct ShortcutPill: View {
+private struct ShortcutKeycap: View {
     let text: String
 
     var body: some View {
         Text(text)
-            .font(.system(.caption, design: .rounded).weight(.semibold))
+            .font(.system(size: 12, weight: .semibold, design: .rounded))
+            .foregroundStyle(.secondary)
             .padding(.horizontal, 8)
-            .padding(.vertical, 5)
+            .padding(.vertical, 3)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(.thinMaterial)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.15), lineWidth: 1)
-                    )
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
             )
     }
 }

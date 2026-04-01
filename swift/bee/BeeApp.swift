@@ -63,18 +63,17 @@ struct BeeApp: App {
         }
         .commands {
             CommandGroup(replacing: .appTermination) {
-                Button("Close Bee Window") {
+                Button("Close bee window") {
                     if let keyWindow = NSApp.keyWindow, !(keyWindow is NSPanel) {
                         keyWindow.performClose(nil)
                         return
                     }
-
                     let normalWindow = NSApp.orderedWindows.first { window in
                         window.isVisible && !(window is NSPanel)
                     }
                     normalWindow?.performClose(nil)
                 }
-                .keyboardShortcut("q")
+                .keyboardShortcut("q", modifiers: [.command])
             }
         }
     }
@@ -85,13 +84,20 @@ private struct MenuBarLabelView: View {
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        Group {
-            if isActivelyRecording {
-                Image(nsImage: recordingMenuBarImage)
-            } else {
-                Image("MenuBarIcon")
+        Image("MenuBarIcon")
+            .renderingMode(.template)
+            .overlay(alignment: .bottomTrailing) {
+                if isSessionActive {
+                    Circle()
+                        .fill(.red)
+                        .frame(width: 6, height: 6)
+                        .overlay {
+                            Circle()
+                                .stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1)
+                        }
+                        .offset(x: 1, y: 1)
+                }
             }
-        }
         .onReceive(NotificationCenter.default.publisher(for: .beeOpenMainWindowRequest)) { _ in
             NSApp.activate(ignoringOtherApps: true)
             openSettings()
@@ -104,56 +110,12 @@ private struct MenuBarLabelView: View {
         }
     }
 
-    private var isActivelyRecording: Bool {
+    private var isSessionActive: Bool {
         switch appState.uiState {
-        case .pushToTalk, .locked, .lockedOptionHeld:
+        case .pending, .pushToTalk, .locked, .lockedOptionHeld:
             return true
-        case .idle, .pending:
+        case .idle:
             return false
         }
-    }
-
-    private var recordingMenuBarImage: NSImage {
-        let fallbackSize = NSSize(width: 18, height: 18)
-        guard let base = NSImage(named: "MenuBarIcon") else {
-            let image = NSImage(size: fallbackSize)
-            image.isTemplate = false
-            return image
-        }
-
-        let baseSize = base.size == .zero ? fallbackSize : base.size
-        let image = NSImage(size: baseSize)
-        image.lockFocus()
-
-        let rect = NSRect(origin: .zero, size: baseSize)
-        if let cgMask = base.cgImage(
-            forProposedRect: nil,
-            context: NSGraphicsContext.current,
-            hints: nil
-        ) {
-            let ctx = NSGraphicsContext.current?.cgContext
-            ctx?.saveGState()
-            ctx?.clip(to: rect, mask: cgMask)
-            NSColor.labelColor.setFill()
-            rect.fill()
-            ctx?.restoreGState()
-        } else {
-            base.draw(in: rect)
-        }
-
-        NSColor.systemRed.setFill()
-        let dotDiameter = max(7.0, floor(min(baseSize.width, baseSize.height) * 0.45))
-        let dotMargin = 1.0
-        let dotRect = NSRect(
-            x: baseSize.width - dotDiameter - dotMargin,
-            y: dotMargin,
-            width: dotDiameter,
-            height: dotDiameter
-        )
-        NSBezierPath(ovalIn: dotRect).fill()
-
-        image.unlockFocus()
-        image.isTemplate = false
-        return image
     }
 }

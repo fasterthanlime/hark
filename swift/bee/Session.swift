@@ -79,8 +79,7 @@ actor Session {
 
         // Warm up engine if cold
         if !audioEngine.isWarm {
-            do { try audioEngine.warmUp() }
-            catch {
+            do { try audioEngine.warmUp() } catch {
                 logger.error("[\(self.id)] Failed to warm up: \(error)")
                 emitCompletion(.aborted(id: id))
                 return
@@ -184,16 +183,21 @@ actor Session {
                 }
 
                 // If we broke out of the inner loop, we're done draining
-                if let mode = drainMode, (silenceSamples >= vadRequiredSilenceSamples || drainSamplesRemaining <= 0) {
+                if let mode = drainMode,
+                    silenceSamples >= vadRequiredSilenceSamples || drainSamplesRemaining <= 0
+                {
                     diagRef.update {
                         $0.capturedSamples = allSamples.count
                         $0.totalSamples = allSamples.count
                     }
 
                     // Save debug WAV
-                    let debugDir = FileManager.default.temporaryDirectory.appendingPathComponent("bee-debug")
-                    try? FileManager.default.createDirectory(at: debugDir, withIntermediateDirectories: true)
-                    let wavURL = debugDir.appendingPathComponent("\(sessionID.uuidString.prefix(8)).wav")
+                    let debugDir = FileManager.default.temporaryDirectory.appendingPathComponent(
+                        "bee-debug")
+                    try? FileManager.default.createDirectory(
+                        at: debugDir, withIntermediateDirectories: true)
+                    let wavURL = debugDir.appendingPathComponent(
+                        "\(sessionID.uuidString.prefix(8)).wav")
                     try? WavWriter.write(samples: allSamples, to: wavURL)
                     diagRef.update { $0.audioWavPath = wavURL.path }
 
@@ -218,8 +222,10 @@ actor Session {
             }
 
             // Save debug WAV even on abort
-            let debugDir = FileManager.default.temporaryDirectory.appendingPathComponent("bee-debug")
-            try? FileManager.default.createDirectory(at: debugDir, withIntermediateDirectories: true)
+            let debugDir = FileManager.default.temporaryDirectory.appendingPathComponent(
+                "bee-debug")
+            try? FileManager.default.createDirectory(
+                at: debugDir, withIntermediateDirectories: true)
             let wavURL = debugDir.appendingPathComponent("\(sessionID.uuidString.prefix(8)).wav")
             try? WavWriter.write(samples: allSamples, to: wavURL)
             diagRef.update { $0.audioWavPath = wavURL.path }
@@ -317,7 +323,10 @@ actor Session {
                 let events = ch2.drain()
 
                 // If a .done is in this batch, skip animation and go straight to commit
-                let hasDone = events.contains { if case .done = $0 { return true }; return false }
+                let hasDone = events.contains {
+                    if case .done = $0 { return true }
+                    return false
+                }
 
                 for event in events {
                     switch event {
@@ -594,7 +603,9 @@ actor Session {
         return t.isEmpty ? "🐝" : "\(t) 🐝"
     }
 
-    private func renderMarkedTextIfActive(_ text: String, inputClient: BeeInputClient, sessionID: UUID) async {
+    private func renderMarkedTextIfActive(
+        _ text: String, inputClient: BeeInputClient, sessionID: UUID
+    ) async {
         guard ime == .active else { return }
         inputClient.setMarkedText(text, sessionID: sessionID)
     }
@@ -636,11 +647,13 @@ actor Session {
 
         // Backtrace to produce edit script
         var ops: [EditOp] = []
-        var i = m, j = n
+        var i = m
+        var j = n
         while i > 0 || j > 0 {
             if i > 0 && j > 0 && a[i - 1] == b[j - 1] {
                 ops.append(.keep)
-                i -= 1; j -= 1
+                i -= 1
+                j -= 1
             } else if j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) {
                 ops.append(.insert(b[j - 1]))
                 j -= 1
@@ -851,7 +864,8 @@ func beeLog(_ msg: String) {
     let ts = ProcessInfo.processInfo.systemUptime
     let line = String(format: "[%.3f] %@\n", ts, msg)
     if let data = line.data(using: .utf8),
-       let fh = FileHandle(forWritingAtPath: "/tmp/bee.log") {
+        let fh = FileHandle(forWritingAtPath: "/tmp/bee.log")
+    {
         fh.seekToEndOfFile()
         fh.write(data)
         fh.closeFile()
@@ -872,7 +886,8 @@ private final class IMELog: Sendable {
         let ts = ProcessInfo.processInfo.systemUptime
         let line = String(format: "[%.3f] %@\n", ts, msg)
         if let data = line.data(using: .utf8),
-           let fh = FileHandle(forWritingAtPath: path) {
+            let fh = FileHandle(forWritingAtPath: path)
+        {
             fh.seekToEndOfFile()
             fh.write(data)
             fh.closeFile()
