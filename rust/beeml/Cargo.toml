@@ -9,3 +9,9 @@ path = "src/main.rs"
 
 [dependencies]
 bee-phonetic = { path = "../bee-phonetic" }
+bee-asr = { path = "../bee-asr" }
+anyhow = { workspace = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+vox = { path = "../../../vox/rust/vox", default-features = false, features = ["runtime"] }
+vox-core = { path = "../../../vox/rust/vox-core" }
+vox-websocket = { path = "../../../vox/rust/vox-websocket" }

@@ -1,6 +1,7 @@
 pub use mlx_rs;
 pub use tokenizers;
 
+pub mod asr_engine;
 pub mod config;
 pub mod decoder;
 pub mod encoder;
@@ -14,5 +15,7 @@ pub mod mrope;
 pub mod streaming;
 pub mod vad;
 pub mod weights;
+
+pub use asr_engine::AsrEngine;
 
 pub type Result<T> = std::result::Result<T, error::AsrError>;
