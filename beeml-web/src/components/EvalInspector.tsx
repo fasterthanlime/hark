@@ -142,7 +142,7 @@ export function EvalInspector({
           currentTime={currentTime}
           duration={duration}
           zoom={zoom}
-          tokens={data.parakeetAlignment}
+          tokens={data.qwenAlignment}
           onPlayPause={handlePlayPause}
           onSeek={handleSeek}
           onZoomChange={setZoom}
@@ -152,7 +152,7 @@ export function EvalInspector({
       {/* Timeline */}
       <EvalTimeline
         alignments={data.alignments}
-        parakeetAlignment={data.parakeetAlignment}
+        qwenAlignment={data.qwenAlignment}
         sentenceCandidates={data.prototype.sentenceCandidates}
         reranker={data.prototype.reranker}
         currentTime={currentTime}

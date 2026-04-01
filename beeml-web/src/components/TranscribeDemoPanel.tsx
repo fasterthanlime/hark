@@ -19,7 +19,7 @@ function toInspectorData(transcript: string, qwenWords: ForcedAlignItem[]): Eval
     transcript,
     transcriptLabel: "BeeML",
     transcriptSource: "transcript",
-    parakeetAlignment: qwenTokens,
+    qwenAlignment: qwenTokens,
     alignments: {
       timingSource: "qwen-forced-aligner",
       transcript: qwenTokens,

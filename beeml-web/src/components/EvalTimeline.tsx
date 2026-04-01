@@ -66,7 +66,7 @@ function applyCandidateEdits(
 
 function buildLanes(
   alignments: PrototypeAlignments,
-  parakeetAlignment: TimedToken[],
+  qwenAlignment: TimedToken[],
   sentenceCandidates?: SentenceCandidate[],
   reranker?: Reranker | null,
 ): Lane[] {
@@ -109,10 +109,10 @@ function buildLanes(
     }
   }
 
-  if (parakeetAlignment.length > 0) {
+  if (qwenAlignment.length > 0) {
     lanes.push({
       label: "QWEN",
-      tokens: parakeetAlignment,
+      tokens: qwenAlignment,
       color: "var(--lane-qwen)",
       bg: "var(--lane-qwen-bg)",
     });
@@ -156,7 +156,7 @@ type Selection = { laneIdx: number; tokenIdx: number } | null;
 
 export function EvalTimeline({
   alignments,
-  parakeetAlignment,
+  qwenAlignment,
   sentenceCandidates,
   reranker,
   currentTime,
@@ -166,7 +166,7 @@ export function EvalTimeline({
   zoom = 1,
 }: {
   alignments: PrototypeAlignments;
-  parakeetAlignment: TimedToken[];
+  qwenAlignment: TimedToken[];
   sentenceCandidates?: SentenceCandidate[];
   reranker?: Reranker | null;
   currentTime: number;
@@ -176,7 +176,7 @@ export function EvalTimeline({
   zoom?: number;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const lanes = buildLanes(alignments, parakeetAlignment, sentenceCandidates, reranker);
+  const lanes = buildLanes(alignments, qwenAlignment, sentenceCandidates, reranker);
   const lanesRef = useRef(lanes);
   lanesRef.current = lanes;
   const pxPerSec = 120 * zoom;
