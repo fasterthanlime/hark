@@ -37,8 +37,27 @@ struct BeeApp: App {
         MenuBarExtra {
             MenuBarView(appState: appState)
         } label: {
-            Image("MenuBarIcon")
+            menuBarIcon
         }
         .menuBarExtraStyle(.window)
+    }
+
+    @ViewBuilder
+    private var menuBarIcon: some View {
+        let recordingAssetName = "MenuBarIconRecording"
+        let defaultAssetName = "MenuBarIcon"
+        let preferredAssetName = isActivelyRecording ? recordingAssetName : defaultAssetName
+        let resolvedAssetName = NSImage(named: preferredAssetName) == nil ? defaultAssetName : preferredAssetName
+
+        Image(resolvedAssetName)
+    }
+
+    private var isActivelyRecording: Bool {
+        switch appState.uiState {
+        case .pushToTalk, .locked, .lockedOptionHeld:
+            return true
+        case .idle, .pending:
+            return false
+        }
     }
 }

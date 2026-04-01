@@ -19,13 +19,17 @@ final class BeeInputClient: Sendable {
 
     @discardableResult
     func activate(expectedTargetPID: pid_t?, sessionID: UUID) -> Bool {
+        var userInfo: [AnyHashable: Any] = [
+            "sessionID": sessionID.uuidString,
+        ]
+        if let expectedTargetPID {
+            userInfo["pid"] = Int(expectedTargetPID)
+        }
+
         Self.dnc.postNotificationName(
             Self.setSessionContextName,
             object: nil,
-            userInfo: [
-                "sessionID": sessionID.uuidString,
-                "pid": expectedTargetPID.map(Int.init) as Any,
-            ],
+            userInfo: userInfo,
             deliverImmediately: true
         )
 

@@ -48,9 +48,11 @@ actor Session {
 
     // Callbacks
     private var onComplete: (@Sendable (SessionResult) -> Void)?
+    private var didComplete = false
 
     // Diagnostics — lock-protected, written by tasks, read by debug overlay
     let diag = SessionDiag()
+    private let textSnapshot = SessionTextSnapshot()
 
     func setOnComplete(_ handler: @Sendable @escaping (SessionResult) -> Void) {
         onComplete = handler
@@ -80,7 +82,7 @@ actor Session {
             do { try audioEngine.warmUp() }
             catch {
                 logger.error("[\(self.id)] Failed to warm up: \(error)")
-                onComplete?(.aborted(id: id))
+                emitCompletion(.aborted(id: id))
                 return
             }
         }
@@ -99,15 +101,16 @@ actor Session {
         let targetProcessID = self.targetProcessID
         beeLog("SESSION START: targetPID=\(targetProcessID.map(String.init) ?? "nil")")
         let imeActivated = await MainActor.run {
-            inputClient.activate(expectedTargetPID: targetProcessID)
+            inputClient.activate(expectedTargetPID: targetProcessID, sessionID: id)
         }
         guard imeActivated else {
             logger.error("[\(self.id)] Failed to activate IME for target pid")
-            onComplete?(.aborted(id: id))
+            inputClient.stopDictating(sessionID: id)
+            emitCompletion(.aborted(id: id))
             return
         }
         beeLog("SESSION: IME activated, sending 🐝")
-        inputClient.setMarkedText("🐝")
+        inputClient.setMarkedText("🐝", sessionID: id)
         ime = .active
 
         // Register with AudioEngine (Channel 0 starts flowing)
@@ -309,7 +312,6 @@ actor Session {
         consumerTask = Task {
             var displayedText = ""
             var targetText = ""
-            let imeLog = IMELog()
 
             for await _ in ch2.stream {
                 let events = ch2.drain()
@@ -321,6 +323,7 @@ actor Session {
                     switch event {
                     case .partial(let text):
                         targetText = text
+                        textSnapshot.set(targetText)
 
                         if hasDone || displayedText == targetText { break }
 
@@ -367,7 +370,8 @@ actor Session {
                             }
 
                             displayedText = String(chars)
-                            ic.setMarkedText(Self.addCursor(displayedText))
+                            textSnapshot.set(displayedText)
+                            ic.setMarkedText(Self.addCursor(displayedText), sessionID: sessionID)
 
                             steps += 1
                             let delayMs = steps > 20 ? 8 : (steps > 10 ? 15 : 25)
@@ -376,14 +380,16 @@ actor Session {
 
                         // Snap to target in case animation was interrupted
                         displayedText = targetText
-                        ic.setMarkedText(Self.addCursor(displayedText))
+                        textSnapshot.set(displayedText)
+                        ic.setMarkedText(Self.addCursor(displayedText), sessionID: sessionID)
 
                     case .done(let text, let mode):
                         let finalText = text.isEmpty ? targetText : text
                         diag.update { $0.finalText = finalText }
+                        textSnapshot.set(finalText)
 
                         // Snap to final text (no cursor)
-                        ic.setMarkedText(finalText)
+                        ic.setMarkedText(finalText, sessionID: sessionID)
                         await self.finishIME(text: finalText, mode: mode)
                         return
                     }
@@ -396,35 +402,100 @@ actor Session {
 
     // MARK: - Endings
 
-    /// Immediate teardown. No drain, no finalize, no history.
-    func abort() async {
-        logger.info("[\(self.id)] Aborting")
+    func park() async {
+        guard ime == .active else { return }
+        ime = .parked
+        beeLog("SESSION: park id=\(id.uuidString.prefix(8))")
+        await MainActor.run { inputClient.deactivate() }
+    }
 
-        // Stop Channel 0 — capture task will exit and won't send .end
-        audioEngine.stopCapture(for: self.id)
-        // Close downstream channels — ASR and consumer tasks exit
-        ch1?.finish()
+    @discardableResult
+    func resume() async -> Bool {
+        guard ime == .parked else { return true }
+        let activated = await MainActor.run {
+            inputClient.activate(expectedTargetPID: targetProcessID, sessionID: id)
+        }
+        guard activated else {
+            beeLog("SESSION: resume failed id=\(id.uuidString.prefix(8))")
+            return false
+        }
+
+        ime = .active
+        let snapshot = textSnapshot.get()
+        inputClient.setMarkedText(Self.addCursor(snapshot), sessionID: id)
+        beeLog("SESSION: resumed id=\(id.uuidString.prefix(8))")
+        return true
+    }
+
+    func liveText() -> String {
+        textSnapshot.get()
+    }
+
+    /// Immediate commit path for manual typing takeover.
+    /// Skips ASR finalization and commits the latest rendered snapshot.
+    func immediateCommitFromTyping() async {
+        guard !didComplete else { return }
+        beeLog("SESSION: immediate commit id=\(id.uuidString.prefix(8))")
+
+        let text = textSnapshot.get()
         ch2?.finish()
-        capture = .discarded
+        consumerTask?.cancel()
+        await consumerTask?.value
+        consumerTask = nil
 
-        // Wait for all tasks
+        let result: SessionResult
+        if !text.isEmpty {
+            inputClient.commitText(text, sessionID: id)
+            ime = .committed
+            result = .committed(id: id, text: text, submitted: false)
+        } else {
+            inputClient.clearMarkedText(sessionID: id)
+            inputClient.stopDictating(sessionID: id)
+            ime = .cleared
+            result = .cancelled(id: id, text: "")
+        }
+
+        await MainActor.run { inputClient.deactivate() }
+        emitCompletion(result)
+
+        audioEngine.stopCapture(for: self.id)
+        ch1?.finish()
+        captureTask?.cancel()
+        asrTask?.cancel()
         await captureTask?.value
         await asrTask?.value
-        await consumerTask?.value
         captureTask = nil
         asrTask = nil
-        consumerTask = nil
+        capture = .discarded
+        asr = .done
+    }
+
+    /// Immediate teardown. No drain, no finalize, no history.
+    func abort() async {
+        guard !didComplete else { return }
+        logger.info("[\(self.id)] Aborting")
+
+        await terminatePipelines(cancelTasks: true)
+        capture = .discarded
         asr = .done
 
         // IME: deactivate
+        inputClient.stopDictating(sessionID: id)
         await MainActor.run { inputClient.deactivate() }
         ime = .tornDown
 
-        onComplete?(.aborted(id: id))
+        emitCompletion(.aborted(id: id))
     }
 
-    func commit(submit: Bool) async { await end(.commit(submit: submit)) }
-    func cancel() async { await end(.cancel) }
+    func commit(submit: Bool) async {
+        guard !didComplete else { return }
+        await end(.commit(submit: submit))
+    }
+
+    func cancel() async {
+        guard !didComplete else { return }
+        await end(.cancel)
+    }
 
     /// Shared ending flow for commit and cancel.
     ///
@@ -459,6 +530,25 @@ actor Session {
         asrTask = nil
         capture = .delivered
         asr = .done
+    }
+
+    private func terminatePipelines(cancelTasks: Bool) async {
+        audioEngine.stopCapture(for: self.id)
+        ch1?.finish()
+        ch2?.finish()
+
+        if cancelTasks {
+            captureTask?.cancel()
+            asrTask?.cancel()
+            consumerTask?.cancel()
+        }
+
+        await captureTask?.value
+        await asrTask?.value
+        await consumerTask?.value
+        captureTask = nil
+        asrTask = nil
+        consumerTask = nil
     }
 
     // MARK: - Drain
@@ -547,7 +637,7 @@ actor Session {
         switch mode {
         case .commit(let submit):
             if !text.isEmpty {
-                inputClient.commitText(text)
+                inputClient.commitText(text, sessionID: id)
                 try? await Task.sleep(for: .milliseconds(50))
                 await MainActor.run { inputClient.deactivate() }
                 ime = .committed
@@ -557,17 +647,24 @@ actor Session {
                     inputClient.simulateReturn()
                 }
             } else {
+                inputClient.stopDictating(sessionID: id)
                 await MainActor.run { inputClient.deactivate() }
                 ime = .committed
             }
-            onComplete?(.committed(id: id, text: text, submitted: submit))
+            emitCompletion(.committed(id: id, text: text, submitted: submit))
 
         case .cancel:
-            inputClient.clearMarkedText()
+            inputClient.clearMarkedText(sessionID: id)
             await MainActor.run { inputClient.deactivate() }
             ime = .cleared
-            onComplete?(.cancelled(id: id, text: text))
+            emitCompletion(.cancelled(id: id, text: text))
         }
+    }
+
+    private func emitCompletion(_ result: SessionResult) {
+        guard !didComplete else { return }
+        didComplete = true
+        onComplete?(result)
     }
 }
 
@@ -684,6 +781,19 @@ final class DrainSignal: @unchecked Sendable {
 
     func get() -> EndMode? {
         lock.withLock { mode }
+    }
+}
+
+final class SessionTextSnapshot: @unchecked Sendable {
+    private let lock = NSLock()
+    private var text = ""
+
+    func set(_ text: String) {
+        lock.withLock { self.text = text }
+    }
+
+    func get() -> String {
+        lock.withLock { text }
     }
 }
 

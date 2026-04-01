@@ -1,0 +1,11 @@
+{
+  "images" : [
+    { "filename" : "icon_recording_18.png", "idiom" : "mac", "scale" : "1x" },
+    { "filename" : "icon_recording_18@2x.png", "idiom" : "mac", "scale" : "2x" }
+  ],
+  "properties" : {
+    "preserves-vector-representation" : false,
+    "template-rendering-intent" : "original"
+  },
+  "info" : { "author" : "xcode", "version" : 1 }
+}

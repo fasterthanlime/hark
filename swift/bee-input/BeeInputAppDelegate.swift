@@ -18,9 +18,15 @@ class BeeInputAppDelegate: NSObject, NSApplicationDelegate {
     var server: IMKServer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard let connectionName = Bundle.main.infoDictionary?["InputMethodConnectionName"] as? String,
+              let bundleIdentifier = Bundle.main.bundleIdentifier else {
+            beeInputLog("failed to initialize IMKServer: missing bundle metadata")
+            return
+        }
+
         server = IMKServer(
-            name: Bundle.main.infoDictionary!["InputMethodConnectionName"] as! String,
-            bundleIdentifier: Bundle.main.bundleIdentifier!
+            name: connectionName,
+            bundleIdentifier: bundleIdentifier
         )
 
         let dnc = DistributedNotificationCenter.default()
@@ -29,45 +35,66 @@ class BeeInputAppDelegate: NSObject, NSApplicationDelegate {
             forName: NSNotification.Name("fasterthanlime.bee.setMarkedText"),
             object: nil, queue: .main
         ) { notification in
-            guard let text = notification.userInfo?["text"] as? String else { return }
+            guard let text = notification.userInfo?["text"] as? String,
+                  let sessionID = Self.sessionID(from: notification) else { return }
             let hasCtrl = BeeXPCService.shared.controller != nil
-            beeInputLog("RECV setMarkedText: \(text.prefix(40).debugDescription) hasController=\(hasCtrl)")
-            BeeXPCService.shared.setMarkedText(text)
+            beeInputLog(
+                "RECV setMarkedText: \(text.prefix(40).debugDescription) hasController=\(hasCtrl) session=\(sessionID.uuidString.prefix(8))"
+            )
+            BeeXPCService.shared.setMarkedText(text, sessionID: sessionID)
         }
 
         dnc.addObserver(
             forName: NSNotification.Name("fasterthanlime.bee.commitText"),
             object: nil, queue: .main
         ) { notification in
-            guard let text = notification.userInfo?["text"] as? String else { return }
+            guard let text = notification.userInfo?["text"] as? String,
+                  let sessionID = Self.sessionID(from: notification) else { return }
             let submit = notification.userInfo?["submit"] as? Bool ?? false
-            BeeXPCService.shared.commitText(text, submit: submit)
+            BeeXPCService.shared.commitText(text, submit: submit, sessionID: sessionID)
         }
 
         dnc.addObserver(
             forName: NSNotification.Name("fasterthanlime.bee.cancelInput"),
             object: nil, queue: .main
-        ) { _ in
-            BeeXPCService.shared.cancelInput()
+        ) { notification in
+            guard let sessionID = Self.sessionID(from: notification) else { return }
+            BeeXPCService.shared.cancelInput(sessionID: sessionID)
         }
 
         dnc.addObserver(
             forName: NSNotification.Name("fasterthanlime.bee.stopDictating"),
             object: nil, queue: .main
-        ) { _ in
-            BeeXPCService.shared.isDictating = false
-            BeeXPCService.shared.pendingText = nil
-            BeeXPCService.shared.expectedTargetPID = nil
+        ) { notification in
+            guard let sessionID = Self.sessionID(from: notification) else { return }
+            BeeXPCService.shared.stopDictating(sessionID: sessionID)
         }
 
         dnc.addObserver(
-            forName: NSNotification.Name("fasterthanlime.bee.setTargetPID"),
+            forName: NSNotification.Name("fasterthanlime.bee.setSessionContext"),
             object: nil, queue: .main
         ) { notification in
-            let pid = (notification.userInfo?["pid"] as? NSNumber)?.int32Value
-                ?? (notification.userInfo?["pid"] as? Int32)
-            BeeXPCService.shared.expectedTargetPID = pid
-            beeInputLog("setTargetPID: \(pid.map(String.init) ?? "nil")")
+            guard let sessionID = Self.sessionID(from: notification) else { return }
+            let pid: pid_t?
+            if let number = notification.userInfo?["pid"] as? NSNumber {
+                pid = number.int32Value
+            } else if let intValue = notification.userInfo?["pid"] as? Int {
+                pid = pid_t(intValue)
+            } else if let int32Value = notification.userInfo?["pid"] as? Int32 {
+                pid = int32Value
+            } else {
+                pid = nil
+            }
+            BeeXPCService.shared.setSessionContext(sessionID: sessionID, expectedTargetPID: pid)
         }
+    }
+
+    private static func sessionID(from notification: Notification) -> UUID? {
+        guard let raw = notification.userInfo?["sessionID"] as? String,
+              let sessionID = UUID(uuidString: raw) else {
+            beeInputLog("notification missing/invalid sessionID")
+            return nil
+        }
+        return sessionID
     }
 }

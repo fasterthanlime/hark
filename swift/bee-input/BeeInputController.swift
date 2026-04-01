@@ -24,7 +24,7 @@ class BeeInputController: IMKInputController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             guard let self else { return }
             guard BeeXPCService.shared.activeController === self else { return }
-            guard !BeeXPCService.shared.isDictating,
+            guard BeeXPCService.shared.activeSessionID == nil,
                   BeeXPCService.shared.pendingText == nil else {
                 return
             }
@@ -41,35 +41,44 @@ class BeeInputController: IMKInputController {
             BeeXPCService.shared.activeController = nil
         }
 
-        if hadMarkedText && BeeXPCService.shared.isDictating {
+        if hadMarkedText,
+           let sessionID = BeeXPCService.shared.activeSessionID {
             autoCommittedPrefix = currentMarkedText
-            Self.postNotification(Self.imeContextLostNotification)
+            Self.postNotification(
+                Self.imeContextLostNotification,
+                userInfo: ["sessionID": sessionID.uuidString]
+            )
         }
         currentMarkedText = ""
         super.deactivateServer(sender)
     }
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
-        guard let event, event.type == .keyDown, BeeXPCService.shared.isDictating else {
+        guard let event, event.type == .keyDown,
+              let sessionID = BeeXPCService.shared.activeSessionID else {
             return false
         }
 
         switch Int(event.keyCode) {
         case kVK_Return, kVK_ANSI_KeypadEnter:
-            BeeXPCService.shared.isDictating = false
-            Self.postNotification(Self.imeSubmitNotification)
+            Self.postNotification(
+                Self.imeSubmitNotification,
+                userInfo: ["sessionID": sessionID.uuidString]
+            )
             return true
 
         case kVK_Escape:
-            BeeXPCService.shared.isDictating = false
-            Self.postNotification(Self.imeCancelNotification)
+            Self.postNotification(
+                Self.imeCancelNotification,
+                userInfo: ["sessionID": sessionID.uuidString]
+            )
             return true
 
         default:
-            BeeXPCService.shared.isDictating = false
             Self.postNotification(
                 Self.imeUserTypedNotification,
                 userInfo: [
+                    "sessionID": sessionID.uuidString,
                     "keyCode": event.keyCode,
                     "characters": event.characters ?? "",
                 ]

@@ -31,11 +31,16 @@ final class AppState {
     private var consumeNextROptUp = false
     private var activeSessionID: UUID?
     private var activeSessionTargetPID: pid_t?
+    fileprivate var activeSessionTargetAppName: String?
+    fileprivate var activeSessionTargetAppIcon: NSImage?
+    private var isSessionParked = false
     private var distributedObservers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
     private var captureDeviceObservers: [NSObjectProtocol] = []
     private var lastKnownInputDeviceUIDs: Set<String> = []
     private var pendingAudioReconfigureAfterSession = false
+    private var parkedOverlayPanel: NSPanel?
+    private var parkedOverlayPollTask: Task<Void, Never>?
 
     // Shared infrastructure
     let audioEngine: AudioEngine
@@ -62,6 +67,7 @@ final class AppState {
     // Debug
     var debugEnabled = false
     var lastSessionDiag: SessionDiag.Snapshot?
+    var parkedOverlayText = ""
 
     struct InputDeviceInfo: Sendable {
         let uid: String
@@ -136,10 +142,15 @@ final class AppState {
     func handleROptDown() -> Bool {
         switch uiState {
         case .idle:
-            let targetPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            let targetApp = NSWorkspace.shared.frontmostApplication
+            let targetPID = targetApp?.processIdentifier
             let session = createSession(targetProcessID: targetPID)
             activeSessionID = session.id
             activeSessionTargetPID = targetPID
+            activeSessionTargetAppName = targetApp?.localizedName
+            activeSessionTargetAppIcon = targetApp?.icon
+            isSessionParked = false
+            parkedOverlayText = ""
             uiState = .pending(session)
             startPendingTimer(session: session)
             let config = TranscriptionService.SessionConfig(
@@ -325,6 +336,10 @@ final class AppState {
         if activeSessionID == resultID {
             activeSessionID = nil
             activeSessionTargetPID = nil
+            activeSessionTargetAppName = nil
+            activeSessionTargetAppIcon = nil
+            isSessionParked = false
+            hideParkedOverlay()
         }
 
         applyWarmPolicyForCurrentState()
@@ -404,30 +419,34 @@ final class AppState {
         let nc = NSWorkspace.shared.notificationCenter
 
         distributedObservers.append(
-            dnc.addObserver(forName: Self.imeSubmitName, object: nil, queue: .main) { [weak self] _ in
+            dnc.addObserver(forName: Self.imeSubmitName, object: nil, queue: .main) { [weak self] notification in
+                let sessionID = Self.extractSessionID(notification.userInfo)
                 Task { @MainActor in
-                    self?.handleIMESubmit()
+                    self?.handleIMESubmit(sessionID: sessionID)
                 }
             }
         )
         distributedObservers.append(
-            dnc.addObserver(forName: Self.imeCancelName, object: nil, queue: .main) { [weak self] _ in
+            dnc.addObserver(forName: Self.imeCancelName, object: nil, queue: .main) { [weak self] notification in
+                let sessionID = Self.extractSessionID(notification.userInfo)
                 Task { @MainActor in
-                    self?.handleIMECancel()
+                    self?.handleIMECancel(sessionID: sessionID)
                 }
             }
         )
         distributedObservers.append(
-            dnc.addObserver(forName: Self.imeUserTypedName, object: nil, queue: .main) { [weak self] _ in
+            dnc.addObserver(forName: Self.imeUserTypedName, object: nil, queue: .main) { [weak self] notification in
+                let sessionID = Self.extractSessionID(notification.userInfo)
                 Task { @MainActor in
-                    self?.handleIMEUserTyped()
+                    self?.handleIMEUserTyped(sessionID: sessionID)
                 }
             }
         )
         distributedObservers.append(
-            dnc.addObserver(forName: Self.imeContextLostName, object: nil, queue: .main) { [weak self] _ in
+            dnc.addObserver(forName: Self.imeContextLostName, object: nil, queue: .main) { [weak self] notification in
+                let sessionID = Self.extractSessionID(notification.userInfo)
                 Task { @MainActor in
-                    self?.handleIMEContextLost()
+                    self?.handleIMEContextLost(sessionID: sessionID)
                 }
             }
         )
@@ -448,9 +467,23 @@ final class AppState {
                 }
             }
         )
+        workspaceObservers.append(
+            nc.addObserver(
+                forName: NSWorkspace.didTerminateApplicationNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                let terminatedPID = app?.processIdentifier
+                Task { @MainActor in
+                    self?.handleDidTerminateApplication(processIdentifier: terminatedPID)
+                }
+            }
+        )
     }
 
-    private func handleIMESubmit() {
+    private func handleIMESubmit(sessionID: UUID?) {
+        guard isNotificationForActiveSession(sessionID) else { return }
         switch uiState {
         case .pending(let session):
             pendingTimer?.cancel()
@@ -464,7 +497,8 @@ final class AppState {
         }
     }
 
-    private func handleIMECancel() {
+    private func handleIMECancel(sessionID: UUID?) {
+        guard isNotificationForActiveSession(sessionID) else { return }
         switch uiState {
         case .pending(let session):
             pendingTimer?.cancel()
@@ -478,37 +512,33 @@ final class AppState {
         }
     }
 
-    private func handleIMEUserTyped() {
+    private func handleIMEUserTyped(sessionID: UUID?) {
+        guard isNotificationForActiveSession(sessionID) else { return }
         switch uiState {
         case .pending(let session):
-            inputClient.stopDictating()
-            inputClient.clearMarkedText()
             pendingTimer?.cancel()
             transitionToIdle()
             Task { await session.abort() }
         case .pushToTalk(let session), .locked(let session), .lockedOptionHeld(let session):
-            inputClient.stopDictating()
-            inputClient.clearMarkedText()
             transitionToIdle()
-            Task { await session.abort() }
+            Task { await session.immediateCommitFromTyping() }
         case .idle:
             break
         }
     }
 
-    private func handleIMEContextLost() {
+    private func handleIMEContextLost(sessionID: UUID?) {
+        guard isNotificationForActiveSession(sessionID) else { return }
+        if isSessionParked {
+            return
+        }
+
         switch uiState {
         case .pending(let session):
-            inputClient.stopDictating()
-            inputClient.clearMarkedText()
             pendingTimer?.cancel()
-            transitionToIdle()
-            Task { await session.abort() }
+            parkSession(session, reason: "imeContextLost")
         case .pushToTalk(let session), .locked(let session), .lockedOptionHeld(let session):
-            inputClient.stopDictating()
-            inputClient.clearMarkedText()
-            transitionToIdle()
-            Task { await session.abort() }
+            parkSession(session, reason: "imeContextLost")
         case .idle:
             break
         }
@@ -527,20 +557,113 @@ final class AppState {
         }
 
         if processIdentifier == targetPID {
-            // Returned to original target app: reactivate IME and continue.
-            beeLog("SESSION: resumed targetPID=\(targetPID), reactivating IME")
-            _ = inputClient.activate(expectedTargetPID: targetPID)
+            if isSessionParked {
+                beeLog("SESSION: resumed targetPID=\(targetPID)")
+                isSessionParked = false
+                hideParkedOverlay()
+                Task { await session.resume() }
+            }
             return
         }
 
-        // Switched to another app: park session, stop routing IME there.
-        beeLog("SESSION: parked targetPID=\(targetPID), activePID=\(processIdentifier)")
-        inputClient.deactivate()
+        parkSession(session, reason: "appActivated:\(processIdentifier)")
+    }
+
+    private func handleDidTerminateApplication(processIdentifier: pid_t?) {
+        guard let processIdentifier else { return }
+        guard let session = uiState.session else { return }
+        guard activeSessionID == session.id else { return }
+        guard processIdentifier == activeSessionTargetPID else { return }
+
+        beeLog("SESSION: target terminated pid=\(processIdentifier)")
+        transitionToIdle()
+        Task { await session.cancel() }
+    }
+
+    private func parkSession(_ session: Session, reason: String) {
+        guard !isSessionParked else { return }
+        isSessionParked = true
+        beeLog("SESSION: parked id=\(session.id.uuidString.prefix(8)) reason=\(reason)")
+        showParkedOverlay(for: session)
+        Task { await session.park() }
+    }
+
+    private func isNotificationForActiveSession(_ sessionID: UUID?) -> Bool {
+        guard let activeSessionID, let sessionID else { return false }
+        return sessionID == activeSessionID
+    }
+
+    nonisolated private static func extractSessionID(_ userInfo: [AnyHashable: Any]?) -> UUID? {
+        guard let raw = userInfo?["sessionID"] as? String else {
+            return nil
+        }
+        return UUID(uuidString: raw)
     }
 
     private func transitionToIdle() {
         uiState = .idle
         pendingTimer?.cancel()
+        isSessionParked = false
+        hideParkedOverlay()
+    }
+
+    private func showParkedOverlay(for session: Session) {
+        if activeSessionTargetAppName == nil,
+           let targetPID = activeSessionTargetPID,
+           let app = NSRunningApplication(processIdentifier: targetPID) {
+            activeSessionTargetAppName = app.localizedName
+            activeSessionTargetAppIcon = app.icon
+        }
+
+        if parkedOverlayPanel == nil {
+            let panel = NSPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 420, height: 118),
+                styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered,
+                defer: false
+            )
+            panel.isFloatingPanel = true
+            panel.level = .statusBar
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = true
+            panel.ignoresMouseEvents = true
+            panel.hidesOnDeactivate = false
+            panel.contentView = NSHostingView(rootView: ParkedOverlayView(appState: self))
+            positionParkedOverlay(panel)
+            panel.orderFrontRegardless()
+            parkedOverlayPanel = panel
+        } else {
+            parkedOverlayPanel?.orderFrontRegardless()
+        }
+
+        parkedOverlayPollTask?.cancel()
+        parkedOverlayPollTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                guard self.isSessionParked,
+                      self.activeSessionID == session.id else { return }
+                self.parkedOverlayText = await session.liveText()
+                try? await Task.sleep(for: .milliseconds(80))
+            }
+        }
+    }
+
+    private func hideParkedOverlay() {
+        parkedOverlayPollTask?.cancel()
+        parkedOverlayPollTask = nil
+        parkedOverlayPanel?.close()
+        parkedOverlayPanel = nil
+        parkedOverlayText = ""
+    }
+
+    private func positionParkedOverlay(_ panel: NSPanel) {
+        guard let screen = NSScreen.main else { return }
+        let frame = screen.visibleFrame
+        let x = frame.midX - 210
+        let y = frame.maxY - 170
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
     // MARK: - Audio Preferences
@@ -699,4 +822,43 @@ enum ModelStatus: Equatable {
     case loading
     case loaded
     case error(String)
+}
+
+private struct ParkedOverlayView: View {
+    let appState: AppState
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            if let icon = appState.activeSessionTargetAppIcon {
+                Image(nsImage: icon)
+                    .resizable()
+                    .frame(width: 28, height: 28)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            } else {
+                Image(systemName: "app")
+                    .font(.system(size: 22))
+                    .frame(width: 28, height: 28)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Dictating in \(appState.activeSessionTargetAppName ?? "Target App")")
+                    .font(.system(.headline, weight: .semibold))
+                    .lineLimit(1)
+                Text(appState.parkedOverlayText.isEmpty ? "Listening..." : appState.parkedOverlayText)
+                    .font(.system(.body, design: .rounded))
+                    .lineLimit(2)
+                    .foregroundStyle(.primary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(width: 420, height: 118, alignment: .leading)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(.white.opacity(0.2), lineWidth: 0.5)
+        }
+    }
 }
