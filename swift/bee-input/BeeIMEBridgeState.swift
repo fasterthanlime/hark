@@ -2,20 +2,21 @@ import AppKit
 import Carbon
 import Foundation
 
-final class BeeXPCService: NSObject {
+final class BeeIMEBridgeState: NSObject {
     struct SessionStartAck {
         let sessionID: UUID
         let clientPID: pid_t?
         let clientIdentity: String?
     }
 
-    static let shared = BeeXPCService()
+    static let shared = BeeIMEBridgeState()
     private static let beeBundleID = "fasterthanlime.inputmethod.bee"
 
     weak var activeController: BeeInputController?
     private(set) var activeControllerPID: pid_t?
     private(set) var activeClientIdentity: String?
     private(set) var activeSessionID: UUID?
+    private(set) var expectedTargetPID: pid_t?
     var pendingText: String?
     private var acknowledgedSessionID: UUID?
     private var boundClientIdentity: String?
@@ -32,7 +33,7 @@ final class BeeXPCService: NSObject {
         activeSessionID != nil
     }
 
-    func setSessionContext(sessionID: UUID) {
+    func prepareSession(sessionID: UUID, targetPID: pid_t?) {
         let previous = self.activeSessionID
         if previous != sessionID {
             self.pendingText = nil
@@ -41,10 +42,17 @@ final class BeeXPCService: NSObject {
         self.boundClientIdentity = nil
 
         self.activeSessionID = sessionID
+        self.expectedTargetPID = targetPID
         beeInputLog(
-            "setSessionContext: session=\(sessionID.uuidString.prefix(8))"
+            "prepareSession: session=\(sessionID.uuidString.prefix(8)) targetPID=\(targetPID.map(String.init) ?? "nil")"
         )
         self.flushPending()
+    }
+
+    func clearSessionIfMatching(sessionID: UUID) {
+        guard activeSessionID == sessionID else { return }
+        beeInputLog("clearSession: session=\(sessionID.uuidString.prefix(8))")
+        clearSessionState()
     }
 
     /// Called from BeeInputController.activateServer to flush any pending text.
@@ -134,6 +142,7 @@ final class BeeXPCService: NSObject {
 
     private func clearSessionState() {
         activeSessionID = nil
+        expectedTargetPID = nil
         pendingText = nil
         acknowledgedSessionID = nil
         boundClientIdentity = nil
@@ -158,7 +167,7 @@ final class BeeXPCService: NSObject {
     func consumeSessionStartAcknowledgementIfReady() -> SessionStartAck? {
         guard let sessionID = activeSessionID else { return nil }
         guard acknowledgedSessionID != sessionID else { return nil }
-        guard canRouteToCurrentController() else { return nil }
+        guard isSessionReady(sessionID: sessionID) else { return nil }
         acknowledgedSessionID = sessionID
         boundClientIdentity = activeClientIdentity
         return SessionStartAck(
@@ -166,6 +175,18 @@ final class BeeXPCService: NSObject {
             clientPID: activeControllerPID,
             clientIdentity: boundClientIdentity
         )
+    }
+
+    func sessionStatus(sessionID: UUID) -> (ready: Bool, clientPID: pid_t?, clientIdentity: String?) {
+        (isSessionReady(sessionID: sessionID), activeControllerPID, activeClientIdentity)
+    }
+
+    func isSessionReady(sessionID: UUID) -> Bool {
+        guard activeSessionID == sessionID else { return false }
+        guard canRouteToCurrentController() else { return false }
+        guard let expectedTargetPID else { return true }
+        guard let activeControllerPID else { return false }
+        return activeControllerPID == expectedTargetPID
     }
 
     private func canRouteToCurrentController() -> Bool {
@@ -176,7 +197,7 @@ final class BeeXPCService: NSObject {
 
     private func routingDebugInfo() -> String {
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        return "frontmost=\(frontmostPID.map(String.init) ?? "nil") controllerPID=\(activeControllerPID.map(String.init) ?? "nil") clientID=\(activeClientIdentity ?? "nil") boundClientID=\(boundClientIdentity ?? "nil") hasController=\(activeController != nil)"
+        return "frontmost=\(frontmostPID.map(String.init) ?? "nil") controllerPID=\(activeControllerPID.map(String.init) ?? "nil") expectedPID=\(expectedTargetPID.map(String.init) ?? "nil") clientID=\(activeClientIdentity ?? "nil") boundClientID=\(boundClientIdentity ?? "nil") hasController=\(activeController != nil)"
     }
 
     func switchAwayFromBeeInput() {

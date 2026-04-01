@@ -17,7 +17,7 @@ class BeeInputController: IMKInputController {
         super.activateServer(sender)
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let clientIdentity = currentClientIdentity()
-        BeeXPCService.shared.registerActiveController(
+        BeeIMEBridgeState.shared.registerActiveController(
             self,
             clientPID: frontmostPID,
             clientIdentity: clientIdentity
@@ -27,23 +27,23 @@ class BeeInputController: IMKInputController {
             "activateServer: client=\(clientName) clientID=\(clientIdentity ?? "nil") frontmostPID=\(frontmostPID.map(String.init) ?? "nil")"
         )
 
-        guard BeeXPCService.shared.hasActiveSession else {
+        guard BeeIMEBridgeState.shared.hasActiveSession else {
             beeInputLog("activateServer: no app handshake/session, switching away")
-            BeeXPCService.shared.switchAwayFromBeeInput()
+            BeeIMEBridgeState.shared.switchAwayFromBeeInput()
             return
         }
 
-        BeeXPCService.shared.flushPending()
+        BeeIMEBridgeState.shared.flushPending()
         postSessionStartedIfReady()
     }
 
     override func deactivateServer(_ sender: Any!) {
-        beeInputLog("deactivateServer: hadMarkedText=\(!currentMarkedText.isEmpty) isDictating=\(BeeXPCService.shared.isDictating)")
+        beeInputLog("deactivateServer: hadMarkedText=\(!currentMarkedText.isEmpty) isDictating=\(BeeIMEBridgeState.shared.isDictating)")
         let hadMarkedText = !currentMarkedText.isEmpty
-        let isDictating = BeeXPCService.shared.isDictating
-        let sessionID = BeeXPCService.shared.activeSessionID
+        let isDictating = BeeIMEBridgeState.shared.isDictating
+        let sessionID = BeeIMEBridgeState.shared.activeSessionID
 
-        BeeXPCService.shared.unregisterActiveController(self)
+        BeeIMEBridgeState.shared.unregisterActiveController(self)
 
         if isDictating, let sessionID {
             autoCommittedPrefix = currentMarkedText
@@ -61,7 +61,7 @@ class BeeInputController: IMKInputController {
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         guard let event, event.type == .keyDown,
-              let sessionID = BeeXPCService.shared.activeSessionID else {
+              let sessionID = BeeIMEBridgeState.shared.activeSessionID else {
             return false
         }
 
@@ -180,7 +180,7 @@ class BeeInputController: IMKInputController {
     }
 
     private func postSessionStartedIfReady() {
-        guard let ack = BeeXPCService.shared.consumeSessionStartAcknowledgementIfReady() else {
+        guard let ack = BeeIMEBridgeState.shared.consumeSessionStartAcknowledgementIfReady() else {
             return
         }
         var userInfo: [AnyHashable: Any] = ["sessionID": ack.sessionID.uuidString]

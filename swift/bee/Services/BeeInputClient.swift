@@ -2,42 +2,65 @@ import AppKit
 import Carbon
 import Foundation
 
+@objc
+private protocol BeeIMEControlXPC {
+    func prepareSession(_ sessionID: String, targetPID: Int32, withReply reply: @escaping (Bool) -> Void)
+    func sessionStatus(_ sessionID: String, withReply reply: @escaping (Bool, Int32, String) -> Void)
+    func clearSession(_ sessionID: String, withReply reply: @escaping () -> Void)
+}
+
 /// Communicates with the bee-input IME process via distributed notifications.
 final class BeeInputClient: Sendable {
     private static let dnc = DistributedNotificationCenter.default()
     private static let beeBundleID = "fasterthanlime.inputmethod.bee"
+    private static let xpcServiceName = "fasterthanlime.inputmethod.bee.xpc"
+    private static let readyPollIntervalMs: UInt64 = 20
+    private static let readyTimeoutMs: UInt64 = 1200
 
     private static let setMarkedTextName = NSNotification.Name("fasterthanlime.bee.setMarkedText")
     private static let commitTextName = NSNotification.Name("fasterthanlime.bee.commitText")
     private static let cancelInputName = NSNotification.Name("fasterthanlime.bee.cancelInput")
     private static let stopDictatingName = NSNotification.Name("fasterthanlime.bee.stopDictating")
-    private static let setSessionContextName = NSNotification.Name("fasterthanlime.bee.setSessionContext")
 
     nonisolated(unsafe) private static var previousInputSource: TISInputSource?
+    nonisolated(unsafe) private static var xpcConnection: NSXPCConnection?
+    nonisolated(unsafe) private static let xpcLock = NSLock()
 
     // MARK: - Input Source Switching
 
     @discardableResult
-    func activate(sessionID: UUID) -> Bool {
-        let userInfo: [AnyHashable: Any] = [
-            "sessionID": sessionID.uuidString,
-        ]
+    func activate(sessionID: UUID, targetPID: pid_t?) async -> Bool {
+        let prepared = await Self.prepareSessionXPC(sessionID: sessionID, targetPID: targetPID)
+        guard prepared else {
+            beeLog("IME ACTIVATE: prepareSession failed for session=\(sessionID.uuidString.prefix(8))")
+            return false
+        }
 
-        Self.dnc.postNotificationName(
-            Self.setSessionContextName,
-            object: nil,
-            userInfo: userInfo,
-            deliverImmediately: true
-        )
+        let selected = await MainActor.run { Self.selectBeeInputSource() }
+        guard selected else {
+            await Self.clearSessionXPC(sessionID: sessionID)
+            return false
+        }
 
-        guard let beeSource = Self.findBeeInputSource() else {
+        let ready = await Self.awaitSessionReadyXPC(sessionID: sessionID, targetPID: targetPID)
+        if !ready {
+            beeLog("IME ACTIVATE: session ready timeout id=\(sessionID.uuidString.prefix(8))")
+            await Self.clearSessionXPC(sessionID: sessionID)
+            Self.switchAwayFromBeeInputIfNeeded()
+        }
+        return ready
+    }
+
+    @MainActor
+    private static func selectBeeInputSource() -> Bool {
+        guard let beeSource = findBeeInputSource() else {
             beeLog("IME ACTIVATE: bee input source NOT FOUND")
             return false
         }
 
         if let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
-           !Self.isBeeInputSource(current) {
-            Self.previousInputSource = current
+           !isBeeInputSource(current) {
+            previousInputSource = current
         }
 
         let result = TISSelectInputSource(beeSource)
@@ -45,7 +68,6 @@ final class BeeInputClient: Sendable {
         guard result == noErr else {
             return false
         }
-
         return true
     }
 
@@ -139,6 +161,106 @@ final class BeeInputClient: Sendable {
 
     static func restoreInputSourceIfNeeded() {
         switchAwayFromBeeInputIfNeeded()
+    }
+
+    private static func getXPCConnection() -> NSXPCConnection {
+        xpcLock.lock()
+        defer { xpcLock.unlock() }
+        if let connection = xpcConnection {
+            return connection
+        }
+        let connection = NSXPCConnection(machServiceName: xpcServiceName, options: [])
+        connection.remoteObjectInterface = NSXPCInterface(with: BeeIMEControlXPC.self)
+        connection.resume()
+        xpcConnection = connection
+        return connection
+    }
+
+    private static func invalidateXPCConnection() {
+        xpcLock.lock()
+        defer { xpcLock.unlock() }
+        xpcConnection?.invalidate()
+        xpcConnection = nil
+    }
+
+    private static func prepareSessionXPC(sessionID: UUID, targetPID: pid_t?) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let connection = getXPCConnection()
+            let proxy = connection.remoteObjectProxyWithErrorHandler { error in
+                beeLog("IME XPC prepareSession error: \(error.localizedDescription)")
+                invalidateXPCConnection()
+                continuation.resume(returning: false)
+            } as? BeeIMEControlXPC
+
+            guard let proxy else {
+                continuation.resume(returning: false)
+                return
+            }
+
+            proxy.prepareSession(sessionID.uuidString, targetPID: targetPID ?? -1) { ok in
+                continuation.resume(returning: ok)
+            }
+        }
+    }
+
+    private static func sessionStatusXPC(sessionID: UUID) async -> (ready: Bool, clientPID: pid_t?, clientID: String?) {
+        await withCheckedContinuation { continuation in
+            let connection = getXPCConnection()
+            let proxy = connection.remoteObjectProxyWithErrorHandler { error in
+                beeLog("IME XPC sessionStatus error: \(error.localizedDescription)")
+                invalidateXPCConnection()
+                continuation.resume(returning: (false, nil, nil))
+            } as? BeeIMEControlXPC
+
+            guard let proxy else {
+                continuation.resume(returning: (false, nil, nil))
+                return
+            }
+
+            proxy.sessionStatus(sessionID.uuidString) { ready, clientPID, clientID in
+                let pid: pid_t? = clientPID >= 0 ? pid_t(clientPID) : nil
+                let id: String? = clientID.isEmpty ? nil : clientID
+                continuation.resume(returning: (ready, pid, id))
+            }
+        }
+    }
+
+    private static func awaitSessionReadyXPC(sessionID: UUID, targetPID: pid_t?) async -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + (Double(readyTimeoutMs) / 1000.0)
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            let status = await sessionStatusXPC(sessionID: sessionID)
+            if status.ready {
+                beeLog(
+                    "IME ACTIVATE: session ready id=\(sessionID.uuidString.prefix(8)) clientPID=\(status.clientPID.map(String.init) ?? "nil") clientID=\(status.clientID ?? "nil")"
+                )
+                return true
+            }
+            try? await Task.sleep(nanoseconds: readyPollIntervalMs * 1_000_000)
+        }
+        beeLog(
+            "IME ACTIVATE: session not ready id=\(sessionID.uuidString.prefix(8)) targetPID=\(targetPID.map(String.init) ?? "nil")"
+        )
+        return false
+    }
+
+    private static func clearSessionXPC(sessionID: UUID) async {
+        await withCheckedContinuation { continuation in
+            let connection = getXPCConnection()
+            let proxy = connection.remoteObjectProxyWithErrorHandler { error in
+                beeLog("IME XPC clearSession error: \(error.localizedDescription)")
+                invalidateXPCConnection()
+                continuation.resume()
+            } as? BeeIMEControlXPC
+
+            guard let proxy else {
+                continuation.resume()
+                return
+            }
+
+            proxy.clearSession(sessionID.uuidString) {
+                continuation.resume()
+            }
+        }
     }
 
     static func switchAwayFromBeeInputIfNeeded() {

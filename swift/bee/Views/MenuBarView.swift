@@ -19,13 +19,13 @@ struct MenuBarView: View {
             HStack(spacing: 6) {
                 Image(systemName: "mic.fill")
                     .foregroundStyle(.secondary)
-                Text(appState.activeInputDeviceName ?? "No input")
+                Text(activeInputLabel)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .layoutPriority(1)
             }
             .font(.caption)
             .padding(.horizontal, 6)
-            .fixedSize(horizontal: false, vertical: true)
 
             Divider().padding(.horizontal, 2)
 
@@ -78,6 +78,16 @@ struct MenuBarView: View {
         case .lockedOptionHeld:
             return "Listening (option held)"
         }
+    }
+
+    private var activeInputLabel: String {
+        let raw = appState.activeInputDeviceName ?? "No input"
+        return raw
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
     }
 }
 

@@ -25,10 +25,10 @@
 		61BD0331407809E8C17102E8 /* InputMethodKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 44D01D1FC50FBE993FD0716F /* InputMethodKit.framework */; };
 		638D545266F00C866046B177 /* BeeInputAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F54E5F987731158C437D997 /* BeeInputAppDelegate.swift */; };
 		66493E87798EF2D09BC1BC43 /* BeeInputClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AA018C194359C6E4CE7BA63 /* BeeInputClient.swift */; };
+		8811BC0A824B6F88EECA270F /* BeeIMEBridgeState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42C5774A124F08F4B8474598 /* BeeIMEBridgeState.swift */; };
 		89ADF5F490B96085E99E510C /* SoundEffects.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4E52C13C56D37363BA384EF /* SoundEffects.swift */; };
 		A89EB81687A6FFE36871EF8F /* bee-cancel.wav in Resources */ = {isa = PBXBuildFile; fileRef = 37F08633E13558AA02437706 /* bee-cancel.wav */; };
 		ADA9083DFC2A9EDCB6698240 /* AudioPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0BF06C76650D4E68E461F7C /* AudioPipeline.swift */; };
-		C5FD939731D0805250AC95C8 /* BeeXPCService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89A48B33C812878B9AC55B8D /* BeeXPCService.swift */; };
 		CBCFB60C6AD15C7139FA20EF /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 603105EA633577026CEE2CC0 /* README.md */; };
 		D70AC6C318840E971BF24ADB /* HotkeyMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 977266C3895F1E154E74F051 /* HotkeyMonitor.swift */; };
 		DC35DFDBCF6C52FA6E0A690A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5A35BE9759CA9C8519D87363 /* Assets.xcassets */; };
@@ -50,6 +50,7 @@
 		37F08633E13558AA02437706 /* bee-cancel.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "bee-cancel.wav"; sourceTree = "<group>"; };
 		3CCEE7C20F26099D82D42387 /* DebugOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugOverlay.swift; sourceTree = "<group>"; };
 		41126B678A8FDC75629B0B30 /* bee.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = bee.entitlements; sourceTree = "<group>"; };
+		42C5774A124F08F4B8474598 /* BeeIMEBridgeState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeeIMEBridgeState.swift; sourceTree = "<group>"; };
 		44D01D1FC50FBE993FD0716F /* InputMethodKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = InputMethodKit.framework; path = System/Library/Frameworks/InputMethodKit.framework; sourceTree = SDKROOT; };
 		562E4DCCA4CCA0B2CB287B0E /* bee-commit.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "bee-commit.wav"; sourceTree = "<group>"; };
 		5639654E7D993F82C6C5ED91 /* STTModelDefinition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = STTModelDefinition.swift; sourceTree = "<group>"; };
@@ -60,7 +61,6 @@
 		6AEB22F163C305E4983946FF /* beeTemplate.tiff */ = {isa = PBXFileReference; lastKnownFileType = image.tiff; path = beeTemplate.tiff; sourceTree = "<group>"; };
 		7059CA841745C6E21DA830A3 /* BeeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeeApp.swift; sourceTree = "<group>"; };
 		8597D72025F09D1E04C3B095 /* DebugPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugPanel.swift; sourceTree = "<group>"; };
-		89A48B33C812878B9AC55B8D /* BeeXPCService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeeXPCService.swift; sourceTree = "<group>"; };
 		977266C3895F1E154E74F051 /* HotkeyMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyMonitor.swift; sourceTree = "<group>"; };
 		A4E52C13C56D37363BA384EF /* SoundEffects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoundEffects.swift; sourceTree = "<group>"; };
 		ACC2C13E80A8EB858DA92EC7 /* bee.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = bee.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -113,10 +113,10 @@
 			children = (
 				2A7D3D2469CBFB9FF5D9FD91 /* Assets.xcassets */,
 				DCCA3D090BBD0D5701645658 /* bee.tiff */,
+				42C5774A124F08F4B8474598 /* BeeIMEBridgeState.swift */,
 				2F54E5F987731158C437D997 /* BeeInputAppDelegate.swift */,
 				BBB5FE976B1CF01CA031AF66 /* BeeInputController.swift */,
 				6AEB22F163C305E4983946FF /* beeTemplate.tiff */,
-				89A48B33C812878B9AC55B8D /* BeeXPCService.swift */,
 				150E7F5961D4B0D13C2D78C8 /* Info.plist */,
 				C26401964247ABA42B4ADCA3 /* main.swift */,
 			);
@@ -319,9 +319,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				8811BC0A824B6F88EECA270F /* BeeIMEBridgeState.swift in Sources */,
 				638D545266F00C866046B177 /* BeeInputAppDelegate.swift in Sources */,
 				04DA33E6805211526E03587B /* BeeInputController.swift in Sources */,
-				C5FD939731D0805250AC95C8 /* BeeXPCService.swift in Sources */,
 				16DED771E26A5CA7CBBDC636 /* main.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
