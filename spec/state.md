@@ -4,6 +4,11 @@ Bee is a push-to-talk dictation tool for macOS. It runs entirely on-device,
 captures audio, streams it through an ASR model, and inserts the resulting
 text into the frontmost application via a custom IME.
 
+> h[spec.source-of-truth]
+> This file is the source of truth for Bee state management and IME behavior.
+> Any older IME design notes are non-authoritative and MUST NOT override this
+> spec.
+
 ## Architecture
 
 There are two layers:
@@ -143,6 +148,16 @@ UI doesn't know yet whether this is a real activation.
 > h[ui.pending-abort]
 > If any other key is pressed while in Pending: abort the session,
 > transition to Idle. The other key MUST be passed through to the app.
+
+> h[ui.pending-ime-confirmation]
+> Pending is also the IME-start handshake window. Bee may capture audio while
+> pending, but recording is not considered confirmed until the IME start
+> acknowledgement is received for the current session.
+
+> h[ui.pending-ime-timeout]
+> If IME start acknowledgement is not received within the configured startup
+> timeout budget, Bee MUST abort the session, transition to Idle, and play the
+> start-failure sound. It MUST NOT continue dictating in an unconfirmed state.
 
 | Event | Swallowed? | Effect |
 |---|---|---|
@@ -426,8 +441,10 @@ the OS gives it.
 #### Bee's IME design
 
 Bee uses a custom input method (beeInput) for text insertion. The bee app
-and beeInput are separate processes that communicate via distributed
-notifications.
+and beeInput are separate processes. The control-plane transport for start/
+ack lifecycle is XPC. (Distributed notifications may still be used for legacy
+or transitional event wiring, but authoritative session-start coordination is
+XPC request/reply.)
 
 The IME layer manages text insertion via the beeInput InputMethodKit IME.
 
@@ -437,6 +454,19 @@ The IME layer manages text insertion via the beeInput InputMethodKit IME.
 > `activateServer` fires asynchronously (15–150ms later), the initial
 > marked text (🐝 cursor) is queued and delivered when the controller
 > activates.
+
+> h[ime.start-two-phase]
+> IME startup is a two-phase handshake:
+> 1) app requests session association with IME (session ID + target identity),
+> 2) app selects beeInput source,
+> 3) IME replies with start acknowledgement bound to a concrete active client.
+> The session is not active until step (3) succeeds for the current session.
+
+> h[ime.start-no-early-effects]
+> Before IME start acknowledgement:
+> - no recording-confirmed sound,
+> - no transition from Pending to PushToTalk/Locked,
+> - no user-visible IME rendering beyond queued placeholder behavior.
 
 > h[ime.per-app-controller]
 > InputMethodKit creates one controller per application, not per window.
@@ -507,8 +537,10 @@ The IME layer manages text insertion via the beeInput InputMethodKit IME.
 > main app.
 
 > h[ime.communication]
-> The main app communicates with the IME via distributed notifications:
-> setMarkedText, commitText, cancelInput, stopDictating.
+> The main app communicates with the IME through:
+> - XPC for start/ack/control-plane lifecycle,
+> - IME text/control events (`setMarkedText`, `commitText`, `cancelInput`,
+>   `stopDictating`) during the rendering lifecycle.
 
 ## Hotkey
 
@@ -577,6 +609,10 @@ active session. These cases must be handled gracefully.
 > h[sounds.recording-started]
 > A sound plays when recording is confirmed (transition from Pending to
 > PushToTalk or Locked). No sound plays if the activation is aborted.
+
+> h[sounds.start-failure]
+> If IME start association fails or times out, Bee plays a distinct
+> start-failure sound and returns to Idle.
 
 > h[sounds.commit]
 > A sound plays when a session commit completes (text has been inserted).
@@ -690,6 +726,6 @@ may live elsewhere in the pipeline).
 **Spectrum visualization.** The old overlay had a real-time 6-band FFT
 spectrum analyzer. This is removed along with the floating overlay.
 
-**XPC connection to IME.** The old app had both distributed notifications
-and an XPC mach service for communicating with the IME. XPC was unused.
-We keep distributed notifications only.
+**Unused legacy XPC stubs.** The old app carried partial XPC scaffolding
+that was not the active startup contract. The current spec makes XPC the
+authoritative control-plane transport for IME session start/ack.
