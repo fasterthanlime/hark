@@ -2,8 +2,9 @@ import { useState } from "react";
 import "./index.css";
 import { LiveEvalPanel } from "./components/LiveEvalPanel";
 import { HumanEvalPanel } from "./components/HumanEvalPanel";
+import { RetrievalDebugPanel } from "./components/RetrievalDebugPanel";
 
-type Tab = "live" | "human";
+type Tab = "live" | "human" | "retrieval";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("live");
@@ -34,10 +35,22 @@ export default function App() {
           >
             Human Eval
           </button>
+          <button
+            className={tab === "retrieval" ? "primary" : ""}
+            onClick={() => setTab("retrieval")}
+          >
+            Retrieval
+          </button>
         </nav>
       </header>
       <main style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-        {tab === "live" ? <LiveEvalPanel /> : <HumanEvalPanel />}
+        {tab === "live" ? (
+          <LiveEvalPanel />
+        ) : tab === "human" ? (
+          <HumanEvalPanel />
+        ) : (
+          <RetrievalDebugPanel />
+        )}
       </main>
     </div>
   );

@@ -6,6 +6,7 @@ import type {
   TimedToken,
   SentenceCandidate,
   Reranker,
+  RetrievalDebugResult,
 } from "./types";
 
 // --- Raw backend shapes (private, normalized immediately) ---
@@ -89,6 +90,52 @@ type RawBakeoffResult = {
     both_wrong: number;
   };
   entries: RawBakeoffEntry[];
+};
+
+type RawRetrievalCandidate = {
+  alias_id: number;
+  term: string;
+  alias_text: string;
+  alias_source: string;
+  matched_view: string;
+  qgram_overlap: number;
+  token_count_match?: boolean;
+  phone_count_delta: number;
+  coarse_score: number;
+  phonetic_score?: number;
+};
+
+type RawRetrievalDebugResponse = {
+  ok: boolean;
+  transcript: string;
+  summary: {
+    alias_count: number;
+    returned_spans: number;
+    max_span_words: number;
+    max_candidates_per_span: number;
+  };
+  timing: {
+    db_ms: number;
+    lexicon_ms: number;
+    index_ms: number;
+    span_enumeration_ms: number;
+    shortlist_ms: number;
+    verify_ms: number;
+    total_ms: number;
+  };
+  spans: {
+    token_start: number;
+    token_end: number;
+    char_start: number;
+    char_end: number;
+    start_sec?: number | null;
+    end_sec?: number | null;
+    text: string;
+    ipa_tokens: string[];
+    reduced_ipa_tokens: string[];
+    shortlist: RawRetrievalCandidate[];
+    verified: RawRetrievalCandidate[];
+  }[];
 };
 
 // --- Normalization ---
@@ -239,6 +286,57 @@ function normalizeBakeoffResult(raw: RawBakeoffResult): BakeoffResult {
   };
 }
 
+function normalizeRetrievalCandidate(raw: RawRetrievalCandidate) {
+  return {
+    aliasId: raw.alias_id,
+    term: raw.term,
+    aliasText: raw.alias_text,
+    aliasSource: raw.alias_source,
+    matchedView: raw.matched_view,
+    qgramOverlap: raw.qgram_overlap,
+    tokenCountMatch: raw.token_count_match,
+    phoneCountDelta: raw.phone_count_delta,
+    coarseScore: raw.coarse_score,
+    phoneticScore: raw.phonetic_score,
+  };
+}
+
+function normalizeRetrievalDebugResponse(
+  raw: RawRetrievalDebugResponse,
+): RetrievalDebugResult {
+  return {
+    transcript: raw.transcript,
+    summary: {
+      aliasCount: raw.summary.alias_count,
+      returnedSpans: raw.summary.returned_spans,
+      maxSpanWords: raw.summary.max_span_words,
+      maxCandidatesPerSpan: raw.summary.max_candidates_per_span,
+    },
+    timing: {
+      dbMs: raw.timing.db_ms,
+      lexiconMs: raw.timing.lexicon_ms,
+      indexMs: raw.timing.index_ms,
+      spanEnumerationMs: raw.timing.span_enumeration_ms,
+      shortlistMs: raw.timing.shortlist_ms,
+      verifyMs: raw.timing.verify_ms,
+      totalMs: raw.timing.total_ms,
+    },
+    spans: raw.spans.map((span) => ({
+      tokenStart: span.token_start,
+      tokenEnd: span.token_end,
+      charStart: span.char_start,
+      charEnd: span.char_end,
+      startSec: span.start_sec,
+      endSec: span.end_sec,
+      text: span.text,
+      ipaTokens: span.ipa_tokens,
+      reducedIpaTokens: span.reduced_ipa_tokens,
+      shortlist: span.shortlist.map(normalizeRetrievalCandidate),
+      verified: span.verified.map(normalizeRetrievalCandidate) as RetrievalDebugResult["spans"][number]["verified"],
+    })),
+  };
+}
+
 // --- API calls ---
 
 async function post<T>(url: string, body: unknown): Promise<T> {
@@ -351,6 +449,24 @@ export async function bakeoffDetail(params: {
     },
   );
   return normalizeDetailResponse(raw);
+}
+
+export async function phoneticRetrievalDebug(params: {
+  transcript: string;
+  maxSpanWords?: number;
+  maxCandidatesPerSpan?: number;
+  maxSpans?: number;
+}): Promise<RetrievalDebugResult> {
+  const raw = await post<RawRetrievalDebugResponse>(
+    "/api/correct-prototype/retrieval-debug",
+    {
+      transcript: params.transcript,
+      max_span_words: params.maxSpanWords,
+      max_candidates_per_span: params.maxCandidatesPerSpan,
+      max_spans: params.maxSpans,
+    },
+  );
+  return normalizeRetrievalDebugResponse(raw);
 }
 
 /** Audio URL for a human eval recording */

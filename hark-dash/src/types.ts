@@ -151,3 +151,55 @@ export type Job = {
   createdAt: string;
   finishedAt?: string | null;
 };
+
+export type RetrievalCandidate = {
+  aliasId: number;
+  term: string;
+  aliasText: string;
+  aliasSource: string;
+  matchedView: string;
+  qgramOverlap: number;
+  tokenCountMatch?: boolean;
+  phoneCountDelta: number;
+  coarseScore: number;
+};
+
+export type VerifiedRetrievalCandidate = RetrievalCandidate & {
+  phoneticScore: number;
+};
+
+export type RetrievalDebugSpan = {
+  tokenStart: number;
+  tokenEnd: number;
+  charStart: number;
+  charEnd: number;
+  startSec?: number | null;
+  endSec?: number | null;
+  text: string;
+  ipaTokens: string[];
+  reducedIpaTokens: string[];
+  shortlist: RetrievalCandidate[];
+  verified: VerifiedRetrievalCandidate[];
+};
+
+export type RetrievalDebugTiming = {
+  dbMs: number;
+  lexiconMs: number;
+  indexMs: number;
+  spanEnumerationMs: number;
+  shortlistMs: number;
+  verifyMs: number;
+  totalMs: number;
+};
+
+export type RetrievalDebugResult = {
+  transcript: string;
+  summary: {
+    aliasCount: number;
+    returnedSpans: number;
+    maxSpanWords: number;
+    maxCandidatesPerSpan: number;
+  };
+  timing: RetrievalDebugTiming;
+  spans: RetrievalDebugSpan[];
+};
