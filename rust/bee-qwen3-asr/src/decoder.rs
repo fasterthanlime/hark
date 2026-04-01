@@ -131,7 +131,7 @@ impl TextAttention {
     }
 
     fn forward_attn(
-        &mut self,
+        &self,
         x: &Array,
         cos: &Array,
         sin: &Array,
@@ -289,7 +289,7 @@ impl TextDecoderLayer {
     }
 
     fn forward_layer(
-        &mut self,
+        &self,
         x: &Array,
         cos: &Array,
         sin: &Array,
@@ -368,7 +368,7 @@ impl TextDecoder {
     }
 
     pub fn forward_decoder(
-        &mut self,
+        &self,
         input_ids: Option<&Array>,
         inputs_embeds: Option<&Array>,
         position_ids: &Array,

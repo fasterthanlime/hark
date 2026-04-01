@@ -58,14 +58,14 @@ impl Qwen3ASRModel {
 
     /// Encode audio mel spectrogram into features.
     /// mel: (n_mels, n_frames). Returns (n_tokens, output_dim).
-    pub fn encode_audio(&mut self, mel: &Array) -> Result<Array, Exception> {
+    pub fn encode_audio(&self, mel: &Array) -> Result<Array, Exception> {
         self.audio_tower.encode(mel)
     }
 
     /// Prefill: process prompt with injected audio features, populate KV cache.
     /// Returns logits for the last position.
     pub fn prefill(
-        &mut self,
+        &self,
         input_ids: &Array,
         audio_features: &Array,
         position_ids: &Array,
@@ -90,7 +90,7 @@ impl Qwen3ASRModel {
 
     /// Single autoregressive step with KV cache.
     pub fn step(
-        &mut self,
+        &self,
         input_ids: &Array,
         position_ids: &Array,
         cache: &mut Option<KVCache>,
@@ -108,7 +108,7 @@ impl Qwen3ASRModel {
 
     /// Incremental audio encoding for streaming (uses encoder cache).
     pub fn encode_incremental(
-        &mut self,
+        &self,
         mel: &Array,
         cache: &mut crate::encoder::EncoderCache,
     ) -> Result<Array, Exception> {

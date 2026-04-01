@@ -173,7 +173,7 @@ impl AudioEncoderLayer {
         })
     }
 
-    fn forward_with_mask(&mut self, x: &Array, mask: Option<&Array>) -> Result<Array, Exception> {
+    fn forward_with_mask(&self, x: &Array, mask: Option<&Array>) -> Result<Array, Exception> {
         // Self-attention (pre-norm)
         let normed = self.self_attn_layer_norm.forward(x)?;
         let attn_out = self
@@ -296,7 +296,7 @@ impl AudioEncoder {
     }
 
     /// Encode a mel spectrogram. Input: (n_mels, n_frames). Output: (n_tokens, output_dim).
-    pub fn encode(&mut self, mel: &Array) -> Result<Array, Exception> {
+    pub fn encode(&self, mel: &Array) -> Result<Array, Exception> {
         let total_frames = mel.shape()[1] as usize;
         let chunk_size = self.config.n_window * 2;
         let n_window_infer = self.config.n_window_infer;
@@ -388,7 +388,7 @@ impl AudioEncoder {
         let mut x = ops::expand_dims(&x, 0)?;
 
         if num_windows >= WINDOWED_SEGMENT_MIN_WINDOWS {
-            for layer in &mut self.layers {
+            for layer in &self.layers {
                 let mut parts: Vec<Array> = Vec::new();
                 for w in 0..num_windows {
                     let s = cu_seqlens[w] as i32;
@@ -401,7 +401,7 @@ impl AudioEncoder {
             }
         } else {
             let mask = create_windowed_mask(total_tokens, &cu_seqlens);
-            for layer in &mut self.layers {
+            for layer in &self.layers {
                 x = layer.forward_with_mask(&x, mask.as_ref())?;
             }
         }
@@ -418,7 +418,7 @@ impl AudioEncoder {
         Ok(x) // (total_tokens, output_dim)
     }
 
-    fn apply_conv_stem(&mut self, x: &Array) -> Result<Array, Exception> {
+    fn apply_conv_stem(&self, x: &Array) -> Result<Array, Exception> {
         let x = self.conv2d1.forward(x)?;
         let x = nn::gelu(&x)?;
         let x = self.conv2d2.forward(&x)?;
@@ -469,7 +469,7 @@ impl AudioEncoder {
     /// only re-encodes the current (incomplete) window.
     /// Returns (total_tokens, output_dim).
     pub fn encode_incremental(
-        &mut self,
+        &self,
         mel: &Array,
         cache: &mut EncoderCache,
     ) -> Result<Array, Exception> {
@@ -527,7 +527,7 @@ impl AudioEncoder {
     /// Encode a single complete attention window (chunks_per_window full chunks).
     /// Returns (window_tokens, output_dim) with output projection applied.
     fn encode_window(
-        &mut self,
+        &self,
         mel: &Array,
         chunk_size: usize,
         win_idx: usize,
@@ -542,7 +542,7 @@ impl AudioEncoder {
     /// Encode a section of mel spectrogram through the full pipeline:
     /// conv stem → conv_out → sinusoidal PE → transformer → output projection.
     /// Input: (n_mels, n_frames). Output: (n_tokens, output_dim).
-    fn encode_section(&mut self, mel: &Array) -> Result<Array, Exception> {
+    fn encode_section(&self, mel: &Array) -> Result<Array, Exception> {
         let total_frames = mel.shape()[1] as usize;
         let chunk_size = self.config.n_window * 2;
 
@@ -609,7 +609,7 @@ impl AudioEncoder {
 
         // Transformer (no windowed mask — this is a single section)
         let mut x = ops::expand_dims(&x, 0)?;
-        for layer in &mut self.layers {
+        for layer in &self.layers {
             x = layer.forward_with_mask(&x, None)?;
         }
         let x = x.index((0, ..));

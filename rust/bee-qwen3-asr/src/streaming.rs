@@ -306,7 +306,7 @@ fn tokenize_to_i32(tokenizer: &tokenizers::Tokenizer, text: &str) -> Vec<i32> {
 // ── Public API ──────────────────────────────────────────────────────────
 
 pub fn feed_audio(
-    model: &mut Qwen3ASRModel,
+    model: &Qwen3ASRModel,
     state: &mut StreamingState,
     samples: &[f32],
 ) -> Result<Option<String>, Exception> {
@@ -314,7 +314,7 @@ pub fn feed_audio(
 }
 
 pub fn feed_audio_finalizing(
-    model: &mut Qwen3ASRModel,
+    model: &Qwen3ASRModel,
     state: &mut StreamingState,
     samples: &[f32],
 ) -> Result<Option<String>, Exception> {
@@ -322,7 +322,7 @@ pub fn feed_audio_finalizing(
 }
 
 pub fn finish_streaming(
-    model: &mut Qwen3ASRModel,
+    model: &Qwen3ASRModel,
     state: &mut StreamingState,
 ) -> Result<String, Exception> {
     match state.options.mode {
@@ -336,7 +336,7 @@ pub fn finish_streaming(
 // ── Feed dispatch ───────────────────────────────────────────────────────
 
 fn feed_audio_inner(
-    model: &mut Qwen3ASRModel,
+    model: &Qwen3ASRModel,
     state: &mut StreamingState,
     samples: &[f32],
     finalizing: bool,
@@ -376,7 +376,7 @@ fn feed_audio_inner(
 // ── Mode: Accumulate ────────────────────────────────────────────────────
 
 fn feed_accumulate(
-    model: &mut Qwen3ASRModel,
+    model: &Qwen3ASRModel,
     state: &mut StreamingState,
     finalizing: bool,
 ) -> Result<Option<String>, Exception> {
@@ -410,7 +410,7 @@ fn feed_accumulate(
 }
 
 fn run_accumulate_step(
-    model: &mut Qwen3ASRModel,
+    model: &Qwen3ASRModel,
     state: &mut StreamingState,
     max_new_tokens: usize,
 ) -> Result<(), Exception> {
@@ -511,7 +511,7 @@ fn run_accumulate_step(
 }
 
 fn finish_accumulate(
-    model: &mut Qwen3ASRModel,
+    model: &Qwen3ASRModel,
     state: &mut StreamingState,
 ) -> Result<String, Exception> {
     if !state.buffer.is_empty() {
@@ -576,7 +576,7 @@ fn combine_prefix_and_generated(state: &StreamingState, generated: &[i32]) -> Ve
 // ── Mode: Overlap ───────────────────────────────────────────────────────
 
 fn feed_overlap(
-    model: &mut Qwen3ASRModel,
+    model: &Qwen3ASRModel,
     state: &mut StreamingState,
     finalizing: bool,
 ) -> Result<Option<String>, Exception> {
@@ -647,7 +647,7 @@ fn feed_overlap(
 }
 
 fn finish_overlap(
-    model: &mut Qwen3ASRModel,
+    model: &Qwen3ASRModel,
     state: &mut StreamingState,
 ) -> Result<String, Exception> {
     if state.buffer.is_empty() {
@@ -738,7 +738,7 @@ fn append_chunk_text(current: &str, addition: &str) -> String {
 // ── Mode: Rotate ────────────────────────────────────────────────────────
 
 fn feed_rotate(
-    model: &mut Qwen3ASRModel,
+    model: &Qwen3ASRModel,
     state: &mut StreamingState,
     finalizing: bool,
 ) -> Result<Option<String>, Exception> {
@@ -933,7 +933,7 @@ fn feed_rotate(
 /// TODO: replace with forced aligner for precise word-level timestamps.
 // ── Mode: RotateCached ──────────────────────────────────────────────────
 fn feed_rotate_cached(
-    model: &mut Qwen3ASRModel,
+    model: &Qwen3ASRModel,
     state: &mut StreamingState,
     finalizing: bool,
 ) -> Result<Option<String>, Exception> {

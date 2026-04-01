@@ -92,7 +92,7 @@ impl ForcedAligner {
 
     /// Run forced alignment: given audio samples and known text, produce word-level timestamps.
     pub fn align(
-        &mut self,
+        &self,
         samples: &[f32],
         text: &str,
     ) -> Result<Vec<ForcedAlignItem>, Exception> {

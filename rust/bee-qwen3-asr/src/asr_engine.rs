@@ -66,20 +66,20 @@ impl AsrEngine {
         })
     }
 
-    pub fn transcribe_wav(&mut self, wav_bytes: &[u8]) -> Result<String> {
+    pub fn transcribe_wav(&self, wav_bytes: &[u8]) -> Result<String> {
         let samples = decode_wav_to_f32_16k_mono(wav_bytes)?;
         self.transcribe_samples(&samples)
     }
 
     pub fn transcribe_wav_with_alignments(
-        &mut self,
+        &self,
         wav_bytes: &[u8],
     ) -> Result<(String, Vec<ForcedAlignItem>)> {
         let samples = decode_wav_to_f32_16k_mono(wav_bytes)?;
         self.transcribe_samples_with_alignments(&samples)
     }
 
-    pub fn transcribe_samples(&mut self, samples: &[f32]) -> Result<String> {
+    pub fn transcribe_samples(&self, samples: &[f32]) -> Result<String> {
         let (mel_data, n_mels, n_frames) = self
             .mel_extractor
             .extract(samples)
@@ -128,7 +128,7 @@ impl AsrEngine {
             .context("building position ids")?;
 
         let output_tokens = generate::generate(
-            &mut self.model,
+            &self.model,
             input_ids,
             &audio_features,
             &position_ids,
@@ -146,11 +146,11 @@ impl AsrEngine {
     }
 
     pub fn transcribe_samples_with_alignments(
-        &mut self,
+        &self,
         samples: &[f32],
     ) -> Result<(String, Vec<ForcedAlignItem>)> {
         let text = self.transcribe_samples(samples)?;
-        let alignments = if let Some(aligner) = &mut self.aligner {
+        let alignments = if let Some(aligner) = &self.aligner {
             aligner.align(samples, &text)?
         } else {
             Vec::new()

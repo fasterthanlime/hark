@@ -21,7 +21,7 @@ pub const TOK_NEWLINE: i32 = 198;
 
 /// Greedy autoregressive generation (batch mode, fresh cache).
 pub fn generate(
-    model: &mut Qwen3ASRModel,
+    model: &Qwen3ASRModel,
     input_ids: &Array,
     audio_features: &Array,
     position_ids: &Array,
@@ -141,7 +141,7 @@ pub fn build_followup_prompt(
 /// each non-EOS generated token that was stepped through. EOS tokens are
 /// NOT added to the cache (matching the Python reference).
 pub fn prefill_and_decode(
-    model: &mut Qwen3ASRModel,
+    model: &Qwen3ASRModel,
     prompt_tokens: &[i32],
     audio_features: &Array,
     cache: &mut Option<KVCache>,
