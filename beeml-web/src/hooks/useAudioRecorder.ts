@@ -39,6 +39,28 @@ function monoSamplesToWav(samples: Float32Array, sampleRate: number): ArrayBuffe
   return buf;
 }
 
+function resampleMonoLinear(
+  input: Float32Array,
+  inputRate: number,
+  outputRate: number,
+): Float32Array {
+  if (inputRate === outputRate) {
+    return input;
+  }
+  const ratio = inputRate / outputRate;
+  const outLen = Math.max(1, Math.round(input.length / ratio));
+  const out = new Float32Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const pos = i * ratio;
+    const idx = Math.floor(pos);
+    const frac = pos - idx;
+    const a = input[idx] ?? input[input.length - 1] ?? 0;
+    const b = input[idx + 1] ?? a;
+    out[i] = a + (b - a) * frac;
+  }
+  return out;
+}
+
 export function useAudioRecorder() {
   const [state, setState] = useState<RecorderState>("idle");
   const ctxRef = useRef<AudioContext | null>(null);
@@ -115,8 +137,8 @@ export function useAudioRecorder() {
         offset += chunk.length;
       }
 
-      // Encode as proper WAV
-      const wavBuf = monoSamplesToWav(mono, sampleRate);
+      const mono16k = resampleMonoLinear(mono, sampleRate, 16000);
+      const wavBuf = monoSamplesToWav(mono16k, 16000);
       const blob = new Blob([wavBuf], { type: "audio/wav" });
 
       ctxRef.current = null;

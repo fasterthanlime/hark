@@ -3,15 +3,25 @@ name = "beeml"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["server"]
+server = ["dep:bee-asr", "dep:tokio", "dep:vox-core", "dep:vox-websocket"]
+
 [[bin]]
 name = "beeml"
 path = "src/main.rs"
+required-features = ["server"]
+
+[[bin]]
+name = "gen-ts-api"
+path = "src/bin/gen-ts-api.rs"
 
 [dependencies]
 bee-phonetic = { path = "../bee-phonetic" }
-bee-asr = { path = "../bee-asr" }
+bee-asr = { path = "../bee-asr", optional = true }
 anyhow = { workspace = true }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"], optional = true }
 vox = { path = "../../../vox/rust/vox", default-features = false, features = ["runtime"] }
-vox-core = { path = "../../../vox/rust/vox-core" }
-vox-websocket = { path = "../../../vox/rust/vox-websocket" }
+vox-core = { path = "../../../vox/rust/vox-core", optional = true }
+vox-websocket = { path = "../../../vox/rust/vox-websocket", optional = true }
+vox-codegen = { path = "../../../vox/rust/vox-codegen" }

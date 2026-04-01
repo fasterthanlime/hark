@@ -1,12 +1,20 @@
 {
   "name": "beehive",
-  "private": true,
   "version": "0.0.0",
+  "private": true,
   "type": "module",
   "scripts": {
+    "gen:vox-api": "cargo run --manifest-path ../Cargo.toml -p beeml --bin gen-ts-api --no-default-features -- ./src/beeml.generated.ts",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview"
+  },
+  "dependencies": {
+    "@bearcove/vox-core": "^0.2.0",
+    "@bearcove/vox-postcard": "^0.2.0",
+    "@bearcove/vox-ws": "^0.2.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
   },
   "devDependencies": {
     "@types/react": "^19.2.14",
@@ -14,9 +22,5 @@
     "@vitejs/plugin-react": "^6.0.1",
     "typescript": "~5.9.3",
     "vite": "^8.0.1"
-  },
-  "dependencies": {
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4"
   }
 }

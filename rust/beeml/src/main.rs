@@ -4,14 +4,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use bee_asr::AsrEngine;
+use beeml::rpc::BeeMl;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use vox::Caller;
-
-#[vox::service]
-pub trait BeeMl {
-    async fn transcribe_wav(&self, wav_bytes: Vec<u8>) -> Result<String, String>;
-}
 
 #[derive(Clone)]
 struct BeeMlService {
@@ -67,7 +63,7 @@ async fn main() -> Result<()> {
             };
 
             let establish = vox_core::acceptor_on(link)
-                .establish::<vox_core::DriverCaller>(BeeMlDispatcher::new(handler))
+                .establish::<vox_core::DriverCaller>(beeml::rpc::BeeMlDispatcher::new(handler))
                 .await;
 
             match establish {
