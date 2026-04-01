@@ -53,7 +53,6 @@ private final class BeeAppControlSink: NSObject, BeeBrokerPeerXPC {
         )
     }
 
-    func handlePrepareSession(_ sessionID: String, targetPID: Int32, activationID: String) {}
     func handleClearSession(_ sessionID: String) {}
     func handleSetMarkedText(_ sessionID: String, text: String) {}
     func handleCommitText(_ sessionID: String, text: String, submit: Bool) {}

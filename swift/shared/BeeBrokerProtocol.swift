@@ -13,6 +13,12 @@ protocol BeeBrokerXPC {
         withReply reply: @escaping (Bool) -> Void
     )
     func sessionStatus(_ sessionID: String, withReply reply: @escaping (Bool, Int32, String) -> Void)
+    func claimPreparedSession(
+        clientPID: Int32,
+        clientID: String,
+        imeInstanceID: String,
+        withReply reply: @escaping (Bool, String, Int32, String) -> Void
+    )
     func clearSession(_ sessionID: String, appInstanceID: String, withReply reply: @escaping () -> Void)
 
     func setMarkedText(
@@ -58,7 +64,6 @@ protocol BeeBrokerXPC {
 @objc
 protocol BeeBrokerPeerXPC {
     // App -> IME forwarded commands.
-    func handlePrepareSession(_ sessionID: String, targetPID: Int32, activationID: String)
     func handleClearSession(_ sessionID: String)
     func handleSetMarkedText(_ sessionID: String, text: String)
     func handleCommitText(_ sessionID: String, text: String, submit: Bool)

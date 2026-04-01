@@ -18,6 +18,7 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
         var appInstanceID: String
         var targetPID: Int32?
         var activationID: String
+        var order: UInt64
         var ready: Bool
         var clientPID: Int32?
         var clientID: String?
@@ -28,6 +29,7 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
     private var imeConnections: [String: NSXPCConnection] = [:]
     private var sessions: [String: SessionState] = [:]
     private var activeIMEInstanceID: String?
+    private var sequence: UInt64 = 0
 
     private func appProxy(_ appInstanceID: String) -> BeeBrokerPeerXPC? {
         guard let conn = appConnections[appInstanceID] else { return nil }
@@ -64,20 +66,6 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
             self.imeConnections[imeInstanceID] = conn
             self.activeIMEInstanceID = imeInstanceID
             brokerLog("imeHello: id=\(imeInstanceID.prefix(8))")
-
-            // Replay any pending sessions so IME can catch up after connecting late.
-            if let ime = self.imeProxy() {
-                for (sessionID, state) in self.sessions where !state.ready {
-                    ime.handlePrepareSession(
-                        sessionID,
-                        targetPID: state.targetPID ?? -1,
-                        activationID: state.activationID
-                    )
-                    brokerLog(
-                        "imeHello: replay prepare session=\(sessionID.prefix(8)) targetPID=\(state.targetPID.map(String.init) ?? "nil")"
-                    )
-                }
-            }
             reply(true)
         }
     }
@@ -101,21 +89,15 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
                 appInstanceID: appInstanceID,
                 targetPID: targetPID >= 0 ? targetPID : nil,
                 activationID: activationID,
+                order: self.sequence &+ 1,
                 ready: false,
                 clientPID: nil,
                 clientID: nil
             )
-
-            if let ime = self.imeProxy() {
-                brokerLog(
-                    "prepareSession: id=\(sessionID.prefix(8)) targetPID=\(targetPID >= 0 ? String(targetPID) : "nil") dispatch=immediate"
-                )
-                ime.handlePrepareSession(sessionID, targetPID: targetPID, activationID: activationID)
-            } else {
-                brokerLog(
-                    "prepareSession: id=\(sessionID.prefix(8)) targetPID=\(targetPID >= 0 ? String(targetPID) : "nil") dispatch=queued (no IME yet)"
-                )
-            }
+            self.sequence &+= 1
+            brokerLog(
+                "prepareSession: id=\(sessionID.prefix(8)) targetPID=\(targetPID >= 0 ? String(targetPID) : "nil") stored"
+            )
             reply(true)
         }
     }
@@ -127,6 +109,46 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
                 return
             }
             reply(s.ready, s.clientPID ?? -1, s.clientID ?? "")
+        }
+    }
+
+    func claimPreparedSession(
+        clientPID: Int32,
+        clientID: String,
+        imeInstanceID: String,
+        withReply reply: @escaping (Bool, String, Int32, String) -> Void
+    ) {
+        guard let conn = NSXPCConnection.current() else {
+            reply(false, "", -1, "")
+            return
+        }
+        queue.async {
+            self.imeConnections[imeInstanceID] = conn
+            self.activeIMEInstanceID = imeInstanceID
+
+            let candidate = self.sessions
+                .filter { _, s in
+                    guard !s.ready else { return false }
+                    guard let target = s.targetPID else { return false }
+                    return target == clientPID
+                }
+                .max { lhs, rhs in
+                    lhs.value.order < rhs.value.order
+                }
+
+            guard let (sessionID, state) = candidate else {
+                reply(false, "", -1, "")
+                return
+            }
+            brokerLog(
+                "claimPreparedSession: session=\(sessionID.prefix(8)) clientPID=\(clientPID) clientID=\(clientID.isEmpty ? "nil" : clientID)"
+            )
+            reply(
+                true,
+                sessionID,
+                state.targetPID ?? -1,
+                state.activationID
+            )
         }
     }
 

@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import AVFoundation
 import Foundation
 import SwiftUI
@@ -326,12 +327,71 @@ final class AppState {
             beeLog(
                 "SESSION: IME confirm timeout id=\(session.id.uuidString.prefix(8)) targetPID=\(self.activeSessionTargetPID.map(String.init) ?? "nil") frontmostPID=\(frontmostPID.map(String.init) ?? "nil"), aborting"
             )
+            self.logFocusDiagnostics(reason: "ime-confirm-timeout")
             self.pendingIMEAckTimeoutCount += 1
             self.playStartFailureSound()
             self.pendingTimer?.cancel()
             self.transitionToIdle()
             Task { await session.abort() }
         }
+    }
+
+    private func logFocusDiagnostics(reason: String) {
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        let frontmostPID = frontmost?.processIdentifier
+        let frontmostName = frontmost?.localizedName ?? "nil"
+        let frontmostBundleID = frontmost?.bundleIdentifier ?? "nil"
+
+        guard AXIsProcessTrusted() else {
+            beeLog(
+                "FOCUS DIAG [\(reason)]: frontmostPID=\(frontmostPID.map(String.init) ?? "nil") app=\(frontmostName) bundleID=\(frontmostBundleID) axTrusted=false"
+            )
+            return
+        }
+
+        let systemWide = AXUIElementCreateSystemWide()
+        let focusedApp = axElement(systemWide, kAXFocusedApplicationAttribute as CFString)
+        let focusedAppPID = focusedApp.flatMap { axPid($0) }
+
+        let focusedElement = axElement(systemWide, kAXFocusedUIElementAttribute as CFString)
+        let role = focusedElement.flatMap { axAttribute($0, kAXRoleAttribute as CFString) as? String } ?? "nil"
+        let subrole = focusedElement.flatMap { axAttribute($0, kAXSubroleAttribute as CFString) as? String } ?? "nil"
+        let title = focusedElement.flatMap { axAttribute($0, kAXTitleAttribute as CFString) as? String } ?? "nil"
+        let valueClass = focusedElement.flatMap { axAttribute($0, kAXValueAttribute as CFString) }.map { String(describing: type(of: $0)) } ?? "nil"
+        let valueSettable = focusedElement.map { axAttributeSettable($0, kAXValueAttribute as CFString) }
+
+        beeLog(
+            "FOCUS DIAG [\(reason)]: frontmostPID=\(frontmostPID.map(String.init) ?? "nil") app=\(frontmostName) bundleID=\(frontmostBundleID) focusedAppPID=\(focusedAppPID.map(String.init) ?? "nil") role=\(role) subrole=\(subrole) valueSettable=\(valueSettable.map(String.init) ?? "nil") title=\(title.debugDescription) valueClass=\(valueClass)"
+        )
+    }
+
+    private func axAttribute(_ element: AXUIElement, _ attr: CFString) -> AnyObject? {
+        var value: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(element, attr, &value)
+        guard status == .success else { return nil }
+        return value as AnyObject?
+    }
+
+    private func axPid(_ element: AXUIElement) -> pid_t? {
+        var pid: pid_t = 0
+        let status = AXUIElementGetPid(element, &pid)
+        guard status == .success else { return nil }
+        return pid
+    }
+
+    private func axElement(_ element: AXUIElement, _ attr: CFString) -> AXUIElement? {
+        var value: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(element, attr, &value)
+        guard status == .success, let value else { return nil }
+        guard CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return unsafeBitCast(value, to: AXUIElement.self)
+    }
+
+    private func axAttributeSettable(_ element: AXUIElement, _ attr: CFString) -> Bool {
+        var settable: DarwinBoolean = false
+        let status = AXUIElementIsAttributeSettable(element, attr, &settable)
+        guard status == .success else { return false }
+        return settable.boolValue
     }
 
     // MARK: - Max Duration

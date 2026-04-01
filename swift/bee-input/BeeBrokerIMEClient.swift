@@ -77,6 +77,31 @@ final class BeeBrokerIMEClient {
         }
     }
 
+    func claimPreparedSession(
+        clientPID: pid_t?,
+        clientID: String?,
+        completion: @escaping (_ found: Bool, _ sessionID: UUID?, _ targetPID: pid_t?, _ activationID: String?) -> Void
+    ) {
+        let conn = getConnection()
+        let proxy = conn.remoteObjectProxyWithErrorHandler { error in
+            beeInputLog("BROKER claimPreparedSession error: \(error.localizedDescription)")
+            self.invalidateConnection()
+            completion(false, nil, nil, nil)
+        } as? BeeBrokerXPC
+        proxy?.claimPreparedSession(
+            clientPID: clientPID.map { Int32($0) } ?? -1,
+            clientID: clientID ?? "",
+            imeInstanceID: imeInstanceID
+        ) { found, sessionIDRaw, targetPIDRaw, activationID in
+            guard found, let sessionID = UUID(uuidString: sessionIDRaw) else {
+                completion(false, nil, nil, nil)
+                return
+            }
+            let targetPID: pid_t? = targetPIDRaw >= 0 ? pid_t(targetPIDRaw) : nil
+            completion(true, sessionID, targetPID, activationID.isEmpty ? nil : activationID)
+        }
+    }
+
     func imeSubmit(sessionID: UUID) {
         let conn = getConnection()
         let proxy = conn.remoteObjectProxyWithErrorHandler { _ in } as? BeeBrokerXPC
@@ -112,12 +137,6 @@ final class BeeBrokerIMEClient {
 }
 
 private final class BeeIMEPeerSink: NSObject, BeeBrokerPeerXPC {
-    func handlePrepareSession(_ sessionID: String, targetPID: Int32, activationID: String) {
-        guard let id = UUID(uuidString: sessionID) else { return }
-        let pid: pid_t? = targetPID >= 0 ? pid_t(targetPID) : nil
-        BeeIMEBridgeState.shared.prepareSession(sessionID: id, targetPID: pid, activationID: activationID)
-    }
-
     func handleClearSession(_ sessionID: String) {
         guard let id = UUID(uuidString: sessionID) else { return }
         BeeIMEBridgeState.shared.clearSessionIfMatching(sessionID: id)

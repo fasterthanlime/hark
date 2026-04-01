@@ -20,15 +20,31 @@ class BeeInputController: IMKInputController {
         beeInputLog(
             "activateServer: client=\(clientName) clientID=\(clientIdentity ?? "nil") frontmostPID=\(frontmostPID.map(String.init) ?? "nil")"
         )
-
-        guard BeeIMEBridgeState.shared.hasActiveSession else {
-            beeInputLog("activateServer: no app handshake/session, switching away")
-            BeeIMEBridgeState.shared.switchAwayFromBeeInput()
-            return
+        BeeBrokerIMEClient.shared.claimPreparedSession(
+            clientPID: frontmostPID,
+            clientID: clientIdentity
+        ) { [weak self] found, sessionID, _, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard BeeIMEBridgeState.shared.activeController === self else { return }
+                guard found,
+                      let sessionID else {
+                    beeInputLog("activateServer: no prepared session for client, switching away")
+                    BeeIMEBridgeState.shared.switchAwayFromBeeInput()
+                    return
+                }
+                BeeIMEBridgeState.shared.attachSession(
+                    sessionID: sessionID,
+                    clientIdentity: clientIdentity
+                )
+                BeeIMEBridgeState.shared.flushPending()
+                BeeBrokerIMEClient.shared.imeAttach(
+                    sessionID: sessionID,
+                    clientPID: frontmostPID,
+                    clientID: clientIdentity
+                )
+            }
         }
-
-        BeeIMEBridgeState.shared.flushPending()
-        postSessionStartedIfReady()
     }
 
     override func deactivateServer(_ sender: Any!) {
@@ -152,14 +168,4 @@ class BeeInputController: IMKInputController {
         return String(UInt(bitPattern: opaque), radix: 16, uppercase: true)
     }
 
-    private func postSessionStartedIfReady() {
-        guard let ack = BeeIMEBridgeState.shared.consumeSessionStartAcknowledgementIfReady() else {
-            return
-        }
-        BeeBrokerIMEClient.shared.imeAttach(
-            sessionID: ack.sessionID,
-            clientPID: ack.clientPID,
-            clientID: ack.clientIdentity
-        )
-    }
 }
