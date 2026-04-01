@@ -78,18 +78,8 @@ export function TranscribeDemoPanel() {
   }, [audioUrl, recorder, wsUrl]);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "0.75rem",
-          padding: "0.75rem 1rem",
-          borderBottom: "1px solid var(--border)",
-          background: "var(--bg-surface-alt)",
-          flexWrap: "wrap",
-        }}
-      >
+    <div className="demo-panel">
+      <div className="demo-toolbar">
         <button
           className={recorder.state === "recording" ? "danger" : "primary"}
           onClick={handleRecord}
@@ -98,35 +88,25 @@ export function TranscribeDemoPanel() {
           {recorder.state === "recording" ? "STOP" : "RECORD"}
         </button>
 
-        <label style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-          <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>ws</span>
+        <label className="ws-label">
+          <span>ws</span>
           <input
+            className="ws-input"
             value={wsUrl}
             onChange={(e) => setWsUrl(e.target.value)}
             placeholder="ws://127.0.0.1:9944"
             disabled={recorder.state === "recording"}
-            style={{ minWidth: 280 }}
           />
         </label>
 
-        {status && <span style={{ fontSize: "0.8rem", color: "var(--accent)" }}>{status}</span>}
-        {error && <span style={{ fontSize: "0.8rem", color: "var(--danger)" }}>{error}</span>}
+        {status && <span className="status">{status}</span>}
+        {error && <span className="error">{error}</span>}
       </div>
 
       {inspectorData ? (
         <EvalInspector data={inspectorData} audioUrl={audioUrl} />
       ) : (
-        <div
-          style={{
-            flex: 1,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "var(--text-muted)",
-            padding: "1rem",
-            textAlign: "center",
-          }}
-        >
+        <div className="demo-empty">
           {recorder.state === "recording"
             ? "Recording... click STOP to transcribe"
             : "Press RECORD to capture audio and transcribe with BeeML"}

@@ -19,11 +19,9 @@ export function EvalInspector({
   const [duration, setDuration] = useState(0);
   const [zoom, setZoom] = useState(3);
   const rafRef = useRef<number>(0);
-  // Track when playback started (AudioContext.currentTime) and from what offset
   const playStartRef = useRef<{ ctxTime: number; offset: number } | null>(null);
   const rangeEndRef = useRef<number | null>(null);
 
-  // Decode audio into an AudioBuffer
   useEffect(() => {
     if (!audioUrl) return;
     const ctx = new AudioContext();
@@ -56,7 +54,6 @@ export function EvalInspector({
     rangeEndRef.current = null;
   }, []);
 
-  // Play from a given offset, optionally stopping at `end`
   const playFrom = useCallback(
     (offset: number, end?: number) => {
       const ctx = ctxRef.current;
@@ -88,7 +85,6 @@ export function EvalInspector({
     [stopSource],
   );
 
-  // Animation frame loop to update currentTime from AudioContext clock
   useEffect(() => {
     if (!playing) return;
     const tick = () => {
@@ -109,7 +105,6 @@ export function EvalInspector({
       stopSource();
       setPlaying(false);
     } else {
-      // If at the end, restart from beginning
       const startFrom = currentTime >= duration - 0.05 ? 0 : currentTime;
       playFrom(startFrom);
     }
@@ -118,24 +113,18 @@ export function EvalInspector({
   const handleSeek = useCallback(
     (time: number) => {
       setCurrentTime(time);
-      if (playing) {
-        // Restart playback from new position
-        playFrom(time);
-      }
+      if (playing) playFrom(time);
     },
     [playing, playFrom],
   );
 
   const handlePlayRange = useCallback(
-    (start: number, end: number) => {
-      playFrom(start, end);
-    },
+    (start: number, end: number) => playFrom(start, end),
     [playFrom],
   );
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
-      {/* Playback bar */}
+    <div className="eval-inspector">
       {audioUrl && (
         <EvalPlaybackBar
           playing={playing}
@@ -149,7 +138,6 @@ export function EvalInspector({
         />
       )}
 
-      {/* Timeline */}
       <EvalTimeline
         alignments={data.alignments}
         qwenAlignment={data.qwenAlignment}
@@ -162,10 +150,9 @@ export function EvalInspector({
         zoom={zoom}
       />
 
-      {/* Scrollable detail area */}
-      <div style={{ flex: 1, overflow: "auto", padding: "1rem", minHeight: "12em" }}>
+      <div className="eval-detail">
         {data.elapsedMs != null && (
-          <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: "0.75rem" }}>
+          <div className="eval-elapsed">
             {(data.elapsedMs / 1000).toFixed(2)}s total
           </div>
         )}

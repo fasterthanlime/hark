@@ -76,42 +76,22 @@ export function EvalPlaybackBar({
   const word = currentWord(tokens, currentTime);
 
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "0.75rem",
-        padding: "0.4rem 1rem",
-        background: "var(--bg-surface)",
-        borderBottom: "1px solid var(--border)",
-        fontSize: "0.85rem",
-      }}
-    >
-      <button onClick={onPlayPause} style={{ minWidth: 36 }}>
-        {playing ? "⏸" : "▶"}
+    <div className="playback-bar">
+      <button className="play-btn" onClick={onPlayPause}>
+        {playing ? "\u23F8" : "\u25B6"}
       </button>
-      <span style={{ fontVariantNumeric: "tabular-nums", color: "var(--text-muted)" }}>
+      <span className="time">
         {formatTime(currentTime)} / {formatTime(duration)}
       </span>
-      <span
-        style={{
-          flex: 1,
-          textAlign: "center",
-          fontSize: "1.4rem",
-          fontWeight: 700,
-          color: word ? "var(--text)" : "transparent",
-          letterSpacing: "0.02em",
-        }}
-      >
+      <span className={`current-word${word ? "" : " empty"}`}>
         {word || "\u00A0"}
       </span>
-      <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>zoom</span>
+      <span className="zoom-label">zoom</span>
       {ZOOM_LEVELS.map((z) => (
         <button
           key={z}
-          className={zoom === z ? "primary" : ""}
+          className={`zoom-btn${zoom === z ? " primary" : ""}`}
           onClick={() => onZoomChange(z)}
-          style={{ padding: "0.2em 0.5em", fontSize: "0.75rem" }}
         >
           {z}x
         </button>

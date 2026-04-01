@@ -18,10 +18,6 @@ type Lane = {
   bg: string;
 };
 
-/**
- * Build a corrected token lane from transcript tokens + a set of edits.
- * Unchanged words are dim; edited spans show the replacement.
- */
 function applyCandidateEdits(
   transcriptTokens: TimedToken[],
   edits: SentenceCandidate["edits"],
@@ -75,12 +71,8 @@ function buildLanes(
   const candidates = sentenceCandidates ?? [];
   const chosenIdx = reranker?.chosenIndex;
 
-  // Candidate lanes: one per sentence candidate, chosen first
   if (candidates.length > 0 && transcriptBase.length > 0) {
-    // Find reranker scores for each candidate
     const rerankerCandidates = reranker?.candidates;
-
-    // Sort: chosen first, then by yesProb descending
     const indices = candidates.map((_, i) => i);
     indices.sort((a, b) => {
       if (a === chosenIdx) return -1;
@@ -98,7 +90,7 @@ function buildLanes(
       if (tokens.length === 0) continue;
 
       const pct = rc ? `${(rc.yesProb * 100).toFixed(0)}%` : "";
-      const label = isChosen ? `✓ ${pct}` : `#${idx} ${pct}`;
+      const label = isChosen ? `\u2713 ${pct}` : `#${idx} ${pct}`;
 
       lanes.push({
         label,
@@ -110,39 +102,16 @@ function buildLanes(
   }
 
   if (qwenAlignment.length > 0) {
-    lanes.push({
-      label: "QWEN",
-      tokens: qwenAlignment,
-      color: "var(--lane-qwen)",
-      bg: "var(--lane-qwen-bg)",
-    });
+    lanes.push({ label: "QWEN", tokens: qwenAlignment, color: "var(--lane-qwen)", bg: "var(--lane-qwen-bg)" });
   }
-
-  if (alignments.espeak && alignments.espeak.length > 0) {
-    lanes.push({
-      label: "eSpeak",
-      tokens: alignments.espeak,
-      color: "var(--lane-espeak)",
-      bg: "var(--lane-espeak-bg)",
-    });
+  if (alignments.espeak?.length) {
+    lanes.push({ label: "eSpeak", tokens: alignments.espeak, color: "var(--lane-espeak)", bg: "var(--lane-espeak-bg)" });
   }
-
-  if (alignments.zipaEspeak && alignments.zipaEspeak.length > 0) {
-    lanes.push({
-      label: "ZIPA@eSpeak",
-      tokens: alignments.zipaEspeak,
-      color: "var(--lane-zipa-espeak)",
-      bg: "var(--lane-zipa-espeak-bg)",
-    });
+  if (alignments.zipaEspeak?.length) {
+    lanes.push({ label: "ZIPA@eSpeak", tokens: alignments.zipaEspeak, color: "var(--lane-zipa-espeak)", bg: "var(--lane-zipa-espeak-bg)" });
   }
-
-  if (alignments.zipa && alignments.zipa.length > 0) {
-    lanes.push({
-      label: "ZIPA",
-      tokens: alignments.zipa,
-      color: "var(--lane-zipa)",
-      bg: "var(--lane-zipa-bg)",
-    });
+  if (alignments.zipa?.length) {
+    lanes.push({ label: "ZIPA", tokens: alignments.zipa, color: "var(--lane-zipa)", bg: "var(--lane-zipa-bg)" });
   }
 
   return lanes;
@@ -184,7 +153,6 @@ export function EvalTimeline({
   const [selection, setSelection] = useState<Selection>(null);
   const [hover, setHover] = useState<{ laneIdx: number; tokenIdx: number; x: number; y: number } | null>(null);
 
-  // Total width covers at least the audio duration and all alignment data
   let maxEnd = duration;
   for (const lane of lanes) {
     for (const t of lane.tokens) {
@@ -193,7 +161,6 @@ export function EvalTimeline({
   }
   const totalWidth = Math.max(maxEnd, 0.01) * pxPerSec;
 
-  // Ruler: click + drag to scrub
   const rulerRef = useRef<HTMLDivElement>(null);
   const seekFromX = useCallback(
     (clientX: number) => {
@@ -201,8 +168,7 @@ export function EvalTimeline({
       if (!el) return;
       const rect = el.getBoundingClientRect();
       const x = clientX - rect.left;
-      const time = x / pxPerSec;
-      onSeek(Math.max(0, Math.min(time, duration)));
+      onSeek(Math.max(0, Math.min(x / pxPerSec, duration)));
     },
     [pxPerSec, duration, onSeek],
   );
@@ -224,7 +190,6 @@ export function EvalTimeline({
     [seekFromX],
   );
 
-  // Select a word and play it
   const selectAndPlay = useCallback(
     (laneIdx: number, tokenIdx: number) => {
       const lanes = lanesRef.current;
@@ -242,7 +207,6 @@ export function EvalTimeline({
     [onPlayRange, onSeek],
   );
 
-  // Keyboard: left/right to navigate words on selected lane, up/down to switch lanes
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
@@ -262,30 +226,25 @@ export function EvalTimeline({
       } else if (e.code === "ArrowUp") {
         e.preventDefault();
         if (laneIdx > 0) {
-          // Find closest token on the lane above by time
           const curToken = lanes[laneIdx].tokens[tokenIdx];
-          const aboveTokens = lanes[laneIdx - 1].tokens;
-          const closest = findClosestToken(aboveTokens, curToken.s);
+          const closest = findClosestToken(lanes[laneIdx - 1].tokens, curToken.s);
           selectAndPlay(laneIdx - 1, closest);
         }
       } else if (e.code === "ArrowDown") {
         e.preventDefault();
         if (laneIdx < lanes.length - 1) {
           const curToken = lanes[laneIdx].tokens[tokenIdx];
-          const belowTokens = lanes[laneIdx + 1].tokens;
-          const closest = findClosestToken(belowTokens, curToken.s);
+          const closest = findClosestToken(lanes[laneIdx + 1].tokens, curToken.s);
           selectAndPlay(laneIdx + 1, closest);
         }
       } else if (e.code === "Escape") {
         setSelection(null);
       }
     };
-    // Use capture so we get it before the playback bar's handler
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
   }, [selection, selectAndPlay]);
 
-  // Auto-scroll: when playhead passes 3/4, jump so it's at 1/4
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -298,25 +257,12 @@ export function EvalTimeline({
   }, [currentTime, pxPerSec]);
 
   if (lanes.length === 0) {
-    return (
-      <div
-        style={{
-          padding: "2rem",
-          textAlign: "center",
-          color: "var(--text-muted)",
-          background: "var(--bg-surface)",
-          borderBottom: "1px solid var(--border)",
-        }}
-      >
-        No alignment data available
-      </div>
-    );
+    return <div className="timeline-empty">No alignment data available</div>;
   }
 
   const playheadX = LABEL_WIDTH + currentTime * pxPerSec;
   const contentHeight = RULER_HEIGHT + lanes.length * LANE_HEIGHT;
 
-  // Generate ruler tick marks
   const rulerTicks: number[] = [];
   let tickInterval = 1;
   if (pxPerSec < 60) tickInterval = 2;
@@ -328,102 +274,67 @@ export function EvalTimeline({
   }
 
   return (
-    <div
-      ref={containerRef}
-      className="hide-scrollbar"
-      style={{
-        width: "100%",
-        overflowX: "auto",
-        overflowY: "auto",
-        background: "var(--bg-surface)",
-        borderBottom: "1px solid var(--border)",
-        position: "relative",
-      }}
-    >
-      <div style={{ width: LABEL_WIDTH + totalWidth, minHeight: contentHeight, position: "relative" }}>
-        {/* Ruler lane — click/drag to scrub */}
-        <div style={{ display: "flex", height: RULER_HEIGHT }}>
-          <div
-            style={{
-              width: LABEL_WIDTH,
-              flexShrink: 0,
-              position: "sticky",
-              left: 0,
-              zIndex: 2,
-              background: "var(--bg-surface)",
-            }}
-          />
+    <div ref={containerRef} className="timeline hide-scrollbar">
+      <div className="timeline-inner" style={{ width: LABEL_WIDTH + totalWidth, minHeight: contentHeight }}>
+        {/* Ruler */}
+        <div className="timeline-ruler-row" style={{ height: RULER_HEIGHT }}>
+          <div className="timeline-ruler-label" style={{ width: LABEL_WIDTH }} />
           <div
             ref={rulerRef}
+            className="timeline-ruler"
+            style={{ width: totalWidth, height: RULER_HEIGHT }}
             onPointerDown={handleRulerPointerDown}
             onPointerMove={handleRulerPointerMove}
-            style={{
-              position: "relative",
-              width: totalWidth,
-              height: RULER_HEIGHT,
-              cursor: "crosshair",
-              borderBottom: "1px solid var(--border)",
-              touchAction: "none",
-            }}
           >
             {rulerTicks.map((t) => (
-              <div
-                key={t}
-                style={{
-                  position: "absolute",
-                  left: t * pxPerSec,
-                  top: 0,
-                  height: "100%",
-                  borderLeft: "1px solid var(--border)",
-                  opacity: 0.4,
-                }}
-              >
-                <span
-                  style={{
-                    fontSize: "0.6rem",
-                    color: "var(--text-dim)",
-                    position: "absolute",
-                    bottom: 2,
-                    left: 3,
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {t % 1 === 0 ? `${t}s` : `${t.toFixed(2)}s`}
-                </span>
+              <div key={t} className="timeline-tick" style={{ left: t * pxPerSec }}>
+                <span>{t % 1 === 0 ? `${t}s` : `${t.toFixed(2)}s`}</span>
               </div>
             ))}
           </div>
         </div>
 
-        {/* Token lanes */}
+        {/* Lanes */}
         {lanes.map((lane, laneIdx) => (
-          <div key={lane.label} style={{ display: "flex", alignItems: "center", height: LANE_HEIGHT, position: "relative" }}>
+          <div key={lane.label} className="timeline-lane" style={{ height: LANE_HEIGHT }}>
             <div
-              style={{
-                width: LABEL_WIDTH,
-                paddingLeft: 12,
-                fontSize: "0.75rem",
-                fontWeight: 600,
-                color: lane.color,
-                flexShrink: 0,
-                position: "sticky",
-                left: 0,
-                zIndex: 2,
-                background: "var(--bg-surface)",
-              }}
+              className="timeline-lane-label"
+              style={{ width: LABEL_WIDTH, color: lane.color }}
             >
               {lane.label}
             </div>
-            <div style={{ position: "relative", width: totalWidth, height: 28 }}>
+            <div className="timeline-lane-tokens" style={{ width: totalWidth, height: 28 }}>
               {lane.tokens.map((token, ti) => {
                 const left = token.s * pxPerSec;
                 const width = Math.max((token.e - token.s) * pxPerSec, 2);
                 const isPlaying = currentTime >= token.s && currentTime < token.e;
                 const isSelected = selection?.laneIdx === laneIdx && selection?.tokenIdx === ti;
                 const isDim = !!(token as LaneToken).dim;
+
+                const borderColor = isSelected || isPlaying
+                  ? (isSelected ? lane.color : lane.color + "80")
+                  : lane.color + "60";
+                const bg = isSelected
+                  ? lane.color + "60"
+                  : isPlaying
+                    ? lane.color + "40"
+                    : isDim ? "transparent" : lane.bg;
+
                 return (
                   <div
                     key={ti}
+                    className={`timeline-token${isDim ? " dim" : ""}`}
+                    style={{
+                      left,
+                      width,
+                      background: bg,
+                      border: isDim && !isSelected && !isPlaying
+                        ? undefined  // uses .dim class border
+                        : `2px solid ${borderColor}`,
+                      color: isDim ? undefined : lane.color,
+                      outline: isSelected ? `1px solid ${lane.color}` : undefined,
+                      outlineOffset: isSelected ? 1 : undefined,
+                    }}
                     onMouseEnter={(e) => {
                       const rect = e.currentTarget.getBoundingClientRect();
                       setHover({ laneIdx, tokenIdx: ti, x: rect.left + rect.width / 2, y: rect.bottom + 4 });
@@ -432,38 +343,6 @@ export function EvalTimeline({
                     onClick={(e) => {
                       e.stopPropagation();
                       selectAndPlay(laneIdx, ti);
-                    }}
-                    style={{
-                      position: "absolute",
-                      left,
-                      width,
-                      top: 2,
-                      height: 24,
-                      background: isSelected
-                        ? lane.color + "60"
-                        : isPlaying
-                          ? lane.color + "40"
-                          : isDim
-                            ? "transparent"
-                            : lane.bg,
-                      border: isDim && !isSelected && !isPlaying
-                        ? "1px dashed var(--border)"
-                        : `2px solid ${isSelected ? lane.color : isPlaying ? lane.color + "80" : lane.color + "60"}`,
-                      borderRadius: 3,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: isDim ? "0.65rem" : "0.7rem",
-                      fontWeight: isDim ? 400 : 600,
-                      color: isDim ? "var(--text-muted)" : lane.color,
-                      overflow: "hidden",
-                      whiteSpace: "nowrap",
-                      textOverflow: "ellipsis",
-                      padding: "0 2px",
-                      cursor: "pointer",
-                      opacity: isDim ? 0.7 : 1,
-                      outline: isSelected ? `1px solid ${lane.color}` : "none",
-                      outlineOffset: 1,
                     }}
                   >
                     {token.w}
@@ -475,18 +354,7 @@ export function EvalTimeline({
         ))}
 
         {/* Playhead */}
-        <div
-          style={{
-            position: "absolute",
-            left: playheadX,
-            top: 0,
-            bottom: 0,
-            width: 2,
-            background: "var(--accent)",
-            zIndex: 10,
-            pointerEvents: "none",
-          }}
-        />
+        <div className="timeline-playhead" style={{ left: playheadX }} />
       </div>
 
       {/* Hover popover */}
@@ -494,72 +362,53 @@ export function EvalTimeline({
         const token = lanes[hover.laneIdx]?.tokens[hover.tokenIdx] as LaneToken | undefined;
         if (!token) return null;
         return (
-          <div
-            style={{
-              position: "fixed",
-              left: hover.x,
-              top: hover.y,
-              transform: "translateX(-50%)",
-              zIndex: 100,
-              background: "var(--bg-surface)",
-              border: "1px solid var(--border)",
-              borderRadius: 8,
-              padding: "0.5rem 0.75rem",
-              fontSize: "0.8rem",
-              lineHeight: 1.6,
-              boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
-              pointerEvents: "none",
-              maxWidth: 360,
-              whiteSpace: "nowrap",
-            }}
-          >
-            <div style={{ fontWeight: 600, color: "var(--text)", marginBottom: 2 }}>
-              {token.w} <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>{token.s.toFixed(2)}s – {token.e.toFixed(2)}s</span>
+          <div className="timeline-popover" style={{ left: hover.x, top: hover.y }}>
+            <div className="word">
+              {token.w}{" "}
+              <span className="timing">{token.s.toFixed(2)}s &ndash; {token.e.toFixed(2)}s</span>
             </div>
             {token.c != null && (
               <div style={{ color: "var(--text-muted)" }}>conf {token.c.toFixed(3)}</div>
             )}
             {token.editFrom && (
-              <>
-                <div style={{ marginTop: 4, borderTop: "1px solid var(--border)", paddingTop: 4 }}>
-                  <table style={{ borderCollapse: "collapse", fontSize: "0.8rem", width: "100%" }}>
-                    <tbody>
+              <div className="edit-detail">
+                <table>
+                  <tbody>
+                    <tr>
+                      <td className="label">from</td>
+                      <td>
+                        <span className="from">{token.editFrom}</span>
+                        {token.editFromPhonemes && <span className="phonemes">/{token.editFromPhonemes}/</span>}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="label">to</td>
+                      <td>
+                        <span className="to">{token.w}</span>
+                        {token.editToPhonemes && <span className="phonemes">/{token.editToPhonemes}/</span>}
+                      </td>
+                    </tr>
+                    {token.editVia && (
                       <tr>
-                        <td style={{ color: "var(--text-muted)", paddingRight: 8, verticalAlign: "top" }}>from</td>
-                        <td>
-                          <span style={{ color: "var(--danger)", fontWeight: 600 }}>{token.editFrom}</span>
-                          {token.editFromPhonemes && <span style={{ color: "var(--text-dim)", marginLeft: 6, fontStyle: "italic" }}>/{token.editFromPhonemes}/</span>}
-                        </td>
+                        <td className="label">via</td>
+                        <td>{token.editVia}</td>
                       </tr>
+                    )}
+                    {token.editSimilarity != null && (
                       <tr>
-                        <td style={{ color: "var(--text-muted)", paddingRight: 8, verticalAlign: "top" }}>to</td>
-                        <td>
-                          <span style={{ color: "var(--success)", fontWeight: 600 }}>{token.w}</span>
-                          {token.editToPhonemes && <span style={{ color: "var(--text-dim)", marginLeft: 6, fontStyle: "italic" }}>/{token.editToPhonemes}/</span>}
-                        </td>
+                        <td className="label">similarity</td>
+                        <td className="tabular">{token.editSimilarity.toFixed(3)}</td>
                       </tr>
-                      {token.editVia && (
-                        <tr>
-                          <td style={{ color: "var(--text-muted)", paddingRight: 8 }}>via</td>
-                          <td>{token.editVia}</td>
-                        </tr>
-                      )}
-                      {token.editSimilarity != null && (
-                        <tr>
-                          <td style={{ color: "var(--text-muted)", paddingRight: 8 }}>similarity</td>
-                          <td style={{ fontVariantNumeric: "tabular-nums" }}>{token.editSimilarity.toFixed(3)}</td>
-                        </tr>
-                      )}
-                      {token.editRank != null && (
-                        <tr>
-                          <td style={{ color: "var(--text-muted)", paddingRight: 8 }}>rank</td>
-                          <td style={{ fontVariantNumeric: "tabular-nums" }}>{token.editRank.toFixed(3)}</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </>
+                    )}
+                    {token.editRank != null && (
+                      <tr>
+                        <td className="label">rank</td>
+                        <td className="tabular">{token.editRank.toFixed(3)}</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         );
