@@ -128,6 +128,17 @@ pub struct AlignedWord {
 
 // ── Engine ──────────────────────────────────────────────────────────────
 
+/// Paths required to load an engine.
+pub struct EngineConfig<'a> {
+    /// Directory containing `config.json` and `*.safetensors` for the
+    /// ASR model weights.
+    pub model_dir: &'a Path,
+    /// Path to `tokenizer.json`.
+    pub tokenizer_path: &'a Path,
+    /// Directory containing the forced aligner model weights.
+    pub aligner_dir: &'a Path,
+}
+
 /// Holds loaded model weights, tokenizer, and forced aligner.
 ///
 /// Immutable after construction — multiple sessions can borrow it
@@ -135,23 +146,19 @@ pub struct AlignedWord {
 pub struct Engine {
     model: Qwen3ASRModel,
     tokenizer: tokenizers::Tokenizer,
-    aligner: Option<ForcedAligner>,
+    aligner: ForcedAligner,
 }
 
 impl Engine {
-    /// Load an engine from a model directory.
-    ///
-    /// Looks for `config.json`, `*.safetensors`, and `tokenizer.json`
-    /// in the given directory. Optionally loads a forced aligner from
-    /// a well-known cache location.
-    pub fn load(model_dir: &Path) -> Result<Self, Exception> {
-        let config_str = std::fs::read_to_string(model_dir.join("config.json"))
+    /// Load an engine from explicit paths.
+    pub fn load(config: &EngineConfig<'_>) -> Result<Self, Exception> {
+        let config_str = std::fs::read_to_string(config.model_dir.join("config.json"))
             .map_err(|e| Exception::custom(format!("read config: {e}")))?;
-        let config: AsrConfig = serde_json::from_str(&config_str)
+        let asr_config: AsrConfig = serde_json::from_str(&config_str)
             .map_err(|e| Exception::custom(format!("parse config: {e}")))?;
 
-        let mut model = Qwen3ASRModel::new(&config.thinker_config)?;
-        let stats = load::load_weights(&mut model, model_dir)?;
+        let mut model = Qwen3ASRModel::new(&asr_config.thinker_config)?;
+        let stats = load::load_weights(&mut model, config.model_dir)?;
         model.eval()?;
 
         log::info!(
@@ -162,18 +169,10 @@ impl Engine {
             stats.bits,
         );
 
-        let tokenizer = find_tokenizer(model_dir)
-            .ok_or_else(|| Exception::custom("tokenizer.json not found"))?;
+        let tokenizer = tokenizers::Tokenizer::from_file(config.tokenizer_path)
+            .map_err(|e| Exception::custom(format!("load tokenizer: {e}")))?;
 
-        let aligner = find_aligner_dir().and_then(|dir| {
-            match ForcedAligner::load(&dir, tokenizer.clone()) {
-                Ok(a) => Some(a),
-                Err(e) => {
-                    log::warn!("failed to load forced aligner: {e}");
-                    None
-                }
-            }
-        });
+        let aligner = ForcedAligner::load(config.aligner_dir, tokenizer.clone())?;
 
         Ok(Engine {
             model,
@@ -429,27 +428,29 @@ impl<'a> Session<'a> {
             return Ok(());
         };
 
-        // Use forced aligner for precise audio boundary
-        let audio_cut_samples = if let Some(ref aligner) = self.engine.aligner {
-            match aligner.align(&self.audio, &commit_text) {
-                Ok(items) if !items.is_empty() => {
-                    let last = &items[items.len() - 1];
-                    // Store alignments with absolute timestamps
-                    let offset = self.committed_audio_offset;
-                    for item in &items {
-                        self.committed_alignments.push(AlignedWord {
-                            word: item.word.clone(),
-                            start: item.start_time + offset,
-                            end: item.end_time + offset,
-                        });
-                    }
-                    (last.end_time * 16000.0) as usize
-                }
-                _ => estimate_audio_boundary(&commit_text, &self.current_text(), self.audio.len()),
-            }
-        } else {
-            estimate_audio_boundary(&commit_text, &self.current_text(), self.audio.len())
-        };
+        // Run forced aligner to find precise audio boundary
+        let items = self.engine.aligner.align(&self.audio, &commit_text)
+            .map_err(|e| Exception::custom(format!("aligner: {e}")))?;
+
+        if items.is_empty() {
+            // Aligner returned no words — reset stability and wait
+            self.stable_rounds = 0;
+            self.prefix_tokens.clear();
+            return Ok(());
+        }
+
+        let last = &items[items.len() - 1];
+        let audio_cut_samples = (last.end_time * 16000.0) as usize;
+
+        // Store alignments with absolute timestamps
+        let offset = self.committed_audio_offset;
+        for item in &items {
+            self.committed_alignments.push(AlignedWord {
+                word: item.word.clone(),
+                start: item.start_time + offset,
+                end: item.end_time + offset,
+            });
+        }
 
         // Update committed state
         if self.committed_text.is_empty() {
@@ -548,51 +549,3 @@ fn find_word_boundary(
     None
 }
 
-/// Rough audio boundary estimate when no aligner is available.
-/// Uses character-proportional approximation.
-fn estimate_audio_boundary(
-    committed_text: &str,
-    full_text: &str,
-    total_audio_samples: usize,
-) -> usize {
-    let committed_chars = committed_text.trim().len();
-    let total_chars = full_text.trim().len();
-    if total_chars == 0 {
-        return 0;
-    }
-    let fraction = committed_chars as f64 / total_chars as f64;
-    let boundary = (fraction * total_audio_samples as f64) as usize;
-    boundary.min(total_audio_samples.saturating_sub(16000))
-}
-
-fn find_tokenizer(model_dir: &Path) -> Option<tokenizers::Tokenizer> {
-    let mut paths = vec![model_dir.join("tokenizer.json")];
-    if let Some(home) = dirs::home_dir() {
-        paths.push(home.join("Library/Caches/qwen3-asr/Qwen--Qwen3-ASR-1.7B/tokenizer.json"));
-        paths.push(home.join("Library/Caches/qwen3-asr/Qwen--Qwen3-ASR-0.6B/tokenizer.json"));
-    }
-    for path in &paths {
-        if path.exists() {
-            if let Ok(tokenizer) = tokenizers::Tokenizer::from_file(path) {
-                return Some(tokenizer);
-            }
-        }
-    }
-    None
-}
-
-fn find_aligner_dir() -> Option<std::path::PathBuf> {
-    let home = dirs::home_dir()?;
-    let base = home.join("Library/Caches/qwen3-asr");
-    let candidates = [
-        "mlx-community--Qwen3-ForcedAligner-0.6B-4bit",
-        "Qwen--Qwen3-ForcedAligner-0.6B",
-    ];
-    for name in candidates {
-        let dir = base.join(name);
-        if dir.exists() {
-            return Some(dir);
-        }
-    }
-    None
-}

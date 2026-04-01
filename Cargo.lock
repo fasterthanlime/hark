@@ -182,7 +182,6 @@ version = "0.1.0"
 dependencies = [
  "bee-qwen3-asr",
  "bee-vad",
- "dirs",
  "facet",
  "log",
  "mlx-rs",
