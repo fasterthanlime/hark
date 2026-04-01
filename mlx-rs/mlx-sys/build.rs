@@ -158,6 +158,17 @@ fn header_paths(include_root: &Path) -> Vec<PathBuf> {
 fn emit_rerun_directives() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=MLX_SYS_PREFIX");
+    println!("cargo:rerun-if-env-changed=MLX_SYS_ALLOW_CMAKE");
+}
+
+fn allow_cmake_fallback() -> bool {
+    match env::var("MLX_SYS_ALLOW_CMAKE") {
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
 }
 
 fn main() {
@@ -169,8 +180,18 @@ fn main() {
             prefix.display()
         );
         link_from_prefix(&prefix)
-    } else {
+    } else if allow_cmake_fallback() {
+        eprintln!("mlx-sys: MLX_SYS_ALLOW_CMAKE enabled, falling back to CMake build");
         build_and_link_mlx_c()
+    } else {
+        panic!(
+            "mlx-sys requires prebuilt MLX artifacts.\n\
+             Set MLX_SYS_PREFIX to a prefix containing include/mlx/c/*.h and lib/libmlx.a + libmlxc.a.\n\
+             Example:\n\
+               scripts/build-mlx-prebuilt.sh\n\
+               export MLX_SYS_PREFIX=\"$PWD/build/mlx-prebuilt\"\n\
+             If you intentionally want CMake fallback for this build, set MLX_SYS_ALLOW_CMAKE=1."
+        );
     };
 
     let headers = header_paths(&include_root);
