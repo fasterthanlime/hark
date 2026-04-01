@@ -1,12 +1,12 @@
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use bee_transcribe::{Engine, EngineConfig, SessionOptions};
 use beeml::rpc::{BeeMl, TranscribeWavResult};
 use tokio::net::TcpListener;
-use vox::Caller;
+use vox::{Caller, Rx, Tx};
 
 #[derive(Clone)]
 struct BeeMlService {
@@ -24,7 +24,6 @@ impl BeeMl for BeeMlService {
 
         let mut session = self.inner.engine.session(SessionOptions::default());
 
-        // Feed all audio in one shot
         session.feed(&samples).map_err(|e| e.to_string())?;
         let update = session.finish().map_err(|e| e.to_string())?;
 
@@ -32,6 +31,37 @@ impl BeeMl for BeeMlService {
             transcript: update.text,
             words: update.alignments,
         })
+    }
+
+    async fn stream_transcribe(
+        &self,
+        mut audio_in: Rx<Vec<f32>>,
+        updates_out: Tx<bee_transcribe::Update>,
+    ) -> Result<(), String> {
+        let mut session = self.inner.engine.session(SessionOptions::default());
+
+        while let Ok(Some(chunk)) = audio_in.recv().await {
+            match session.feed(&chunk) {
+                Ok(Some(update)) => {
+                    if updates_out.send(update).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+
+        // Finish and send final update
+        match session.finish() {
+            Ok(update) => {
+                let _ = updates_out.send(update).await;
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+
+        let _ = updates_out.close(Default::default()).await;
+        Ok(())
     }
 }
 

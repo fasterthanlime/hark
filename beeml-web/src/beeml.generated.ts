@@ -8,6 +8,7 @@ import type { Caller, MethodDescriptor, ServiceDescriptor, VoxCall, Dispatcher, 
 import { session } from "@bearcove/vox-core";
 import { wsConnector } from "@bearcove/vox-ws";
 import { RpcError } from "@bearcove/vox-core";
+import { Tx, Rx, argElementRefsForMethod, bindChannelsForTypeRefs, finalizeBoundChannelsForTypeRefs } from "@bearcove/vox-core";
 
 // Named type definitions
 export interface AlignedWord {
@@ -21,13 +22,27 @@ export interface TranscribeWavResult {
   words: AlignedWord[];
 }
 
+export interface Update {
+  text: string;
+  committed_len: bigint;
+  alignments: AlignedWord[];
+}
+
 // Request/Response type aliases
 export type TranscribeWavRequest = [Uint8Array];
 export type TranscribeWavResponse = { ok: true; value: TranscribeWavResult } | { ok: false; error: string };
 
+export type StreamTranscribeRequest = [
+  Rx<number[]>, // audio_in
+  Tx<Update>, // updates_out
+];
+export type StreamTranscribeResponse = { ok: true; value: void } | { ok: false; error: string };
+
 // Caller interface for BeeMl
 export interface BeeMlCaller {
   transcribeWav(wavBytes: Uint8Array): Promise<{ ok: true; value: TranscribeWavResult } | { ok: false; error: string }>;
+  /** Stream audio chunks (16kHz mono f32) and receive incremental transcription updates. */
+  streamTranscribe(audioIn: Rx<number[]>, updatesOut: Tx<Update>): Promise<{ ok: true; value: void } | { ok: false; error: string }>;
 }
 
 // Client implementation for BeeMl
@@ -57,6 +72,42 @@ export class BeeMlClient implements BeeMlCaller {
       }
   }
 
+  /** Stream audio chunks (16kHz mono f32) and receive incremental transcription updates. */
+  async streamTranscribe(audioIn: Rx<number[]>, updatesOut: Tx<Update>): Promise<{ ok: true; value: void } | { ok: false; error: string }> {
+    const descriptor = beeMl_streamTranscribe_method;
+    const sendSchemas = beeMl_descriptor.send_schemas;
+    const argTypeRefs = argElementRefsForMethod(descriptor.id, sendSchemas);
+    const prepareRetry = () => {
+      const channels = bindChannelsForTypeRefs(
+        argTypeRefs,
+        [audioIn, updatesOut],
+        this.caller.getChannelAllocator(),
+        this.caller.getChannelRegistry(),
+        sendSchemas.schemas,
+      );
+      const payload = new Uint8Array(0);
+      return { payload, channels };
+    };
+    const { channels } = prepareRetry();
+      try {
+        const value = await this.caller.call({
+          method: "BeeMl.streamTranscribe",
+          args: { audioIn, updatesOut },
+          descriptor,
+          sendSchemas,
+          channels,
+          prepareRetry,
+          finalizeChannels: () => finalizeBoundChannelsForTypeRefs(argTypeRefs, [audioIn, updatesOut], sendSchemas.schemas),
+        });
+        return { ok: true, value } as { ok: true; value: void } | { ok: false; error: string };
+      } catch (e: any) {
+        if (e instanceof RpcError && e.isUserError()) {
+          return { ok: false, error: e.userError } as { ok: true; value: void } | { ok: false; error: string };
+        }
+        throw e;
+      }
+  }
+
 }
 
 /**
@@ -75,6 +126,7 @@ export async function connectBeeMl(
 // Handler interface for BeeMl
 export interface BeeMlHandler {
   transcribeWav(wavBytes: Uint8Array): Promise<{ ok: true; value: TranscribeWavResult } | { ok: false; error: string }> | { ok: true; value: TranscribeWavResult } | { ok: false; error: string };
+  streamTranscribe(audioIn: Rx<number[]>, updatesOut: Tx<Update>): Promise<{ ok: true; value: void } | { ok: false; error: string }> | { ok: true; value: void } | { ok: false; error: string };
 }
 
 // Dispatcher for BeeMl
@@ -93,6 +145,14 @@ export class BeeMlDispatcher implements Dispatcher {
     if (method.id === 0x5769301e350ea60bn) {
       try {
         const result = await this.handler.transcribeWav(args[0] as Uint8Array);
+        if (result.ok) call.reply(result.value); else call.replyErr(result.error);
+      } catch (error) {
+        call.replyInternalError(error instanceof Error ? error.message : String(error));
+      }
+    } else if (method.id === 0xfe3e747dc31b0b64n) {
+      try {
+        const result = await this.handler.streamTranscribe(args[0] as Rx<number[]>, args[1] as Tx<Update>);
+        (args[1] as { close(): void }).close(); // close updatesOut before reply
         if (result.ok) call.reply(result.value); else call.replyErr(result.error);
       } catch (error) {
         call.replyInternalError(error instanceof Error ? error.message : String(error));
@@ -117,9 +177,17 @@ export const beeMl_send_schemas: import("@bearcove/vox-core").ServiceSendSchemas
     [0x82fe1c941f431583n, { id: 0x82fe1c941f431583n, type_params: [], kind: { tag: 'struct', name: 'AlignedWord', fields: [{ name: 'word', type_ref: { tag: 'concrete', type_id: 0x6d7dce914ee150e8n, args: [] }, required: true }, { name: 'start', type_ref: { tag: 'concrete', type_id: 0x3f2e589db81e95bfn, args: [] }, required: true }, { name: 'end', type_ref: { tag: 'concrete', type_id: 0x3f2e589db81e95bfn, args: [] }, required: true }] } }],
     [0x0a96b404b4d79d67n, { id: 0x0a96b404b4d79d67n, type_params: ['T'], kind: { tag: 'list', element: { tag: 'var', name: 'T' } } }],
     [0xdf4236220e4a3571n, { id: 0xdf4236220e4a3571n, type_params: [], kind: { tag: 'struct', name: 'TranscribeWavResult', fields: [{ name: 'transcript', type_ref: { tag: 'concrete', type_id: 0x6d7dce914ee150e8n, args: [] }, required: true }, { name: 'words', type_ref: { tag: 'concrete', type_id: 0x0a96b404b4d79d67n, args: [{ tag: 'concrete', type_id: 0x82fe1c941f431583n, args: [] }] }, required: true }] } }],
+    [0x8e02f623d1b2310cn, { id: 0x8e02f623d1b2310cn, type_params: [], kind: { tag: 'primitive', primitive_type: 'f32' } }],
+    [0x967a48ac345e2f5en, { id: 0x967a48ac345e2f5en, type_params: ['T'], kind: { tag: 'channel', direction: 'rx', element: { tag: 'var', name: 'T' } } }],
+    [0xd9356298b81639acn, { id: 0xd9356298b81639acn, type_params: [], kind: { tag: 'primitive', primitive_type: 'u64' } }],
+    [0xb395b47b1ae4be84n, { id: 0xb395b47b1ae4be84n, type_params: [], kind: { tag: 'struct', name: 'Update', fields: [{ name: 'text', type_ref: { tag: 'concrete', type_id: 0x6d7dce914ee150e8n, args: [] }, required: true }, { name: 'committed_len', type_ref: { tag: 'concrete', type_id: 0xd9356298b81639acn, args: [] }, required: true }, { name: 'alignments', type_ref: { tag: 'concrete', type_id: 0x0a96b404b4d79d67n, args: [{ tag: 'concrete', type_id: 0x82fe1c941f431583n, args: [] }] }, required: true }] } }],
+    [0xc886545a493d06ebn, { id: 0xc886545a493d06ebn, type_params: ['T'], kind: { tag: 'channel', direction: 'tx', element: { tag: 'var', name: 'T' } } }],
+    [0xba0496aa8cee7a4cn, { id: 0xba0496aa8cee7a4cn, type_params: ['T0', 'T1'], kind: { tag: 'tuple', elements: [{ tag: 'var', name: 'T0' }, { tag: 'var', name: 'T1' }] } }],
+    [0xbc5c33249a2dc720n, { id: 0xbc5c33249a2dc720n, type_params: [], kind: { tag: 'primitive', primitive_type: 'unit' } }],
   ]),
   methods: new Map<bigint, import("@bearcove/vox-core").MethodSendSchemas>([
     [0x5769301e350ea60bn, { argsRootRef: { tag: 'concrete', type_id: 0x6847ab90feda71c1n, args: [{ tag: 'concrete', type_id: 0xba8125876d6388b4n, args: [] }] }, responseRootRef: { tag: 'concrete', type_id: 0x42046de663beeef0n, args: [{ tag: 'concrete', type_id: 0xdf4236220e4a3571n, args: [] }, { tag: 'concrete', type_id: 0x4cf4b2aeb98a1939n, args: [{ tag: 'concrete', type_id: 0x6d7dce914ee150e8n, args: [] }] }] } }],
+    [0xfe3e747dc31b0b64n, { argsRootRef: { tag: 'concrete', type_id: 0xba0496aa8cee7a4cn, args: [{ tag: 'concrete', type_id: 0x967a48ac345e2f5en, args: [{ tag: 'concrete', type_id: 0x0a96b404b4d79d67n, args: [{ tag: 'concrete', type_id: 0x8e02f623d1b2310cn, args: [] }] }] }, { tag: 'concrete', type_id: 0xc886545a493d06ebn, args: [{ tag: 'concrete', type_id: 0xb395b47b1ae4be84n, args: [] }] }] }, responseRootRef: { tag: 'concrete', type_id: 0x42046de663beeef0n, args: [{ tag: 'concrete', type_id: 0xbc5c33249a2dc720n, args: [] }, { tag: 'concrete', type_id: 0x4cf4b2aeb98a1939n, args: [{ tag: 'concrete', type_id: 0x6d7dce914ee150e8n, args: [] }] }] } }],
   ]),
 };
 
@@ -129,12 +197,19 @@ export const beeMl_transcribeWav_method: MethodDescriptor = {
   retry: { persist: false, idem: false },
 };
 
+export const beeMl_streamTranscribe_method: MethodDescriptor = {
+  name: 'streamTranscribe',
+  id: 0xfe3e747dc31b0b64n,
+  retry: { persist: false, idem: false },
+};
+
 // Service descriptor for runtime dispatch metadata
 export const beeMl_descriptor: ServiceDescriptor = {
   service_name: 'BeeMl',
   send_schemas: beeMl_send_schemas,
   methods: new Map<bigint, MethodDescriptor>([
     [beeMl_transcribeWav_method.id, beeMl_transcribeWav_method],
+    [beeMl_streamTranscribe_method.id, beeMl_streamTranscribe_method],
   ]),
 };
 
