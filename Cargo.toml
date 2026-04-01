@@ -6,12 +6,7 @@ members = [
   "rust/beeml-api",
   "rust/beeml-parakeet",
   "rust/beeml-pipeline",
-  "rust/beeml-qwen",
-  "rust/beeml-recorder",
-  "rust/beeml-reviewer",
-  "rust/beeml-textgen",
   "rust/beeml-train",
-  "rust/beeml-tts",
 ]
 default-members = ["rust/beeml-api"]
 
