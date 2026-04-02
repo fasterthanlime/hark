@@ -11,11 +11,6 @@ struct MenuBarView: View {
             InputDeviceList(appState: appState)
                 .padding(.horizontal, 6)
 
-            if appState.audioEngine.isWarm {
-                AudioLevelMeter(audioEngine: appState.audioEngine)
-                    .padding(.horizontal, 6)
-            }
-
             Divider().padding(.horizontal, 2)
             if appState.transcriptionHistory.isEmpty {
                 Text("Transcripts will appear here")
@@ -64,6 +59,18 @@ struct MenuBarView: View {
         }
         .padding(10)
         .frame(width: 340)
+        .onAppear {
+            // Warm up audio engine for the level meter
+            if !appState.audioEngine.isWarm {
+                try? appState.audioEngine.warmUp()
+            }
+        }
+        .onDisappear {
+            // Cool down if no active session needs the engine
+            if !appState.hotkeyState.isRecording && !appState.activeInputDeviceKeepWarm {
+                appState.audioEngine.coolDown()
+            }
+        }
         .background {
             Button("") {
                 appState.debugEnabled.toggle()
@@ -748,22 +755,21 @@ private struct DeviceIcon: View {
     }
 }
 
-private struct AudioLevelMeter: View {
+private struct VerticalLevelMeter: View {
     let audioEngine: AudioEngine
     @State private var level: Float = 0
     @State private var timer: Timer?
 
     var body: some View {
         GeometryReader { geo in
-            ZStack(alignment: .leading) {
+            ZStack(alignment: .bottom) {
                 RoundedRectangle(cornerRadius: 2, style: .continuous)
                     .fill(Color.primary.opacity(0.06))
                 RoundedRectangle(cornerRadius: 2, style: .continuous)
                     .fill(level > 0.7 ? Color.orange : Color.green)
-                    .frame(width: geo.size.width * CGFloat(level))
+                    .frame(height: geo.size.height * CGFloat(min(1, level)))
             }
         }
-        .frame(height: 4)
         .onAppear {
             timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { _ in
                 level = audioEngine.currentLevel
@@ -788,6 +794,7 @@ private struct InputDeviceList: View {
                     InputDeviceListRow(
                         device: device,
                         isActive: device.uid == appState.activeInputDeviceUID,
+                        audioEngine: appState.audioEngine,
                         onSelect: { appState.selectInputDevice(uid: device.uid) }
                     )
                 }
@@ -799,6 +806,7 @@ private struct InputDeviceList: View {
 private struct InputDeviceListRow: View {
     let device: AppState.InputDeviceInfo
     let isActive: Bool
+    let audioEngine: AudioEngine
     let onSelect: () -> Void
 
     @State private var isHovered = false
@@ -821,9 +829,14 @@ private struct InputDeviceListRow: View {
                 }
                 Spacer()
                 if isActive {
-                    Image(systemName: "checkmark")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.orange)
+                    if audioEngine.isWarm {
+                        VerticalLevelMeter(audioEngine: audioEngine)
+                            .frame(width: 4, height: 16)
+                    } else {
+                        Image(systemName: "checkmark")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+                    }
                 }
             }
             .padding(.horizontal, 10)
