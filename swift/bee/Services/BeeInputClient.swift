@@ -176,10 +176,16 @@ final class BeeInputClient: Sendable {
         NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
         window.makeKeyAndOrderFront(nil)
 
+        let previousApp = NSWorkspace.shared.frontmostApplication
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             beeLog("IME ACTIVATE: stealth focus cycle — closing temp window")
             window.close()
-            // OS automatically restores focus to previous app → triggers activateServer
+
+            if let previousApp {
+                beeLog("IME ACTIVATE: stealth focus cycle — reactivating \(previousApp.localizedName ?? "?") pid=\(previousApp.processIdentifier)")
+                previousApp.activate(options: [.activateIgnoringOtherApps])
+            }
         }
     }
 
