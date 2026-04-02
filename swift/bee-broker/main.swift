@@ -67,9 +67,8 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
         queue.async {
             self.imeConnections[imeInstanceID] = conn
             self.activeIMEInstanceID = imeInstanceID
-            brokerLog(
-                "imeHello: id=\(imeInstanceID.prefix(8)) flushing \(self.imeWaiters.count) waiter(s)"
-            )
+            let waiterCount = self.imeWaiters.count
+            brokerLog("imeHello: id=\(imeInstanceID.prefix(8))\(waiterCount > 0 ? " (unblocking \(waiterCount) waiter\(waiterCount == 1 ? "" : "s"))" : "")")
             let waiters = self.imeWaiters
             self.imeWaiters.removeAll()
             for waiter in waiters {
@@ -105,7 +104,8 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
             self.appConnections[appInstanceID] = conn
             let info = SessionInfo(id: sessionID, appInstanceID: appInstanceID)
             self.session = .prepared(info)
-            brokerLog("prepareSession: id=\(sessionID.prefix(8))")
+            let hasIME = self.imeProxy() != nil
+            brokerLog("prepareSession: id=\(sessionID.prefix(8)) imeConnected=\(hasIME)")
             if let ime = self.imeProxy() {
                 ime.handleNewPreparedSession(sessionID)
             }
@@ -303,7 +303,7 @@ private final class BeeBrokerDelegate: NSObject, NSXPCListenerDelegate {
         newConnection.exportedObject = service
         newConnection.remoteObjectInterface = NSXPCInterface(with: BeeBrokerPeerXPC.self)
         newConnection.resume()
-        brokerLog("accepted new connection")
+        brokerLog("new XPC connection")
         return true
     }
 }

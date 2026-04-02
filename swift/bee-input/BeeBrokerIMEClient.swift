@@ -139,7 +139,7 @@ private final class BeeIMEPeerSink: NSObject, BeeBrokerPeerXPC {
             }
 
             guard let claimedSessionID = BeeBrokerIMEClient.shared.claimPreparedSessionSync() else {
-                beeInputLog("newPreparedSession: claim failed")
+                beeInputLog("newPreparedSession: claim failed (broker not in prepared state)")
                 return
             }
 

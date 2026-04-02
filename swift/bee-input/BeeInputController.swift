@@ -16,7 +16,7 @@ class BeeInputController: IMKInputController {
 
         // Synchronous XPC claim — blocks so deactivateServer can't race.
         guard let sessionID = BeeBrokerIMEClient.shared.claimPreparedSessionSync() else {
-            beeInputLog("activateServer: no prepared session")
+            beeInputLog("activateServer: no session to claim (spurious activation)")
             return
         }
 
@@ -32,7 +32,9 @@ class BeeInputController: IMKInputController {
         let isDictating = bridge.isDictating
         let sessionID = bridge.activeSessionID
 
-        beeInputLog("deactivateServer: hadMarkedText=\(hadMarkedText) isDictating=\(isDictating)")
+        beeInputLog(
+            "deactivateServer: session=\(sessionID?.uuidString.prefix(8) ?? "none") hadMarkedText=\(hadMarkedText)"
+        )
         bridge.deactivate(self)
 
         if isDictating, let sessionID {
@@ -47,7 +49,6 @@ class BeeInputController: IMKInputController {
     }
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
-        beeInputLog("handle!")
         guard let event, event.type == .keyDown,
             let sessionID = BeeIMEBridgeState.shared.activeSessionID
         else {
@@ -76,9 +77,8 @@ class BeeInputController: IMKInputController {
     // MARK: - Text handling
 
     func handleSetMarkedText(_ text: String) {
-        beeInputLog("handleSetMarkedText!")
         guard let client = self.client() else {
-            beeInputLog("handleSetMarkedText: NO CLIENT, dropping text")
+            beeInputLog("handleSetMarkedText: no client, dropping")
             return
         }
 
@@ -112,7 +112,6 @@ class BeeInputController: IMKInputController {
     }
 
     func handleCommitText(_ text: String, submit: Bool = false) {
-        beeInputLog("handleCommitText!")
         guard let client = self.client() else { return }
 
         var finalText = text
@@ -132,6 +131,7 @@ class BeeInputController: IMKInputController {
             return
         }
 
+        beeInputLog("commitText: \(finalText.prefix(60).debugDescription)")
         currentMarkedText = ""
         client.insertText(
             finalText + " ",
@@ -140,7 +140,7 @@ class BeeInputController: IMKInputController {
     }
 
     func handleCancelInput() {
-        beeInputLog("handleCancelInput!")
+        beeInputLog("cancelInput")
         guard let client = self.client() else { return }
         currentMarkedText = ""
         client.setMarkedText(

@@ -51,9 +51,9 @@ final class BeeIMEBridgeState: NSObject {
     }
 
     func deactivate(_ controller: BeeInputController) {
-        // Only deactivate if this is the current controller
         guard activeController === controller else { return }
         state = .idle
+        beeInputLog("state → idle")
     }
 
     func attachSession(sessionID: UUID) {
@@ -64,7 +64,7 @@ final class BeeIMEBridgeState: NSObject {
         case .serving(let c, _, _):
             client = c
         case .idle:
-            beeInputLog("attachSession: idle, ignoring session=\(sessionID.uuidString.prefix(8))")
+            beeInputLog("attachSession: ignored (idle, no controller)")
             return
         }
         state = .serving(client, sessionID: sessionID, pendingText: nil)
@@ -73,13 +73,8 @@ final class BeeIMEBridgeState: NSObject {
 
     func clearSessionIfMatching(sessionID: UUID) {
         guard case .serving(let client, let currentID, _) = state, currentID == sessionID else { return }
-        beeInputLog("clearSession: session=\(sessionID.uuidString.prefix(8))")
         state = .activated(client)
-    }
-
-    func endSession() {
-        guard case .serving(let client, _, _) = state else { return }
-        state = .activated(client)
+        beeInputLog("state → activated (session \(sessionID.uuidString.prefix(8)) cleared)")
     }
 
     // MARK: - Text routing (called from XPC callbacks, dispatches to main)
@@ -101,7 +96,7 @@ final class BeeIMEBridgeState: NSObject {
             if let ctrl = client.controller {
                 ctrl.handleSetMarkedText(text)
             } else {
-                beeInputLog("setMarkedText: no controller, queuing")
+                beeInputLog("setMarkedText: controller lost, queuing")
                 self.state = .serving(client, sessionID: sessionID, pendingText: text)
             }
         }
