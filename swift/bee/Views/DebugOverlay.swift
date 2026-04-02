@@ -43,7 +43,9 @@ struct DebugOverlay: View {
     private var uiStateLabel: String {
         switch appState.uiState {
         case .idle: "Idle"
-        case .pending: "Pending"
+        case .pending(_, imeConfirmed: false): "Pending"
+        case .pending(_, imeConfirmed: true): "Pending (IME OK)"
+        case .pendingLockRequested: "PendingLock"
         case .pushToTalk: "PushToTalk"
         case .locked: "Locked"
         case .lockedOptionHeld: "LockedOptionHeld"

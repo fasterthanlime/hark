@@ -74,7 +74,7 @@ struct MenuBarView: View {
             case .notLoaded: return "No model"
             case .error(let message): return "Error: \(message)"
             }
-        case .pending:
+        case .pending, .pendingLockRequested:
             return "Starting session"
         case .pushToTalk:
             return "Listening"
@@ -205,7 +205,7 @@ private struct BeeOverviewView: View {
     private var statusLabel: String {
         switch appState.uiState {
         case .idle: return "Idle"
-        case .pending: return "Pending"
+        case .pending, .pendingLockRequested: return "Pending"
         case .pushToTalk: return "Push to talk"
         case .locked: return "Locked"
         case .lockedOptionHeld: return "Locked (option held)"

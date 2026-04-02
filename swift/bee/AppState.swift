@@ -36,8 +36,6 @@ final class AppState {
     private var activeSessionTargetPID: pid_t?
     fileprivate var activeSessionTargetAppName: String?
     fileprivate var activeSessionTargetAppIcon: NSImage?
-    private var activeSessionIMEConfirmed = false
-    private var pendingLockRequest = false
     private var pendingIMEAckTimeoutTask: Task<Void, Never>?
     private var isSessionParked = false
     private var distributedObservers: [NSObjectProtocol] = []
@@ -128,7 +126,8 @@ final class AppState {
 
     enum UIState {
         case idle
-        case pending(Session)
+        case pending(Session, imeConfirmed: Bool)
+        case pendingLockRequested(Session)  // ROpt released before IME confirmed
         case pushToTalk(Session)
         case locked(Session)
         case lockedOptionHeld(Session)
@@ -136,7 +135,8 @@ final class AppState {
         var session: Session? {
             switch self {
             case .idle: nil
-            case .pending(let s): s
+            case .pending(let s, _): s
+            case .pendingLockRequested(let s): s
             case .pushToTalk(let s): s
             case .locked(let s): s
             case .lockedOptionHeld(let s): s
@@ -165,13 +165,11 @@ final class AppState {
             activeSessionTargetPID = targetPID
             activeSessionTargetAppName = targetApp?.localizedName
             activeSessionTargetAppIcon = targetApp?.icon
-            activeSessionIMEConfirmed = false
-            pendingLockRequest = false
             pendingIMEAckTimeoutTask?.cancel()
             pendingIMEAckTimeoutTask = nil
             isSessionParked = false
             parkedOverlayText = ""
-            uiState = .pending(session)
+            uiState = .pending(session, imeConfirmed: false)
             startPendingTimer(session: session)
             startIMEAckTimeoutIfNeeded(session: session)
             let config = TranscriptionService.SessionConfig(
@@ -199,13 +197,13 @@ final class AppState {
         }
 
         switch uiState {
-        case .pending(let session):
-            guard activeSessionIMEConfirmed else {
-                pendingLockRequest = true
-                beeLog("SESSION: ROpt up while IME unconfirmed, waiting")
-                startIMEAckTimeoutIfNeeded(session: session)
-                return false
-            }
+        case .pending(let session, imeConfirmed: false):
+            beeLog("SESSION: ROpt up while IME unconfirmed, waiting")
+            uiState = .pendingLockRequested(session)
+            startIMEAckTimeoutIfNeeded(session: session)
+            return false
+
+        case .pending(let session, imeConfirmed: true):
             pendingTimer?.cancel()
             uiState = .locked(session)
             playRecordingStartedSound()
@@ -272,7 +270,7 @@ final class AppState {
 
     func handleOtherKey(keyCode: UInt16) -> Bool {
         switch uiState {
-        case .pending(let session):
+        case .pending(let session, _):
             pendingTimer?.cancel()
             transitionToIdle()
 
@@ -298,13 +296,11 @@ final class AppState {
         pendingTimer = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(300))
             while !Task.isCancelled {
-                guard case .pending(let s) = uiState, s.id == session.id else { return }
-                guard activeSessionIMEConfirmed else {
+                guard case .pending(let s, let confirmed) = uiState, s.id == session.id else { return }
+                guard confirmed else {
                     try? await Task.sleep(for: .milliseconds(100))
                     continue
                 }
-                guard !pendingLockRequest else { return }
-
                 uiState = .pushToTalk(s)
                 playRecordingStartedSound()
                 return
@@ -319,15 +315,17 @@ final class AppState {
             guard let self else { return }
             defer { self.pendingIMEAckTimeoutTask = nil }
 
-            guard case .pending(let s) = self.uiState, s.id == session.id else { return }
-            guard !self.activeSessionIMEConfirmed else { return }
+            switch self.uiState {
+            case .pending(let s, imeConfirmed: false) where s.id == session.id: break
+            case .pendingLockRequested(let s) where s.id == session.id: break
+            default: return
+            }
 
             let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
             beeLog(
                 "SESSION: IME confirm timeout id=\(session.id.uuidString.prefix(8)) targetPID=\(self.activeSessionTargetPID.map(String.init) ?? "nil") frontmostPID=\(frontmostPID.map(String.init) ?? "nil"), aborting"
             )
             self.logFocusDiagnostics(reason: "ime-confirm-timeout")
-            self.pendingIMEAckTimeoutCount += 1
             self.playStartFailureSound()
             self.pendingTimer?.cancel()
             self.transitionToIdle()
@@ -471,8 +469,6 @@ final class AppState {
         activeSessionTargetPID = nil
         activeSessionTargetAppName = nil
         activeSessionTargetAppIcon = nil
-        activeSessionIMEConfirmed = false
-        pendingLockRequest = false
         isSessionParked = false
         hideParkedOverlay()
 
@@ -662,7 +658,7 @@ final class AppState {
     private func handleIMESubmit(sessionID: UUID?) {
         guard isNotificationForActiveSession(sessionID) else { return }
         switch uiState {
-        case .pending(let session):
+        case .pending(let session, _), .pendingLockRequested(let session):
             pendingTimer?.cancel()
             transitionToIdle()
             Task { await session.abort() }
@@ -677,7 +673,7 @@ final class AppState {
     private func handleIMECancel(sessionID: UUID?) {
         guard isNotificationForActiveSession(sessionID) else { return }
         switch uiState {
-        case .pending(let session):
+        case .pending(let session, _), .pendingLockRequested(let session):
             pendingTimer?.cancel()
             transitionToIdle()
             Task { await session.abort() }
@@ -692,7 +688,7 @@ final class AppState {
     private func handleIMEUserTyped(sessionID: UUID?) {
         guard isNotificationForActiveSession(sessionID) else { return }
         switch uiState {
-        case .pending(let session):
+        case .pending(let session, _), .pendingLockRequested(let session):
             pendingTimer?.cancel()
             transitionToIdle()
             Task { await session.abort() }
@@ -715,7 +711,7 @@ final class AppState {
         )
 
         switch uiState {
-        case .pending(let session):
+        case .pending(let session, _), .pendingLockRequested(let session):
             pendingTimer?.cancel()
             parkSession(session, reason: "imeContextLost")
         case .pushToTalk(let session), .locked(let session), .lockedOptionHeld(let session):
@@ -729,25 +725,27 @@ final class AppState {
         guard isNotificationForActiveSession(sessionID) else { return }
         if isSessionParked, let session = uiState.session {
             beeLog("SESSION: IME route restored id=\(session.id.uuidString.prefix(8))")
-            activeSessionIMEConfirmed = true
             isSessionParked = false
             hideParkedOverlay()
             Task { await session.routeDidBecomeActive() }
             return
         }
-        guard !activeSessionIMEConfirmed else { return }
 
-        activeSessionIMEConfirmed = true
-        pendingIMEAckTimeoutCount = 0
-        guard case .pending(let session) = uiState else { return }
+        switch uiState {
+        case .pending(let session, imeConfirmed: false):
+            beeLog("SESSION: IME confirmed id=\(session.id.uuidString.prefix(8))")
+            uiState = .pending(session, imeConfirmed: true)
+            Task { await session.routeDidBecomeActive() }
 
-        beeLog("SESSION: IME confirmed id=\(session.id.uuidString.prefix(8))")
-        Task { await session.routeDidBecomeActive() }
-        if pendingLockRequest {
-            pendingLockRequest = false
+        case .pendingLockRequested(let session):
+            beeLog("SESSION: IME confirmed id=\(session.id.uuidString.prefix(8)), locking")
             pendingTimer?.cancel()
             uiState = .locked(session)
+            Task { await session.routeDidBecomeActive() }
             playRecordingStartedSound()
+
+        default:
+            break
         }
     }
 
@@ -827,8 +825,6 @@ final class AppState {
     private func transitionToIdle() {
         uiState = .idle
         pendingTimer?.cancel()
-        activeSessionIMEConfirmed = false
-        pendingLockRequest = false
         isSessionParked = false
         hideParkedOverlay()
     }
