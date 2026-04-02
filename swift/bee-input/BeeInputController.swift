@@ -20,8 +20,6 @@ class BeeInputController: IMKInputController {
 
         // Defer the claim by 60ms. If deactivateServer fires before then,
         // the claim is cancelled and the session stays prepared for retry.
-        pendingClaim?.cancel()
-        pendingClaim = nil
         let token = UUID()
         pendingClaimToken = token
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
