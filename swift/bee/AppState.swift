@@ -237,6 +237,12 @@ final class AppState {
 
     func handleEscape() -> Bool {
         switch uiState {
+        case .pending(let session, _), .pendingLockRequested(let session):
+            pendingTimer?.cancel()
+            transitionToIdle()
+            Task { await session.abort() }
+            return true  // swallowed
+
         case .pushToTalk(let session):
             transitionToIdle()
             Task { await session.cancel() }
@@ -250,7 +256,7 @@ final class AppState {
             Task { await session.cancel() }
             return true  // swallowed
 
-        default:
+        case .idle:
             return false
         }
     }
@@ -269,7 +275,7 @@ final class AppState {
 
     func handleOtherKey(keyCode: UInt16) -> Bool {
         switch uiState {
-        case .pending(let session, _):
+        case .pending(let session, _), .pendingLockRequested(let session):
             pendingTimer?.cancel()
             transitionToIdle()
 
@@ -474,13 +480,10 @@ final class AppState {
 
         if uiState.session?.id == resultID {
             transitionToIdle()
+            activeSessionTargetPID = nil
+            activeSessionTargetAppName = nil
+            activeSessionTargetAppIcon = nil
         }
-
-        activeSessionTargetPID = nil
-        activeSessionTargetAppName = nil
-        activeSessionTargetAppIcon = nil
-        isSessionParked = false
-        hideParkedOverlay()
 
         applyWarmPolicyForCurrentState()
     }

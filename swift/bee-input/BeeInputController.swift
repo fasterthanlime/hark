@@ -6,9 +6,11 @@ import InputMethodKit
 class BeeInputController: IMKInputController {
     private var currentMarkedText: String = ""
     private var autoCommittedPrefix: String = ""
+    private var didRequestSwitchAway: Bool = false
 
     override func activateServer(_ sender: Any!) {
         super.activateServer(sender)
+        didRequestSwitchAway = false
         let bridge = BeeIMEBridgeState.shared
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let clientIdentity = currentClientIdentity()
@@ -60,9 +62,12 @@ class BeeInputController: IMKInputController {
         }
         guard let sessionID = BeeIMEBridgeState.shared.activeSessionID else {
             // User is typing but no session — switch away so keystrokes
-            // go to the real input source.
-            beeInputLog("handle: no session, switching to next input source")
-            switchToNextInputSource()
+            // go to the real input source. Only try once per activation.
+            if !didRequestSwitchAway {
+                didRequestSwitchAway = true
+                beeInputLog("handle: no session, switching to next input source")
+                switchToNextInputSource()
+            }
             return false
         }
 
