@@ -1,5 +1,7 @@
 import AppKit
+import Carbon
 import Foundation
+import InputMethodKit
 
 /// Holds all per-activation state. Lives on the bridge, not on the controller.
 /// IMKInputController instances are transient — the OS can create new ones
