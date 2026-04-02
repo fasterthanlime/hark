@@ -115,12 +115,8 @@ final class BeeInputClient: Sendable {
         guard let beeSource = findBeeInputSource() else { return }
         let result = TISSelectInputSource(beeSource)
         beeLog("IME RETRY: TISSelectInputSource result=\(result)")
-        let src = CGEventSource(stateID: .hidSystemState)
-        if let shiftUp = CGEvent(
-            keyboardEventSource: src, virtualKey: UInt16(kVK_Shift), keyDown: false)
-        {
-            shiftUp.post(tap: .cghidEventTap)
-        }
+        // NOTE: simulated Shift key-up removed — was causing immediate
+        // deactivateServer after activateServer.
     }
 
     private static func selectBeeInputSource() async -> Bool {
@@ -143,15 +139,6 @@ final class BeeInputClient: Sendable {
         beeLog("IME ACTIVATE: TISSelectInputSource result=\(result)")
         guard result == noErr else {
             return false
-        }
-
-        // Simulated Event: post a Shift key-up to force the target app's
-        // NSTextInputContext to notice the new input source.
-        let src = CGEventSource(stateID: .hidSystemState)
-        if let shiftUp = CGEvent(
-            keyboardEventSource: src, virtualKey: UInt16(kVK_Shift), keyDown: false)
-        {
-            shiftUp.post(tap: .cghidEventTap)
         }
 
         return true
