@@ -52,11 +52,9 @@ class BeeInputController: IMKInputController {
                 else {
                     beeInputLog(
                         """
-                        activateServer: no prepared session for client, switching away \
+                        activateServer: no prepared session for client, ignoring \
                         clientID=\(clientIdentity ?? "nil") pid=\(frontmostPID.map(String.init) ?? "nil")
                         """)
-                    BeeIMEBridgeState.shared.switchAwayFromBeeInput()
-                    beeInputLog("activateServer: switchAwayFromBeeInput requested")
                     return
                 }
                 beeInputLog(
