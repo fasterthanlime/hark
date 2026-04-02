@@ -20,6 +20,7 @@
 		3C5C473887772CFDAA7535EE /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F154B4296E76BCBEDD666C34 /* MenuBarView.swift */; };
 		4335D0C20A8824861A2AAA67 /* beeTemplate.tiff in Resources */ = {isa = PBXBuildFile; fileRef = 6AEB22F163C305E4983946FF /* beeTemplate.tiff */; };
 		4A7942D230B46253EF1197E9 /* TranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F7D08BD88D7C596EA782773 /* TranscriptionService.swift */; };
+		514D623CFD4058E05CD66C26 /* bee-symbols.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 3373155088BFE82A77DBEB84 /* bee-symbols.ttf */; };
 		5371F0C2104FC35C2BD05B8C /* bee-start-failure.wav in Resources */ = {isa = PBXBuildFile; fileRef = C6ADFA5F8174FA06ABEE475C /* bee-start-failure.wav */; };
 		599EE6A4E7B1CA2D6CE47107 /* AudioEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 221AD035A01421E2640E350E /* AudioEngine.swift */; };
 		59A3A4BE607D2198DDD3609D /* TranscriptionHistoryItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC8AFB3851834181E8F4EF77 /* TranscriptionHistoryItem.swift */; };
@@ -41,6 +42,7 @@
 		E2A0D8D0832AC86EC326F654 /* bee-recording-started.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1C71D5EE1E044D47FB362F47 /* bee-recording-started.wav */; };
 		EAD815EAA627296BFA0C4EA3 /* BeeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7059CA841745C6E21DA830A3 /* BeeApp.swift */; };
 		F93A846E10BB3E70003F07C6 /* STTModelDefinition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5639654E7D993F82C6C5ED91 /* STTModelDefinition.swift */; };
+		FA204872D43101C367B49C40 /* AudioDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 474050E42EB9FF6AFCF33BDC /* AudioDiagnostics.swift */; };
 		FCE25FA72869D4A5885A40D0 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F2645E6EBE2D4D3E1BFA17C /* AppState.swift */; };
 /* End PBXBuildFile section */
 
@@ -54,6 +56,7 @@
 		2A7D3D2469CBFB9FF5D9FD91 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		2F54E5F987731158C437D997 /* BeeInputAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeeInputAppDelegate.swift; sourceTree = "<group>"; };
 		2F7D08BD88D7C596EA782773 /* TranscriptionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionService.swift; sourceTree = "<group>"; };
+		3373155088BFE82A77DBEB84 /* bee-symbols.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "bee-symbols.ttf"; sourceTree = "<group>"; };
 		37F08633E13558AA02437706 /* bee-cancel.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "bee-cancel.wav"; sourceTree = "<group>"; };
 		3875771843FEF99CA889E51D /* BeeBrokerProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeeBrokerProtocol.swift; sourceTree = "<group>"; };
 		3CCEE7C20F26099D82D42387 /* DebugOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugOverlay.swift; sourceTree = "<group>"; };
@@ -61,6 +64,7 @@
 		42C5774A124F08F4B8474598 /* BeeIMEBridgeState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeeIMEBridgeState.swift; sourceTree = "<group>"; };
 		4337136F79C38C42B8B2E91A /* beeBroker */ = {isa = PBXFileReference; includeInIndex = 0; path = beeBroker; sourceTree = BUILT_PRODUCTS_DIR; };
 		44D01D1FC50FBE993FD0716F /* InputMethodKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = InputMethodKit.framework; path = System/Library/Frameworks/InputMethodKit.framework; sourceTree = SDKROOT; };
+		474050E42EB9FF6AFCF33BDC /* AudioDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDiagnostics.swift; sourceTree = "<group>"; };
 		562E4DCCA4CCA0B2CB287B0E /* bee-commit.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "bee-commit.wav"; sourceTree = "<group>"; };
 		5639654E7D993F82C6C5ED91 /* STTModelDefinition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = STTModelDefinition.swift; sourceTree = "<group>"; };
 		5A35BE9759CA9C8519D87363 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -113,6 +117,7 @@
 		1A0961E2FC894633F169BD7D /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				474050E42EB9FF6AFCF33BDC /* AudioDiagnostics.swift */,
 				3CCEE7C20F26099D82D42387 /* DebugOverlay.swift */,
 				8597D72025F09D1E04C3B095 /* DebugPanel.swift */,
 				F154B4296E76BCBEDD666C34 /* MenuBarView.swift */,
@@ -179,6 +184,14 @@
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
+		AE7AA50185587FFF73A786FE /* Fonts */ = {
+			isa = PBXGroup;
+			children = (
+				3373155088BFE82A77DBEB84 /* bee-symbols.ttf */,
+			);
+			path = Fonts;
+			sourceTree = "<group>";
+		};
 		B5B81CB48103AC5B7169DEE4 /* bee */ = {
 			isa = PBXGroup;
 			children = (
@@ -191,6 +204,7 @@
 				977266C3895F1E154E74F051 /* HotkeyMonitor.swift */,
 				676164F78A7A1315DBA4D712 /* Session.swift */,
 				A4E52C13C56D37363BA384EF /* SoundEffects.swift */,
+				AE7AA50185587FFF73A786FE /* Fonts */,
 				44E81B4665D7850010F15D72 /* Models */,
 				F2AD318CDACC7F7F4250B2E0 /* Services */,
 				0593C333226D7927B2F2D5F3 /* Sounds */,
@@ -341,6 +355,7 @@
 				2BAE7612802B29D35EA976D7 /* bee-commit.wav in Resources */,
 				E2A0D8D0832AC86EC326F654 /* bee-recording-started.wav in Resources */,
 				5371F0C2104FC35C2BD05B8C /* bee-start-failure.wav in Resources */,
+				514D623CFD4058E05CD66C26 /* bee-symbols.ttf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -352,6 +367,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				FCE25FA72869D4A5885A40D0 /* AppState.swift in Sources */,
+				FA204872D43101C367B49C40 /* AudioDiagnostics.swift in Sources */,
 				599EE6A4E7B1CA2D6CE47107 /* AudioEngine.swift in Sources */,
 				ADA9083DFC2A9EDCB6698240 /* AudioPipeline.swift in Sources */,
 				EAD815EAA627296BFA0C4EA3 /* BeeApp.swift in Sources */,

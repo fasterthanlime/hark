@@ -1,14 +1,15 @@
 import AVFoundation
+import AudioToolbox
+import CoreAudio
 import Foundation
 import os
 
 private let logger = Logger(subsystem: "fasterthanlime.bee", category: "AudioEngine")
 
-/// Shared audio infrastructure. Runs continuously when warm, capturing audio
-/// into a circular pre-buffer that sessions tap into.
+/// Shared audio infrastructure. Uses a raw AUHAL for capture so we can
+/// select any input device, not just the system default.
 ///
-/// Resamples to 16kHz in the audio callback and yields into per-session
-/// Channel 0 pipelines. That's it — no VAD, no drain, no phases.
+/// Resamples to 16kHz and yields into per-session Channel 0 pipelines.
 final class AudioEngine: @unchecked Sendable {
     enum State {
         case cold
@@ -18,7 +19,7 @@ final class AudioEngine: @unchecked Sendable {
     private(set) var state: State = .cold
     private let lock = NSLock()
 
-    private var engine: AVAudioEngine?
+    fileprivate var auhalUnit: AudioUnit?
     private(set) var nativeSampleRate: Double = 0
     static let targetSampleRate: Double = 16_000
 
@@ -28,12 +29,26 @@ final class AudioEngine: @unchecked Sendable {
     private var preBufferWriteIndex = 0
     private var preBufferCapacity = 0
 
+    // Render buffer for AUHAL callback
+    private var renderBufferList: UnsafeMutableAudioBufferListPointer?
+    private var renderBufferData: UnsafeMutablePointer<Float>?
+    private var renderBufferCapacity: UInt32 = 4096
+
     // Per-session raw audio pipelines (Channel 0)
     private var activePipelines: [UUID: RawAudioPipeline] = [:]
 
     // Device management
     var selectedDeviceUID: String?
     var deviceWarmPolicy: [String: Bool] = [:]
+
+    // Audio level & stats (updated from audio callback)
+    private(set) var currentLevel: Float = 0
+    private(set) var totalBuffersReceived: UInt64 = 0
+    private(set) var totalSamplesReceived: UInt64 = 0
+    private(set) var activePipelineCount: Int = 0
+    private(set) var channelCount: UInt32 = 0
+    private(set) var currentRMS: Float = 0
+    private(set) var peakLevel: Float = 0
 
     // MARK: - Engine Lifecycle
 
@@ -42,49 +57,244 @@ final class AudioEngine: @unchecked Sendable {
         guard state == .cold else { lock.unlock(); return }
         lock.unlock()
 
-        let engine = AVAudioEngine()
-        let inputNode = engine.inputNode
-        let nativeFormat = inputNode.outputFormat(forBus: 0)
-
-        guard nativeFormat.sampleRate > 0 else {
+        // 1. Create AUHAL
+        var componentDesc = AudioComponentDescription(
+            componentType: kAudioUnitType_Output,
+            componentSubType: kAudioUnitSubType_HALOutput,
+            componentManufacturer: kAudioUnitManufacturer_Apple,
+            componentFlags: 0,
+            componentFlagsMask: 0
+        )
+        guard let component = AudioComponentFindNext(nil, &componentDesc) else {
+            beeLog("AUDIO: ⚠️ Could not find HALOutput component")
             throw AudioEngineError.noMicrophone
         }
+        var unit: AudioUnit?
+        try checkOSStatus(AudioComponentInstanceNew(component, &unit), "AudioComponentInstanceNew")
+        guard let unit else { throw AudioEngineError.noMicrophone }
 
-        let nativeRate = nativeFormat.sampleRate
+        // 2. Enable input on element 1
+        var enableIO: UInt32 = 1
+        try checkOSStatus(AudioUnitSetProperty(
+            unit,
+            kAudioOutputUnitProperty_EnableIO,
+            kAudioUnitScope_Input,
+            1,
+            &enableIO,
+            UInt32(MemoryLayout<UInt32>.size)
+        ), "EnableIO input")
+
+        // 3. Disable output on element 0 (capture only)
+        var disableIO: UInt32 = 0
+        try checkOSStatus(AudioUnitSetProperty(
+            unit,
+            kAudioOutputUnitProperty_EnableIO,
+            kAudioUnitScope_Output,
+            0,
+            &disableIO,
+            UInt32(MemoryLayout<UInt32>.size)
+        ), "DisableIO output")
+
+        // 4. Set the input device
+        let deviceID: AudioDeviceID
+        if let uid = selectedDeviceUID, let resolved = Self.resolveAudioDeviceID(uid: uid) {
+            deviceID = resolved
+            beeLog("AUDIO: Using device \(uid) (AudioDeviceID: \(deviceID))")
+        } else {
+            deviceID = Self.defaultInputDeviceID()
+            beeLog("AUDIO: Using system default input (AudioDeviceID: \(deviceID))")
+        }
+
+        var devID = deviceID
+        try checkOSStatus(AudioUnitSetProperty(
+            unit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &devID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        ), "SetCurrentDevice")
+
+        // 5. Query the device's native format (input scope, element 1)
+        var deviceFormat = AudioStreamBasicDescription()
+        var formatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        try checkOSStatus(AudioUnitGetProperty(
+            unit,
+            kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Input,
+            1,
+            &deviceFormat,
+            &formatSize
+        ), "GetStreamFormat (device)")
+
+        let nativeRate = deviceFormat.mSampleRate
+        let nativeChannels = deviceFormat.mChannelsPerFrame
+        beeLog("AUDIO: Device format: \(nativeRate) Hz, \(nativeChannels) ch, \(deviceFormat.mBitsPerChannel) bit")
+
+        guard nativeRate > 0 else { throw AudioEngineError.noMicrophone }
+
+        // 6. Set our client format on output scope, element 1 (mono float32 at native rate)
+        var clientFormat = AudioStreamBasicDescription(
+            mSampleRate: nativeRate,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagsNativeFloatPacked | kAudioFormatFlagIsNonInterleaved,
+            mBytesPerPacket: 4,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 4,
+            mChannelsPerFrame: 1,
+            mBitsPerChannel: 32,
+            mReserved: 0
+        )
+        try checkOSStatus(AudioUnitSetProperty(
+            unit,
+            kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Output,
+            1,
+            &clientFormat,
+            UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        ), "SetStreamFormat (client)")
+
+        // 7. Allocate render buffer
+        let bufferData = UnsafeMutablePointer<Float>.allocate(capacity: Int(renderBufferCapacity))
+        renderBufferData = bufferData
+
+        // 8. Set input callback
+        var callbackStruct = AURenderCallbackStruct(
+            inputProc: auhalInputCallback,
+            inputProcRefCon: Unmanaged.passUnretained(self).toOpaque()
+        )
+        try checkOSStatus(AudioUnitSetProperty(
+            unit,
+            kAudioOutputUnitProperty_SetInputCallback,
+            kAudioUnitScope_Global,
+            0,
+            &callbackStruct,
+            UInt32(MemoryLayout<AURenderCallbackStruct>.size)
+        ), "SetInputCallback")
+
+        // 9. Initialize and start
+        try checkOSStatus(AudioUnitInitialize(unit), "AudioUnitInitialize")
 
         lock.lock()
         self.nativeSampleRate = nativeRate
+        self.channelCount = 1 // we request mono
         preBufferCapacity = Int(nativeRate * preBufferDuration)
         preBuffer = [Float](repeating: 0, count: preBufferCapacity)
         preBufferWriteIndex = 0
         state = .warm
         lock.unlock()
 
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: nativeFormat) {
-            [weak self] buffer, _ in
-            self?.handleAudioBuffer(buffer)
-        }
-
-        try engine.start()
-        self.engine = engine
-        logger.info("Audio engine warm: native rate = \(nativeRate) Hz")
+        try checkOSStatus(AudioOutputUnitStart(unit), "AudioOutputUnitStart")
+        self.auhalUnit = unit
+        beeLog("AUDIO: ✓ Engine warm: \(nativeRate) Hz from device \(deviceID)")
     }
 
     func coolDown() {
+        beeLog("AUDIO: Cooling down")
+        if let unit = auhalUnit {
+            AudioOutputUnitStop(unit)
+            AudioUnitUninitialize(unit)
+            AudioComponentInstanceDispose(unit)
+            auhalUnit = nil
+        }
+        renderBufferData?.deallocate()
+        renderBufferData = nil
+
         lock.lock()
         state = .cold
         preBuffer.removeAll()
         preBufferCapacity = 0
         preBufferWriteIndex = 0
+        currentLevel = 0
+        currentRMS = 0
+        peakLevel = 0
+        totalBuffersReceived = 0
+        totalSamplesReceived = 0
+        activePipelineCount = 0
         lock.unlock()
-
-        engine?.inputNode.removeTap(onBus: 0)
-        engine?.stop()
-        engine = nil
     }
 
     var isWarm: Bool {
         lock.withLock { state == .warm }
+    }
+
+    // MARK: - AUHAL Callback
+
+    /// Called by the AUHAL on the audio I/O thread.
+    fileprivate func handleInputCallback(
+        unit: AudioUnit,
+        ioActionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
+        inTimeStamp: UnsafePointer<AudioTimeStamp>,
+        inBusNumber: UInt32,
+        inNumberFrames: UInt32
+    ) {
+        // Ensure buffer is large enough
+        if inNumberFrames > renderBufferCapacity {
+            renderBufferData?.deallocate()
+            renderBufferCapacity = inNumberFrames * 2
+            renderBufferData = UnsafeMutablePointer<Float>.allocate(capacity: Int(renderBufferCapacity))
+        }
+        guard let bufferData = renderBufferData else { return }
+
+        // Set up AudioBufferList for mono float32
+        var bufferList = AudioBufferList(
+            mNumberBuffers: 1,
+            mBuffers: AudioBuffer(
+                mNumberChannels: 1,
+                mDataByteSize: inNumberFrames * 4,
+                mData: UnsafeMutableRawPointer(bufferData)
+            )
+        )
+
+        // Pull audio from the AUHAL (always element 1 = input bus)
+        let status = AudioUnitRender(unit, ioActionFlags, inTimeStamp, 1, inNumberFrames, &bufferList)
+        guard status == noErr else { return }
+
+        let count = Int(inNumberFrames)
+        let samples = UnsafeBufferPointer(start: bufferData, count: count)
+
+        lock.lock()
+
+        let nativeRate = nativeSampleRate
+
+        // Resample once for all sessions
+        var resampled: [Float]?
+        func getResampled() -> [Float] {
+            if let r = resampled { return r }
+            let r = AudioEngine.resample(Array(samples), from: nativeRate)
+            resampled = r
+            return r
+        }
+
+        for (_, pipeline) in activePipelines {
+            pipeline.send(getResampled())
+        }
+
+        // Fill circular pre-buffer (native rate)
+        if state == .warm && preBufferCapacity > 0 {
+            for sample in samples {
+                preBuffer[preBufferWriteIndex % preBufferCapacity] = sample
+                preBufferWriteIndex += 1
+            }
+        }
+
+        // Compute RMS level and stats
+        var sumSquares: Float = 0
+        var peak: Float = 0
+        for sample in samples {
+            sumSquares += sample * sample
+            let abs = Swift.abs(sample)
+            if abs > peak { peak = abs }
+        }
+        let rms = sqrtf(sumSquares / Float(count))
+        currentRMS = rms
+        currentLevel = min(1, rms * 5)
+        peakLevel = peak
+        totalBuffersReceived += 1
+        totalSamplesReceived += UInt64(count)
+        activePipelineCount = activePipelines.count
+
+        lock.unlock()
     }
 
     // MARK: - Capture API
@@ -126,43 +336,6 @@ final class AudioEngine: @unchecked Sendable {
         let pipeline = activePipelines.removeValue(forKey: sessionID)
         lock.unlock()
         pipeline?.finish()
-    }
-
-    // MARK: - Audio Callback
-
-    private func handleAudioBuffer(_ buffer: AVAudioPCMBuffer) {
-        guard let channelData = buffer.floatChannelData else { return }
-        let count = Int(buffer.frameLength)
-        guard count > 0 else { return }
-
-        let bufferPointer = UnsafeBufferPointer(start: channelData[0], count: count)
-
-        lock.lock()
-
-        let nativeRate = nativeSampleRate
-
-        // Resample once for all sessions
-        var resampled: [Float]?
-        func getResampled() -> [Float] {
-            if let r = resampled { return r }
-            let r = AudioEngine.resample(Array(bufferPointer), from: nativeRate)
-            resampled = r
-            return r
-        }
-
-        for (_, pipeline) in activePipelines {
-            pipeline.send(getResampled())
-        }
-
-        // Fill circular pre-buffer (native rate)
-        if state == .warm && preBufferCapacity > 0 {
-            for sample in bufferPointer {
-                preBuffer[preBufferWriteIndex % preBufferCapacity] = sample
-                preBufferWriteIndex += 1
-            }
-        }
-
-        lock.unlock()
     }
 
     // MARK: - Resampling
@@ -217,12 +390,89 @@ final class AudioEngine: @unchecked Sendable {
         }
     }
 
+    // MARK: - Device Management
+
     func selectDevice(uid: String) {
+        beeLog("AUDIO: Device selected: \(uid)")
         selectedDeviceUID = uid
+    }
+
+    static func resolveAudioDeviceID(uid: String) -> AudioDeviceID? {
+        var deviceID = AudioDeviceID(0)
+        var cfUID = uid as CFString
+        var translation = AudioValueTranslation(
+            mInputData: &cfUID,
+            mInputDataSize: UInt32(MemoryLayout<CFString>.size),
+            mOutputData: &deviceID,
+            mOutputDataSize: UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        var size = UInt32(MemoryLayout<AudioValueTranslation>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDeviceForUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address, 0, nil, &size, &translation
+        )
+        return status == noErr && deviceID != 0 ? deviceID : nil
+    }
+
+    private static func defaultInputDeviceID() -> AudioDeviceID {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address, 0, nil, &size, &deviceID
+        )
+        return deviceID
+    }
+
+    private func checkOSStatus(_ status: OSStatus, _ label: String) throws {
+        guard status == noErr else {
+            beeLog("AUDIO: ⚠️ \(label) failed: OSStatus \(status)")
+            throw AudioEngineError.osStatus(status, label)
+        }
     }
 }
 
+// MARK: - AUHAL C Callback
+
+private func auhalInputCallback(
+    inRefCon: UnsafeMutableRawPointer,
+    ioActionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
+    inTimeStamp: UnsafePointer<AudioTimeStamp>,
+    inBusNumber: UInt32,
+    inNumberFrames: UInt32,
+    ioData: UnsafeMutablePointer<AudioBufferList>?
+) -> OSStatus {
+    let engine = Unmanaged<AudioEngine>.fromOpaque(inRefCon).takeUnretainedValue()
+    engine.handleInputCallback(
+        unit: engine.auhalUnit!,
+        ioActionFlags: ioActionFlags,
+        inTimeStamp: inTimeStamp,
+        inBusNumber: inBusNumber,
+        inNumberFrames: inNumberFrames
+    )
+    return noErr
+}
+
+// MARK: - Errors
+
 enum AudioEngineError: LocalizedError {
     case noMicrophone
-    var errorDescription: String? { "No microphone available" }
+    case osStatus(OSStatus, String)
+
+    var errorDescription: String? {
+        switch self {
+        case .noMicrophone: return "No microphone available"
+        case .osStatus(let code, let label): return "\(label) failed (OSStatus \(code))"
+        }
+    }
 }

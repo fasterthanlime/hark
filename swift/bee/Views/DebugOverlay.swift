@@ -3,8 +3,12 @@ import SwiftUI
 struct DebugOverlay: View {
     let appState: AppState
 
+    @State private var refreshTick = false
+    @State private var refreshTimer: Timer?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            let _ = refreshTick // force redraw on timer
             Text("bee debug")
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
                 .foregroundStyle(.secondary)
@@ -12,7 +16,39 @@ struct DebugOverlay: View {
             Divider()
 
             row("ui", uiStateLabel)
+            row("ime", imeStateLabel)
             row("model", modelLabel)
+
+            Divider()
+
+            // Audio engine
+            let eng = appState.audioEngine
+            row("engine", eng.state == .warm ? "warm" : "cold")
+            row("device", appState.activeInputDeviceName ?? "default")
+            row("dev uid", eng.selectedDeviceUID ?? "(none)")
+            if eng.state == .warm {
+                row("rate", "\(Int(eng.nativeSampleRate)) Hz → \(Int(AudioEngine.targetSampleRate)) Hz")
+                row("ch", "\(eng.channelCount)")
+                row("bufs", "\(eng.totalBuffersReceived)")
+                row("samples", "\(eng.totalSamplesReceived)")
+                row("rms", String(format: "%.4f", eng.currentRMS))
+                row("peak", String(format: "%.4f", eng.peakLevel))
+                row("level", String(format: "%.1f%%", eng.currentLevel * 100))
+                row("pipes", "\(eng.activePipelineCount)")
+            }
+
+            Divider()
+
+            // Devices
+            row("devices", "\(appState.availableInputDevices.count) available")
+            row("warm", warmDevicesLabel)
+
+            Divider()
+
+            // Stats
+            row("sessions", "\(appState.totalSessions)")
+            row("words", "\(appState.totalWords)")
+            row("chars", "\(appState.totalCharacters)")
 
             if let session = appState.hotkeyState.session {
                 Divider()
@@ -38,10 +74,19 @@ struct DebugOverlay: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(.white.opacity(0.1), lineWidth: 0.5)
         }
+        .onAppear {
+            refreshTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+                refreshTick.toggle()
+            }
+        }
+        .onDisappear {
+            refreshTimer?.invalidate()
+        }
+        .onChange(of: refreshTick) { _, _ in }
     }
 
     private var uiStateLabel: String {
-        let hotkey: String = switch appState.hotkeyState {
+        switch appState.hotkeyState {
         case .idle: "Idle"
         case .held: "Held"
         case .released: "Released"
@@ -49,13 +94,20 @@ struct DebugOverlay: View {
         case .locked: "Locked"
         case .lockedOptionHeld: "LockedOptionHeld"
         }
-        let ime: String = switch appState.imeSessionState {
+    }
+
+    private var imeStateLabel: String {
+        switch appState.imeSessionState {
         case .inactive: "Inactive"
         case .activating: "Activating"
         case .active: "Active"
         case .parked: "Parked"
         }
-        return "\(hotkey) | IME: \(ime)"
+    }
+
+    private var warmDevicesLabel: String {
+        let warm = appState.audioEngine.deviceWarmPolicy.filter { $0.value }.count
+        return "\(warm) device(s)"
     }
 
     private var modelLabel: String {

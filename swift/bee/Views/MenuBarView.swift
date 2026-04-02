@@ -4,13 +4,17 @@ import SwiftUI
 
 struct MenuBarView: View {
     @Bindable var appState: AppState
-    @Environment(\.openSettings) private var openSettings
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             InputDeviceList(appState: appState)
                 .padding(.horizontal, 6)
+
+            if appState.audioEngine.isWarm {
+                AudioLevelMeter(audioEngine: appState.audioEngine)
+                    .padding(.horizontal, 6)
+            }
 
             Divider().padding(.horizontal, 2)
             if appState.transcriptionHistory.isEmpty {
@@ -32,13 +36,13 @@ struct MenuBarView: View {
 
             Button {
                 dismiss()
+                SettingsOpener.action?()
                 NSApp.activate(ignoringOtherApps: true)
-                openSettings()
                 DispatchQueue.main.async {
-                    let normalWindow = NSApp.orderedWindows.first { window in
-                        !(window is NSPanel)
+                    for window in NSApp.windows where !(window is NSPanel) {
+                        window.makeKeyAndOrderFront(nil)
+                        return
                     }
-                    normalWindow?.makeKeyAndOrderFront(nil)
                 }
             }
             label: {
@@ -60,6 +64,18 @@ struct MenuBarView: View {
         }
         .padding(10)
         .frame(width: 340)
+        .background {
+            Button("") {
+                appState.debugEnabled.toggle()
+                if appState.debugEnabled {
+                    DebugPanel.shared.show(appState: appState)
+                } else {
+                    DebugPanel.shared.hide()
+                }
+            }
+            .keyboardShortcut("d", modifiers: [.command])
+            .hidden()
+        }
     }
 
     private var currentStateLabel: String {
@@ -728,6 +744,33 @@ private struct DeviceIcon: View {
                 .symbolRenderingMode(.hierarchical)
         } else if let sfName = device.iconName {
             Image(systemName: sfName)
+        }
+    }
+}
+
+private struct AudioLevelMeter: View {
+    let audioEngine: AudioEngine
+    @State private var level: Float = 0
+    @State private var timer: Timer?
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(level > 0.7 ? Color.orange : Color.green)
+                    .frame(width: geo.size.width * CGFloat(level))
+            }
+        }
+        .frame(height: 4)
+        .onAppear {
+            timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { _ in
+                level = audioEngine.currentLevel
+            }
+        }
+        .onDisappear {
+            timer?.invalidate()
         }
     }
 }

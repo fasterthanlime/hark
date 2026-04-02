@@ -266,17 +266,6 @@ impl<'a> Session<'a> {
     /// Returns `Ok(Some(update))` when new text is available,
     /// `Ok(None)` if the audio was silence or not enough has buffered yet.
     pub fn feed(&mut self, samples: &[f32]) -> Result<Option<Update>, Exception> {
-        // VAD gate
-        if !self.speech_detected {
-            if let Some(ref mut vad) = self.vad {
-                let prob = vad.process_audio(samples).unwrap_or(0.0);
-                if prob < self.options.vad_threshold {
-                    return Ok(None);
-                }
-            }
-            self.speech_detected = true;
-        }
-
         self.buffer.extend_from_slice(samples);
 
         if self.buffer.len() < self.chunk_size_samples {
@@ -285,6 +274,19 @@ impl<'a> Session<'a> {
 
         // Drain one chunk
         let chunk: Vec<f32> = self.buffer.drain(..self.chunk_size_samples).collect();
+
+        // VAD gate: run on full chunks for reliable detection
+        if !self.speech_detected {
+            if let Some(ref mut vad) = self.vad {
+                let prob = vad.process_audio(&chunk).unwrap_or(0.0);
+                if prob < self.options.vad_threshold {
+                    // Pre-speech silence — discard chunk
+                    return Ok(None);
+                }
+            }
+            self.speech_detected = true;
+        }
+
         self.audio.extend_from_slice(&chunk);
         self.chunk_count += 1;
 

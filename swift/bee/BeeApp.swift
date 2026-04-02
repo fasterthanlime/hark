@@ -5,6 +5,12 @@ extension Notification.Name {
     static let beeOpenMainWindowRequest = Notification.Name("fasterthanlime.bee.openMainWindowRequest")
 }
 
+/// Stores the SwiftUI openSettings action so it can be called from outside SwiftUI.
+@MainActor
+enum SettingsOpener {
+    static var action: (() -> Void)?
+}
+
 final class BeeLifecycleDelegate: NSObject, NSApplicationDelegate {
     private var windowObservers: [NSObjectProtocol] = []
 
@@ -37,6 +43,10 @@ final class BeeLifecycleDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         )
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -227,18 +237,13 @@ final class StatusBarController: NSObject {
     func openSettingsWindow() {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-
-        // Find existing settings window or create one
-        let existingWindow = NSApp.windows.first { window in
-            !(window is NSPanel)
+        if let action = SettingsOpener.action {
+            action()
         }
-        if let window = existingWindow {
-            window.makeKeyAndOrderFront(nil)
-        } else {
-            // Trigger SwiftUI Settings scene
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-            DispatchQueue.main.async {
-                NSApp.windows.first { !(($0) is NSPanel) }?.makeKeyAndOrderFront(nil)
+        DispatchQueue.main.async {
+            for window in NSApp.windows where !(window is NSPanel) {
+                window.makeKeyAndOrderFront(nil)
+                return
             }
         }
     }
@@ -282,11 +287,19 @@ struct BeeApp: App {
         _statusBar = State(initialValue: StatusBarController(appState: state))
     }
 
+    @Environment(\.openWindow) private var openWindow
+
     var body: some Scene {
-        Settings {
+        Window("bee Settings", id: "bee-settings") {
             BeeSettingsView(appState: appState)
+                .onAppear {
+                    SettingsOpener.action = { [openWindow] in
+                        openWindow(id: "bee-settings")
+                    }
+                }
         }
         .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 780, height: 520)
         .commands {
             CommandGroup(after: .windowArrangement) {
                 Button("Toggle Debug Overlay") {

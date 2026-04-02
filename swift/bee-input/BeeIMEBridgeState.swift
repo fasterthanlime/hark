@@ -91,7 +91,7 @@ final class BeeIMESession {
         let attributed = NSAttributedString(
             string: displayText,
             attributes: [
-                .markedClauseSegment: 0,
+                .markedClauseSegment: 0
             ])
 
         client.setMarkedText(
@@ -198,7 +198,9 @@ final class BeeIMEBridgeState: NSObject {
         if case .serving(let session, let sessionID, let pending) = state {
             // A spurious activateServer (e.g. from a focus cycle) must not
             // destroy an active serving session. Just update the controller ref.
-            beeInputLog("activate: already serving session=\(sessionID.uuidString.prefix(8)), updating controller")
+            beeInputLog(
+                "activate: already serving session=\(sessionID.uuidString.prefix(8)), updating controller"
+            )
             session.controller = controller
             state = .serving(session, sessionID: sessionID, pendingText: pending)
             return
