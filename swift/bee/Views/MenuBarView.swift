@@ -11,8 +11,6 @@ struct MenuBarView: View {
                 InputDeviceList(appState: appState)
                     .padding(.horizontal, 6)
 
-                InputVolumeSlider(audioEngine: appState.audioEngine)
-                    .padding(.horizontal, 10)
 
                 Divider().padding(.horizontal, 2)
                 if appState.transcriptionHistory.isEmpty {
@@ -73,13 +71,22 @@ struct MenuBarView: View {
                     }
                 } label: {
                     Image(systemName: appState.audioEngine.echoEnabled ? "ear.fill" : "ear")
-                        .font(.caption)
+                        .font(.body)
                         .foregroundStyle(appState.audioEngine.echoEnabled ? .orange : .secondary)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(appState.audioEngine.echoEnabled ? Color.orange.opacity(0.15) : .clear)
+                        )
                 }
                 .buttonStyle(.plain)
                 .help("Listen to yourself (1s delay)")
 
-                VerticalLevelMeter(audioEngine: appState.audioEngine)
+                HStack(spacing: 4) {
+                    VerticalVolumeSlider(audioEngine: appState.audioEngine)
+                        .frame(width: 6)
+                    VerticalLevelMeter(audioEngine: appState.audioEngine)
+                }
             }
             .padding(.vertical, 10)
             .padding(.trailing, 8)
@@ -855,49 +862,52 @@ private struct VerticalLevelMeter: View {
     }
 }
 
-private struct InputVolumeSlider: View {
+private struct VerticalVolumeSlider: View {
     let audioEngine: AudioEngine
     @State private var volume: Float = 1.0
     @State private var isSupported = false
 
     var body: some View {
-        if isSupported {
-            HStack(spacing: 6) {
-                Image(systemName: "mic.fill")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 12)
-                Slider(value: Binding(
-                    get: { volume },
-                    set: { newValue in
-                        volume = newValue
-                        if let deviceID = audioEngine.currentDeviceID {
-                            AudioEngine.setInputVolume(deviceID: deviceID, volume: newValue)
+        GeometryReader { geo in
+            if isSupported {
+                ZStack(alignment: .bottom) {
+                    // Track
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(Color.primary.opacity(0.06))
+
+                    // Fill
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.6))
+                        .frame(height: geo.size.height * CGFloat(volume))
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            let fraction = 1 - Float(value.location.y / geo.size.height)
+                            let clamped = max(0, min(1, fraction))
+                            volume = clamped
+                            if let deviceID = audioEngine.currentDeviceID {
+                                AudioEngine.setInputVolume(deviceID: deviceID, volume: clamped)
+                            }
                         }
-                    }
-                ), in: 0...1)
-                .controlSize(.small)
-                Text("\(Int(volume * 100))%")
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 28, alignment: .trailing)
+                )
             }
-            .onAppear { refreshVolume() }
-        } else {
-            EmptyView()
-                .onAppear { refreshVolume() }
         }
+        .task { refreshVolume() }
     }
 
     func refreshVolume() {
         guard let deviceID = audioEngine.currentDeviceID else {
+            beeLog("MENUBAR: volume: no current device ID")
             isSupported = false
             return
         }
         if let vol = AudioEngine.getInputVolume(deviceID: deviceID) {
+            beeLog("MENUBAR: volume: device \(deviceID) supports input volume = \(vol)")
             volume = vol
             isSupported = true
         } else {
+            beeLog("MENUBAR: volume: device \(deviceID) does NOT support input volume")
             isSupported = false
         }
     }
