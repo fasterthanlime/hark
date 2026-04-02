@@ -202,8 +202,8 @@ final class BeeInputClient: Sendable {
             beeLog("IME ACTIVATE: TIS toggle — bee source not found")
             return
         }
-        guard let other = fallbackInputSource(current: beeSource) else {
-            beeLog("IME ACTIVATE: TIS toggle — no alternative input source")
+        guard let other = findKeyboardLayout() else {
+            beeLog("IME ACTIVATE: TIS toggle — no keyboard layout found")
             return
         }
 
@@ -211,10 +211,28 @@ final class BeeInputClient: Sendable {
         let beeID = inputSourceID(beeSource)
         let awayResult = TISSelectInputSource(other)
         beeLog("IME ACTIVATE: TIS toggle — selected \(otherID) (result=\(awayResult))")
-        usleep(500_000)
+        usleep(200_000)
         let backResult = TISSelectInputSource(beeSource)
         beeLog("IME ACTIVATE: TIS toggle — re-selected \(beeID) (result=\(backResult))")
-        usleep(500_000)
+    }
+
+    /// Find an actual keyboard layout (not an IME or palette) to use for TIS toggling.
+    private static func findKeyboardLayout() -> TISInputSource? {
+        // Prefer the current ASCII-capable keyboard layout
+        if let ascii = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
+           !isBeeInputSource(ascii)
+        {
+            return ascii
+        }
+
+        // Fall back to any keyboard layout that isn't bee
+        let props: [CFString: Any] = [
+            kTISPropertyInputSourceCategory: kTISCategoryKeyboardInputSource,
+            kTISPropertyInputSourceIsSelectCapable: true,
+        ]
+        guard let sources = TISCreateInputSourceList(props as CFDictionary, false)?
+            .takeRetainedValue() as? [TISInputSource] else { return nil }
+        return sources.first(where: { !isBeeInputSource($0) })
     }
 
     /// Nudge the focused UI element via Accessibility to trigger IME re-activation.
