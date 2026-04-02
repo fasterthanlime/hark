@@ -22,7 +22,7 @@ struct MenuBarView: View {
             } else {
                 VStack(spacing: 4) {
                     ForEach(appState.transcriptionHistory.prefix(3)) { item in
-                        TranscriptRow(text: item.text, timestamp: item.timestamp)
+                        TranscriptRow(text: item.text, timestamp: item.timestamp, appIcon: item.appIcon)
                     }
                 }
                 .padding(.horizontal, 6)
@@ -234,7 +234,7 @@ private struct BeeOverviewView: View {
                         }
                     } else {
                         ForEach(appState.transcriptionHistory.prefix(3)) { item in
-                            TranscriptRow(text: item.text, timestamp: item.timestamp)
+                            TranscriptRow(text: item.text, timestamp: item.timestamp, appIcon: item.appIcon)
                         }
                     }
                 }
@@ -336,7 +336,7 @@ private struct BeeHistoryView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(appState.transcriptionHistory.prefix(50)) { item in
-                            TranscriptRow(text: item.text, timestamp: item.timestamp)
+                            TranscriptRow(text: item.text, timestamp: item.timestamp, appIcon: item.appIcon)
                         }
                     }
                 }
@@ -710,7 +710,7 @@ private struct InputDeviceListRow: View {
                     if let subtitle = device.subtitle {
                         Text(subtitle)
                             .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 Spacer()
@@ -796,6 +796,7 @@ private struct KeyValueRow: View {
 private struct TranscriptRow: View {
     let text: String
     var timestamp: Date? = nil
+    var appIcon: NSImage? = nil
 
     @State private var copied = false
     @State private var isHovered = false
@@ -823,6 +824,12 @@ private struct TranscriptRow: View {
             copyText()
         } label: {
             HStack(alignment: .center, spacing: 8) {
+                if let appIcon {
+                    Image(nsImage: appIcon)
+                        .resizable()
+                        .frame(width: 16, height: 16)
+                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                }
                 Text(tailText)
                     .lineLimit(1)
                 Spacer(minLength: 4)

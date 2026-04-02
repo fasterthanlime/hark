@@ -1,14 +1,19 @@
+import AppKit
 import Foundation
 
 struct TranscriptionHistoryItem: Identifiable, Sendable {
     let id: UUID
     let text: String
     let timestamp: Date
+    let appName: String?
+    let appIcon: NSImage?
 
-    init(text: String) {
+    init(text: String, appName: String? = nil, appIcon: NSImage? = nil) {
         self.id = UUID()
         self.text = text
         self.timestamp = Date()
+        self.appName = appName
+        self.appIcon = appIcon
     }
 
     var displayText: String {

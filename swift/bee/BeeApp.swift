@@ -66,6 +66,7 @@ final class StatusBarController: NSObject {
     private weak var appState: AppState?
     private var animationProgress: CGFloat = 0  // 0 = idle, 1 = recording
     private var animationTimer: Timer?
+    private var lastCloseTime: CFTimeInterval = 0
 
     private static let itemWidth: CGFloat = 26
 
@@ -91,10 +92,14 @@ final class StatusBarController: NSObject {
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             guard let self, let button = self.statusItem.button else { return event }
             guard event.window == button.window else { return event }
+            // Let cmd+click through for menu bar icon repositioning
+            guard !event.modifierFlags.contains(.command) else { return event }
 
             let locationInButton = button.convert(event.locationInWindow, from: nil)
             if button.bounds.contains(locationInButton) {
-                if self.popover.isShown {
+                // If the popover just closed (transient behavior), don't reopen
+                let timeSinceClose = CACurrentMediaTime() - self.lastCloseTime
+                if self.popover.isShown || timeSinceClose < 0.2 {
                     self.closePopover()
                 } else {
                     self.showPopover()
@@ -132,6 +137,7 @@ final class StatusBarController: NSObject {
 
     private func closePopover() {
         popover.performClose(nil)
+        lastCloseTime = CACurrentMediaTime()
     }
 
     @objc func updateIcon() {

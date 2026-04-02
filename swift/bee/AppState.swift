@@ -163,10 +163,10 @@ final class AppState {
         let modelUID: String?
 
         var iconName: String {
-            // Check model UID for specific device types
             if let model = modelUID {
                 if model.contains("iPhone") { return "iphone" }
                 if model.contains("iPad") { return "ipad" }
+                if model.contains("Studio Display") { return "display" }
             }
             switch transport {
             case .builtIn: return "laptopcomputer"
@@ -178,9 +178,21 @@ final class AppState {
             }
         }
 
+        /// Clean model UID for display — strip USB vendor:product suffixes like ":1235:8218"
+        private var cleanModelUID: String? {
+            guard let model = modelUID, !model.isEmpty else { return nil }
+            // Strip trailing :XXXX:XXXX patterns (USB vendor/product IDs)
+            let cleaned = model.replacingOccurrences(
+                of: #":[0-9A-Fa-f]{2,}:[0-9A-Fa-f]{2,}$"#,
+                with: "",
+                options: .regularExpression
+            )
+            return cleaned.isEmpty ? nil : cleaned
+        }
+
         var subtitle: String? {
             var parts: [String] = []
-            if let model = modelUID, !model.isEmpty {
+            if let model = cleanModelUID {
                 parts.append(model)
             } else {
                 parts.append(transport.rawValue)
@@ -702,7 +714,11 @@ final class AppState {
     }
 
     private func addHistoryEntry(text: String) {
-        let item = TranscriptionHistoryItem(text: text)
+        let item = TranscriptionHistoryItem(
+            text: text,
+            appName: activeSessionTarget?.name,
+            appIcon: activeSessionTarget?.icon
+        )
         transcriptionHistory.insert(item, at: 0)
         if transcriptionHistory.count > 20 {
             transcriptionHistory = Array(transcriptionHistory.prefix(20))
