@@ -11,6 +11,9 @@ struct MenuBarView: View {
                 InputDeviceList(appState: appState)
                     .padding(.horizontal, 6)
 
+                InputVolumeSlider(audioEngine: appState.audioEngine)
+                    .padding(.horizontal, 10)
+
                 Divider().padding(.horizontal, 2)
                 if appState.transcriptionHistory.isEmpty {
                     Text("Transcripts will appear here")
@@ -58,14 +61,14 @@ struct MenuBarView: View {
             }
             .padding(10)
 
-            if appState.audioEngine.isWarm {
-                VerticalLevelMeter(audioEngine: appState.audioEngine)
-                    .frame(width: 6)
-                    .padding(.vertical, 10)
-                    .padding(.trailing, 6)
-            }
+            Divider()
+                .padding(.vertical, 8)
+
+            VerticalLevelMeter(audioEngine: appState.audioEngine)
+                .padding(.vertical, 12)
+                .padding(.trailing, 10)
         }
-        .frame(width: 340)
+        .frame(width: 390)
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
@@ -742,25 +745,134 @@ private struct DeviceIcon: View {
 private struct VerticalLevelMeter: View {
     let audioEngine: AudioEngine
     @State private var level: Float = 0
+    @State private var levelDb: Float = -60
     @State private var timer: Timer?
 
+    // dB tick marks and target range
+    private static let ticks: [Float] = [0, -6, -12, -18, -24, -30, -40, -50, -60]
+    private static let targetHigh: Float = -6   // top of ideal range
+    private static let targetLow: Float = -24   // bottom of ideal range
+    private static let floor: Float = -60
+
+    private func dbToFraction(_ db: Float) -> CGFloat {
+        CGFloat(max(0, min(1, (db - Self.floor) / -Self.floor)))
+    }
+
     var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .bottom) {
-                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                    .fill(Color.primary.opacity(0.06))
-                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                    .fill(level > 0.7 ? Color.orange : Color.green)
-                    .frame(height: geo.size.height * CGFloat(min(1, level)))
+        HStack(alignment: .center, spacing: 3) {
+            // Tick labels
+            GeometryReader { geo in
+                ForEach(Self.ticks, id: \.self) { db in
+                    let frac = dbToFraction(db)
+                    let y = geo.size.height * (1 - frac)
+                    Text(db == 0 ? " 0" : "\(Int(db))")
+                        .font(.system(size: 7, weight: .medium, design: .monospaced))
+                        .foregroundStyle(
+                            db >= Self.targetHigh ? Color.orange :
+                            db >= Self.targetLow ? Color.secondary :
+                            Color.secondary.opacity(0.4)
+                        )
+                        .position(x: geo.size.width / 2, y: y)
+                }
             }
+            .frame(width: 20)
+
+            // Meter bar with target range overlay
+            GeometryReader { geo in
+                ZStack(alignment: .bottom) {
+                    // Background
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(Color.primary.opacity(0.06))
+
+                    // Target range indicator
+                    let targetTop = geo.size.height * (1 - dbToFraction(Self.targetHigh))
+                    let targetBottom = geo.size.height * (1 - dbToFraction(Self.targetLow))
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(Color.green.opacity(0.1))
+                        .frame(height: targetBottom - targetTop)
+                        .offset(y: -(geo.size.height - targetBottom))
+
+                    // Level fill
+                    let fillHeight = geo.size.height * CGFloat(min(1, level))
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(meterColor)
+                        .frame(height: fillHeight)
+
+                    // Tick lines
+                    ForEach(Self.ticks, id: \.self) { db in
+                        let frac = dbToFraction(db)
+                        let y = geo.size.height * (1 - frac)
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.15))
+                            .frame(height: 0.5)
+                            .offset(y: y - geo.size.height / 2)
+                    }
+                }
+            }
+            .frame(width: 6)
         }
         .onAppear {
             timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { _ in
                 level = audioEngine.currentLevel
+                levelDb = audioEngine.currentLevelDb
             }
         }
         .onDisappear {
             timer?.invalidate()
+        }
+    }
+
+    private var meterColor: Color {
+        if levelDb > -3 { return .red }
+        if levelDb > Self.targetHigh { return .orange }
+        return .green
+    }
+}
+
+private struct InputVolumeSlider: View {
+    let audioEngine: AudioEngine
+    @State private var volume: Float = 1.0
+    @State private var isSupported = false
+
+    var body: some View {
+        if isSupported {
+            HStack(spacing: 6) {
+                Image(systemName: "mic.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 12)
+                Slider(value: Binding(
+                    get: { volume },
+                    set: { newValue in
+                        volume = newValue
+                        if let deviceID = audioEngine.currentDeviceID {
+                            AudioEngine.setInputVolume(deviceID: deviceID, volume: newValue)
+                        }
+                    }
+                ), in: 0...1)
+                .controlSize(.small)
+                Text("\(Int(volume * 100))%")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, alignment: .trailing)
+            }
+            .onAppear { refreshVolume() }
+        } else {
+            EmptyView()
+                .onAppear { refreshVolume() }
+        }
+    }
+
+    func refreshVolume() {
+        guard let deviceID = audioEngine.currentDeviceID else {
+            isSupported = false
+            return
+        }
+        if let vol = AudioEngine.getInputVolume(deviceID: deviceID) {
+            volume = vol
+            isSupported = true
+        } else {
+            isSupported = false
         }
     }
 }

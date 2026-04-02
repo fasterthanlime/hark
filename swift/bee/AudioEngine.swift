@@ -421,6 +421,53 @@ final class AudioEngine: @unchecked Sendable {
         return Array(UnsafeBufferPointer(start: cd[0], count: Int(dstBuffer.frameLength)))
     }
 
+    // MARK: - Input Volume
+
+    /// Get the input volume (0..1) for a device. Returns nil if the device doesn't support it.
+    static func getInputVolume(deviceID: AudioDeviceID) -> Float? {
+        var volume: Float32 = 0
+        var size = UInt32(MemoryLayout<Float32>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyVolumeScalar,
+            mScope: kAudioDevicePropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        guard AudioObjectHasProperty(deviceID, &address) else { return nil }
+
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &volume)
+        return status == noErr ? volume : nil
+    }
+
+    /// Set the input volume (0..1) for a device. Returns true if successful.
+    @discardableResult
+    static func setInputVolume(deviceID: AudioDeviceID, volume: Float) -> Bool {
+        var vol = max(0, min(1, volume))
+        let size = UInt32(MemoryLayout<Float32>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyVolumeScalar,
+            mScope: kAudioDevicePropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        guard AudioObjectHasProperty(deviceID, &address) else { return false }
+
+        var settable: DarwinBoolean = false
+        AudioObjectIsPropertySettable(deviceID, &address, &settable)
+        guard settable.boolValue else { return false }
+
+        let status = AudioObjectSetPropertyData(deviceID, &address, 0, nil, size, &vol)
+        return status == noErr
+    }
+
+    /// Get the AudioDeviceID for the currently selected device.
+    var currentDeviceID: AudioDeviceID? {
+        if let uid = selectedDeviceUID, let resolved = Self.resolveAudioDeviceID(uid: uid) {
+            return resolved
+        }
+        return Self.defaultInputDeviceID()
+    }
+
     // MARK: - Mic Permission
 
     static func requestPermission() async -> Bool {
