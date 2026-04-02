@@ -465,83 +465,76 @@ private struct AudioSettingsView: View {
     @State private var echoActive = false
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 20) {
-                // Device priority list with level meter
-                HStack(alignment: .top, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Input Devices")
-                            .font(.headline)
-                        Text("Drag to set priority. bee auto-switches to the highest-priority available device.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Input Devices")
+                    .font(.headline)
+                Text("Drag to set priority. bee auto-switches to the highest-priority available device.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
-                        List {
-                            ForEach(Array(allDevices.enumerated()), id: \.element.device.uid) { index, entry in
-                                AudioSettingsDeviceRow(
-                                    device: entry.device,
-                                    rank: index + 1,
-                                    isActive: entry.device.uid == appState.activeInputDeviceUID,
-                                    isOnline: entry.isOnline,
-                                    isWarm: appState.audioEngine.deviceWarmPolicy[entry.device.uid] ?? false,
-                                    isHidden: appState.hiddenDeviceUIDs.contains(entry.device.uid),
-                                    onSelect: entry.isOnline ? { appState.selectInputDevice(uid: entry.device.uid) } : nil,
-                                    onToggleWarm: { appState.toggleDeviceWarmPolicy(uid: entry.device.uid) },
-                                    onToggleHidden: { appState.toggleDeviceHidden(uid: entry.device.uid) }
-                                )
-                            }
-                            .onMove { source, destination in
-                                var uids = allDevices.map(\.device.uid)
-                                uids.move(fromOffsets: source, toOffset: destination)
-                                appState.setDevicePriority(orderedUIDs: uids)
-                            }
-                        }
-                        .listStyle(.bordered(alternatesRowBackgrounds: false))
-                        .frame(maxHeight: .infinity)
+                List {
+                    ForEach(Array(allDevices.enumerated()), id: \.element.device.uid) { index, entry in
+                        AudioSettingsDeviceRow(
+                            device: entry.device,
+                            rank: index + 1,
+                            isActive: entry.device.uid == appState.activeInputDeviceUID,
+                            isOnline: entry.isOnline,
+                            isWarm: appState.audioEngine.deviceWarmPolicy[entry.device.uid] ?? false,
+                            isHidden: appState.hiddenDeviceUIDs.contains(entry.device.uid),
+                            onSelect: entry.isOnline ? { appState.selectInputDevice(uid: entry.device.uid) } : nil,
+                            onToggleWarm: { appState.toggleDeviceWarmPolicy(uid: entry.device.uid) },
+                            onToggleHidden: { appState.toggleDeviceHidden(uid: entry.device.uid) }
+                        )
                     }
-
-                    // Level meter + controls
-                    VStack(spacing: 12) {
-                        Button {
-                            if echoActive {
-                                appState.audioEngine.stopEcho()
-                            } else {
-                                if !appState.audioEngine.isWarm {
-                                    try? appState.audioEngine.warmUp()
-                                }
-                                appState.audioEngine.startEcho()
-                            }
-                            echoActive = appState.audioEngine.echoEnabled
-                        } label: {
-                            Image(systemName: echoActive ? "ear.fill" : "ear")
-                                .font(.title3)
-                                .foregroundStyle(echoActive ? .orange : .secondary)
-                                .frame(width: 36, height: 36)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .fill(echoActive ? Color.orange.opacity(0.15) : Color.primary.opacity(0.04))
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .help("Listen to yourself (1s delay)")
-
-                        HStack(spacing: 6) {
-                            VerticalVolumeSlider(
-                                audioEngine: appState.audioEngine,
-                                selectedDeviceUID: appState.activeInputDeviceUID
-                            )
-                            .frame(width: 8)
-                            VerticalLevelMeter(audioEngine: appState.audioEngine)
-                        }
+                    .onMove { source, destination in
+                        var uids = allDevices.map(\.device.uid)
+                        uids.move(fromOffsets: source, toOffset: destination)
+                        appState.setDevicePriority(orderedUIDs: uids)
                     }
-                    .frame(width: 60)
-                    .padding(.top, 40)
                 }
-
+                .listStyle(.bordered(alternatesRowBackgrounds: false))
             }
-            .padding(24)
-            .frame(maxWidth: 600)
+
+            // Level meter + controls
+            VStack(spacing: 12) {
+                Button {
+                    if echoActive {
+                        appState.audioEngine.stopEcho()
+                    } else {
+                        if !appState.audioEngine.isWarm {
+                            try? appState.audioEngine.warmUp()
+                        }
+                        appState.audioEngine.startEcho()
+                    }
+                    echoActive = appState.audioEngine.echoEnabled
+                } label: {
+                    Image(systemName: echoActive ? "ear.fill" : "ear")
+                        .font(.title3)
+                        .foregroundStyle(echoActive ? .orange : .secondary)
+                        .frame(width: 36, height: 36)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(echoActive ? Color.orange.opacity(0.15) : Color.primary.opacity(0.04))
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Listen to yourself (1s delay)")
+
+                HStack(spacing: 6) {
+                    VerticalVolumeSlider(
+                        audioEngine: appState.audioEngine,
+                        selectedDeviceUID: appState.activeInputDeviceUID
+                    )
+                    .frame(width: 8)
+                    VerticalLevelMeter(audioEngine: appState.audioEngine)
+                }
+            }
+            .frame(width: 60)
+            .padding(.top, 40)
         }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear {
             if !appState.audioEngine.isWarm {
                 try? appState.audioEngine.warmUp()
