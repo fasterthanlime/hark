@@ -75,23 +75,29 @@ final class BeeBrokerIMEClient {
         }
     }
 
+    struct ClaimResult {
+        var sessionID: UUID?
+        var shouldStayActive: Bool
+    }
+
     /// Synchronous claim — blocks so deactivateServer can't race.
-    func claimPreparedSessionSync() -> UUID? {
+    func claimPreparedSessionSync() -> ClaimResult {
         let conn = getConnection()
         let proxy = conn.synchronousRemoteObjectProxyWithErrorHandler { error in
             beeInputLog("BROKER claimPreparedSession error: \(error.localizedDescription)")
             self.invalidateConnection()
         } as? BeeBrokerXPC
 
-        guard let proxy else { return nil }
+        guard let proxy else { return ClaimResult(sessionID: nil, shouldStayActive: false) }
 
-        var resultSessionID: UUID?
-        proxy.claimPreparedSession(imeInstanceID: imeInstanceID) { found, sessionIDRaw in
+        var result = ClaimResult(sessionID: nil, shouldStayActive: false)
+        proxy.claimPreparedSession(imeInstanceID: imeInstanceID) { found, sessionIDRaw, shouldStay in
             if found, let id = UUID(uuidString: sessionIDRaw) {
-                resultSessionID = id
+                result.sessionID = id
             }
+            result.shouldStayActive = shouldStay
         }
-        return resultSessionID
+        return result
     }
 
     func imeSubmit(sessionID: UUID) {
@@ -138,7 +144,8 @@ private final class BeeIMEPeerSink: NSObject, BeeBrokerPeerXPC {
                 return
             }
 
-            guard let claimedSessionID = BeeBrokerIMEClient.shared.claimPreparedSessionSync() else {
+            let claim = BeeBrokerIMEClient.shared.claimPreparedSessionSync()
+            guard let claimedSessionID = claim.sessionID else {
                 beeInputLog("newPreparedSession: claim failed (broker not in prepared state)")
                 return
             }

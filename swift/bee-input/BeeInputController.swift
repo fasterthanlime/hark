@@ -1,4 +1,4 @@
-import Carbon.HIToolbox.Events
+import Carbon
 import Cocoa
 import InputMethodKit
 
@@ -15,8 +15,14 @@ class BeeInputController: IMKInputController {
         bridge.activate(self, pid: frontmostPID, clientID: clientIdentity)
 
         // Synchronous XPC claim — blocks so deactivateServer can't race.
-        guard let sessionID = BeeBrokerIMEClient.shared.claimPreparedSessionSync() else {
-            beeInputLog("activateServer: no session to claim (spurious activation)")
+        let claim = BeeBrokerIMEClient.shared.claimPreparedSessionSync()
+        guard let sessionID = claim.sessionID else {
+            if !claim.shouldStayActive {
+                beeInputLog("activateServer: no session, switching to next input source")
+                switchToNextInputSource()
+            } else {
+                beeInputLog("activateServer: no session (staying active, recent session)")
+            }
             return
         }
 
@@ -148,6 +154,31 @@ class BeeInputController: IMKInputController {
             selectionRange: NSRange(location: 0, length: 0),
             replacementRange: NSRange(location: NSNotFound, length: 0)
         )
+    }
+
+    private static let beeBundleID = "fasterthanlime.inputmethod.bee"
+
+    private func switchToNextInputSource() {
+        let properties: [CFString: Any] = [kTISPropertyInputSourceIsSelectCapable: true]
+        guard let sources = TISCreateInputSourceList(properties as CFDictionary, false)?
+            .takeRetainedValue() as? [TISInputSource] else { return }
+
+        // Find first non-bee source
+        let candidate = sources.first { source in
+            guard let bundleID = TISGetInputSourceProperty(source, kTISPropertyBundleID) else {
+                return true  // not an IME, probably a keyboard layout — fine
+            }
+            let id = Unmanaged<CFString>.fromOpaque(bundleID).takeUnretainedValue() as String
+            return id != Self.beeBundleID
+        }
+
+        guard let next = candidate else {
+            beeInputLog("switchToNextInputSource: no alternative found")
+            return
+        }
+
+        let result = TISSelectInputSource(next)
+        beeInputLog("switchToNextInputSource: result=\(result)")
     }
 
     private func currentClientIdentity() -> String? {

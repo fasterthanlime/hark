@@ -30,6 +30,7 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
     private var appConnections: [String: NSXPCConnection] = [:]
     private var imeConnections: [String: NSXPCConnection] = [:]
     private var session: SessionState = .idle
+    private var lastSessionEndTime: Date = .distantPast
     private var activeIMEInstanceID: String?
     private var imeWaiters: [(Bool) -> Void] = []
 
@@ -115,10 +116,10 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
 
     func claimPreparedSession(
         imeInstanceID: String,
-        withReply reply: @escaping (Bool, String) -> Void
+        withReply reply: @escaping (Bool, String, Bool) -> Void
     ) {
         guard let conn = NSXPCConnection.current() else {
-            reply(false, "")
+            reply(false, "", false)
             return
         }
         queue.async {
@@ -126,12 +127,21 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
             self.activeIMEInstanceID = imeInstanceID
 
             guard case .prepared(let info) = self.session else {
-                reply(false, "")
+                // No session to claim. Should the IME stay selected?
+                // Yes if a session ended recently (avoids post-commit suicide loop)
+                // or if there's a claimed session still in flight.
+                let recentlyActive = Date().timeIntervalSince(self.lastSessionEndTime) < 2.0
+                let inFlight = {
+                    if case .claimed = self.session { return true }
+                    return false
+                }()
+                let shouldStay = recentlyActive || inFlight
+                reply(false, "", shouldStay)
                 return
             }
             self.session = .claimed(info)
             brokerLog("claimPreparedSession: session=\(info.id.prefix(8))")
-            reply(true, info.id)
+            reply(true, info.id, true)
         }
     }
 
@@ -154,6 +164,7 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
                 ime.handleClearSession(sessionID)
             }
             self.session = .idle
+            self.lastSessionEndTime = Date()
             reply()
         }
     }
@@ -188,6 +199,7 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
             }
             ime.handleCommitText(sessionID, text: text, submit: submit)
             self.session = .idle
+            self.lastSessionEndTime = Date()
             reply(true)
         }
     }
@@ -202,6 +214,7 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
             }
             ime.handleCancelInput(sessionID)
             self.session = .idle
+            self.lastSessionEndTime = Date()
             reply(true)
         }
     }
@@ -216,6 +229,7 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
             }
             ime.handleStopDictating(sessionID)
             self.session = .idle
+            self.lastSessionEndTime = Date()
             reply(true)
         }
     }

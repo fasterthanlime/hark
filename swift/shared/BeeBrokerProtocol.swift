@@ -13,9 +13,12 @@ protocol BeeBrokerXPC {
         appInstanceID: String,
         withReply reply: @escaping (Bool) -> Void
     )
+    /// Returns (found, sessionID, shouldStayActive).
+    /// shouldStayActive is true if the IME should remain selected even
+    /// when no session was claimed (e.g. session recently ended).
     func claimPreparedSession(
         imeInstanceID: String,
-        withReply reply: @escaping (Bool, String) -> Void
+        withReply reply: @escaping (Bool, String, Bool) -> Void
     )
     func clearSession(_ sessionID: String, appInstanceID: String, withReply reply: @escaping () -> Void)
 
