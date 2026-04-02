@@ -668,20 +668,22 @@ actor Session {
 
     // MARK: - IME Finalization
 
+    private func bestEffortSleep(ms: Int, label: String) async {
+        do { try await Task.sleep(for: .milliseconds(ms)) }
+        catch { beeLog("SESSION: \(label) sleep cancelled") }
+    }
+
     private func finishIME(text: String, mode: EndMode) async {
         switch mode {
         case .commit(let submit):
             if !text.isEmpty {
                 inputClient.commitText(text, sessionID: id)
                 ime = .committed
-                // Brief pause to let commit propagate before deactivating
-                do { try await Task.sleep(for: .milliseconds(50)) }
-                catch { beeLog("SESSION: finishIME commit sleep cancelled"); return }
+                await bestEffortSleep(ms: 50, label: "finishIME commit")
                 await MainActor.run { inputClient.deactivate() }
 
                 if submit {
-                    do { try await Task.sleep(for: .milliseconds(50)) }
-                    catch { beeLog("SESSION: finishIME submit sleep cancelled"); return }
+                    await bestEffortSleep(ms: 50, label: "finishIME submit")
                     inputClient.simulateReturn()
                 }
             } else {
