@@ -33,15 +33,12 @@ final class AppState {
     private(set) var uiState: UIState = .idle
     private var pendingTimer: Task<Void, Never>?
     private var consumeNextROptUp = false
-    private var activeSessionID: UUID?
     private var activeSessionTargetPID: pid_t?
     fileprivate var activeSessionTargetAppName: String?
     fileprivate var activeSessionTargetAppIcon: NSImage?
     private var activeSessionIMEConfirmed = false
     private var pendingLockRequest = false
-    private var loggedWaitingForIME = false
     private var pendingIMEAckTimeoutTask: Task<Void, Never>?
-    private var pendingIMEAckTimeoutCount = 0
     private var isSessionParked = false
     private var distributedObservers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -165,16 +162,13 @@ final class AppState {
                 "APP: hotkey down targetPID=\(targetPID.map(String.init) ?? "nil") targetApp=\(targetApp?.localizedName ?? "nil")"
             )
             let session = createSession(targetProcessID: targetPID)
-            activeSessionID = session.id
             activeSessionTargetPID = targetPID
             activeSessionTargetAppName = targetApp?.localizedName
             activeSessionTargetAppIcon = targetApp?.icon
             activeSessionIMEConfirmed = false
             pendingLockRequest = false
-            loggedWaitingForIME = false
             pendingIMEAckTimeoutTask?.cancel()
             pendingIMEAckTimeoutTask = nil
-            pendingIMEAckTimeoutCount = 0
             isSessionParked = false
             parkedOverlayText = ""
             uiState = .pending(session)
@@ -208,10 +202,7 @@ final class AppState {
         case .pending(let session):
             guard activeSessionIMEConfirmed else {
                 pendingLockRequest = true
-                if !loggedWaitingForIME {
-                    beeLog("SESSION: ROpt up while IME unconfirmed, waiting")
-                    loggedWaitingForIME = true
-                }
+                beeLog("SESSION: ROpt up while IME unconfirmed, waiting")
                 startIMEAckTimeoutIfNeeded(session: session)
                 return false
             }
@@ -477,17 +468,13 @@ final class AppState {
             transitionToIdle()
         }
 
-        if activeSessionID == resultID {
-            activeSessionID = nil
-            activeSessionTargetPID = nil
-            activeSessionTargetAppName = nil
-            activeSessionTargetAppIcon = nil
-            activeSessionIMEConfirmed = false
-            pendingLockRequest = false
-            pendingIMEAckTimeoutCount = 0
-            isSessionParked = false
-            hideParkedOverlay()
-        }
+        activeSessionTargetPID = nil
+        activeSessionTargetAppName = nil
+        activeSessionTargetAppIcon = nil
+        activeSessionIMEConfirmed = false
+        pendingLockRequest = false
+        isSessionParked = false
+        hideParkedOverlay()
 
         applyWarmPolicyForCurrentState()
     }
@@ -724,7 +711,7 @@ final class AppState {
         }
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         beeLog(
-            "SESSION: imeContextLost id=\(activeSessionID?.uuidString.prefix(8) ?? "nil") targetPID=\(activeSessionTargetPID.map(String.init) ?? "nil") frontmostPID=\(frontmostPID.map(String.init) ?? "nil") hadMarkedText=\(hadMarkedText.map(String.init) ?? "nil")"
+            "SESSION: imeContextLost id=\(uiState.session?.id?.uuidString.prefix(8) ?? "nil") targetPID=\(activeSessionTargetPID.map(String.init) ?? "nil") frontmostPID=\(frontmostPID.map(String.init) ?? "nil") hadMarkedText=\(hadMarkedText.map(String.init) ?? "nil")"
         )
 
         switch uiState {
@@ -767,7 +754,6 @@ final class AppState {
     private func handleDidActivateApplication(processIdentifier: pid_t?, bundleIdentifier: String?)
     {
         guard let session = uiState.session else { return }
-        guard activeSessionID == session.id else { return }
         guard let targetPID = activeSessionTargetPID else { return }
         guard let processIdentifier else { return }
 
@@ -786,7 +772,7 @@ final class AppState {
                     let resumed = await session.requestResumeActivation()
                     if !resumed {
                         await MainActor.run {
-                            guard self.activeSessionID == session.id else { return }
+                            guard self.uiState.session?.id == session.id else { return }
                             beeLog(
                                 "SESSION: resume activation failed id=\(session.id.uuidString.prefix(8))"
                             )
@@ -805,7 +791,6 @@ final class AppState {
     private func handleDidTerminateApplication(processIdentifier: pid_t?) {
         guard let processIdentifier else { return }
         guard let session = uiState.session else { return }
-        guard activeSessionID == session.id else { return }
         guard processIdentifier == activeSessionTargetPID else { return }
 
         beeLog("SESSION: target terminated pid=\(processIdentifier)")
@@ -822,8 +807,8 @@ final class AppState {
     }
 
     private func isNotificationForActiveSession(_ sessionID: UUID?) -> Bool {
-        guard let activeSessionID, let sessionID else { return false }
-        return sessionID == activeSessionID
+        guard let currentID = uiState.session?.id, let sessionID else { return false }
+        return sessionID == currentID
     }
 
     nonisolated private static func extractSessionID(_ userInfo: [AnyHashable: Any]?) -> UUID? {
@@ -833,22 +818,10 @@ final class AppState {
         return UUID(uuidString: raw)
     }
 
-    nonisolated private static func extractClientID(_ userInfo: [AnyHashable: Any]?) -> String? {
-        userInfo?["clientID"] as? String
-    }
-
     nonisolated private static func extractBool(_ userInfo: [AnyHashable: Any]?, key: String)
         -> Bool?
     {
         userInfo?[key] as? Bool
-    }
-
-    nonisolated private static func extractPID(_ userInfo: [AnyHashable: Any]?, key: String)
-        -> pid_t?
-    {
-        if let pid = userInfo?[key] as? pid_t { return pid }
-        if let number = userInfo?[key] as? NSNumber { return pid_t(number.int32Value) }
-        return nil
     }
 
     private func transitionToIdle() {
@@ -856,7 +829,6 @@ final class AppState {
         pendingTimer?.cancel()
         activeSessionIMEConfirmed = false
         pendingLockRequest = false
-        pendingIMEAckTimeoutCount = 0
         isSessionParked = false
         hideParkedOverlay()
     }
@@ -898,7 +870,7 @@ final class AppState {
             guard let self else { return }
             while !Task.isCancelled {
                 guard self.isSessionParked,
-                    self.activeSessionID == session.id
+                    self.uiState.session?.id == session.id
                 else { return }
                 self.parkedOverlayText = await session.liveText()
                 try? await Task.sleep(for: .milliseconds(80))
@@ -954,7 +926,7 @@ final class AppState {
 
     private func applyWarmPolicyForCurrentState() {
         guard modelStatus == .loaded else { return }
-        guard activeSessionID == nil else { return }
+        guard uiState.session == nil else { return }
         if uiState.isRecording { return }
 
         if activeInputDeviceKeepWarm {
@@ -1063,7 +1035,7 @@ final class AppState {
 
     private func reconfigureAudioEngineIfNeeded(forceRestart: Bool) {
         guard modelStatus == .loaded else { return }
-        if activeSessionID != nil || uiState.isRecording {
+        if uiState.isRecording {
             if forceRestart {
                 pendingAudioReconfigureAfterSession = true
             }
