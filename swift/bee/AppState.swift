@@ -23,6 +23,7 @@ final class AppState {
         static let selectedInputDeviceUID = "audio.selectedInputDeviceUID"
         static let deviceWarmPolicy = "audio.deviceWarmPolicy"
         static let devicePriorityList = "audio.devicePriorityList"
+        static let hiddenDeviceUIDs = "audio.hiddenDeviceUIDs"
         static let debugOverlayEnabled = "ui.debugOverlayEnabled"
         static let totalSessions = "stats.totalSessions"
         static let totalWords = "stats.totalWords"
@@ -109,6 +110,7 @@ final class AppState {
     var activeInputDeviceName: String?
     var activeInputDeviceKeepWarm: Bool = false
     var devicePriorityList: [String] = []  // UIDs, highest priority first
+    var hiddenDeviceUIDs: Set<String> = []  // UIDs hidden from menu bar
 
     // History
     var transcriptionHistory: [TranscriptionHistoryItem] = []
@@ -337,6 +339,20 @@ final class AppState {
             return defaultDevice.uid
         }
         return availableInputDevices.first?.uid
+    }
+
+    func toggleDeviceWarmPolicy(uid: String) {
+        let current = audioEngine.deviceWarmPolicy[uid] ?? false
+        setDeviceWarmPolicy(uid: uid, warm: !current)
+    }
+
+    func toggleDeviceHidden(uid: String) {
+        if hiddenDeviceUIDs.contains(uid) {
+            hiddenDeviceUIDs.remove(uid)
+        } else {
+            hiddenDeviceUIDs.insert(uid)
+        }
+        persistAudioPreferences()
     }
 
     func setDeviceWarmPolicy(uid: String, warm: Bool) {
@@ -1322,6 +1338,9 @@ final class AppState {
         if let savedPriority = defaults.stringArray(forKey: DefaultsKey.devicePriorityList) {
             devicePriorityList = savedPriority
         }
+        if let savedHidden = defaults.stringArray(forKey: DefaultsKey.hiddenDeviceUIDs) {
+            hiddenDeviceUIDs = Set(savedHidden)
+        }
     }
 
     private func persistAudioPreferences() {
@@ -1329,6 +1348,7 @@ final class AppState {
         defaults.set(activeInputDeviceUID, forKey: DefaultsKey.selectedInputDeviceUID)
         defaults.set(audioEngine.deviceWarmPolicy, forKey: DefaultsKey.deviceWarmPolicy)
         defaults.set(devicePriorityList, forKey: DefaultsKey.devicePriorityList)
+        defaults.set(Array(hiddenDeviceUIDs), forKey: DefaultsKey.hiddenDeviceUIDs)
     }
 
     private func applyWarmPolicyForCurrentState() {

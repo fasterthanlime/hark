@@ -199,7 +199,8 @@ private struct MenuActionRow: View {
 }
 
 enum SidebarItem: Hashable {
-    case overview, audio, history, howBeeWorks, advanced
+    case overview, history, howBeeWorks
+    case audio, transcription, general
 }
 
 struct BeeSettingsView: View {
@@ -214,17 +215,19 @@ struct BeeSettingsView: View {
                     Section {
                         Label("Overview", systemImage: "sparkles")
                             .tag(SidebarItem.overview)
-                        Label("Audio", systemImage: "waveform")
-                            .tag(SidebarItem.audio)
                         Label("History", systemImage: "clock.arrow.circlepath")
                             .tag(SidebarItem.history)
                         Label("How bee works", systemImage: "keyboard")
                             .tag(SidebarItem.howBeeWorks)
                     }
 
-                    Section {
-                        Label("Settings", systemImage: "gearshape")
-                            .tag(SidebarItem.advanced)
+                    Section("Settings") {
+                        Label("Audio", systemImage: "waveform")
+                            .tag(SidebarItem.audio)
+                        Label("Transcription", systemImage: "text.quote")
+                            .tag(SidebarItem.transcription)
+                        Label("General", systemImage: "gearshape")
+                            .tag(SidebarItem.general)
                     }
                 }
                 .listStyle(.sidebar)
@@ -257,12 +260,14 @@ struct BeeSettingsView: View {
                     BeeOverviewView(appState: appState, selection: $selection)
                 case .audio:
                     AudioSettingsView(appState: appState)
+                case .transcription:
+                    TranscriptionSettingsView(appState: appState)
                 case .history:
                     BeeHistoryView(appState: appState)
                 case .howBeeWorks:
                     HowBeeWorksView()
-                case .advanced:
-                    AdvancedSettingsView(appState: appState)
+                case .general:
+                    GeneralSettingsView(appState: appState)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -478,8 +483,10 @@ private struct AudioSettingsView: View {
                                     rank: index + 1,
                                     isActive: device.uid == appState.activeInputDeviceUID,
                                     isWarm: appState.audioEngine.deviceWarmPolicy[device.uid] ?? false,
+                                    isHidden: appState.hiddenDeviceUIDs.contains(device.uid),
                                     onSelect: { appState.selectInputDevice(uid: device.uid) },
-                                    onToggleWarm: { appState.setDeviceWarmPolicy(uid: device.uid, warm: $0) }
+                                    onToggleWarm: { appState.toggleDeviceWarmPolicy(uid: device.uid) },
+                                    onToggleHidden: { appState.toggleDeviceHidden(uid: device.uid) }
                                 )
                             }
                             .onMove { source, destination in
@@ -530,20 +537,6 @@ private struct AudioSettingsView: View {
                     .padding(.top, 40)
                 }
 
-                // Transcription settings
-                SettingsCard("Transcription") {
-                    chunkSizePicker
-                    tokenLimitPicker(
-                        label: "Streaming tokens",
-                        value: $appState.maxNewTokensStreaming,
-                        options: [0, 16, 32, 64, 128]
-                    )
-                    tokenLimitPicker(
-                        label: "Final tokens",
-                        value: $appState.maxNewTokensFinal,
-                        options: [0, 128, 256, 512, 1024]
-                    )
-                }
             }
             .padding(24)
             .frame(maxWidth: 600)
@@ -580,30 +573,6 @@ private struct AudioSettingsView: View {
     }
 
     // Reuse from AdvancedSettingsView
-    private var chunkSizePicker: some View {
-        Picker("Chunk size", selection: Binding(
-            get: { appState.chunkSizeSec },
-            set: { appState.chunkSizeSec = $0 }
-        )) {
-            ForEach([0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0] as [Float], id: \.self) { val in
-                Text(val < 1 ? "\(Int(val * 1000))ms" : "\(String(format: "%.1f", val))s")
-                    .tag(val)
-            }
-        }
-    }
-
-    private func tokenLimitPicker(
-        label: String,
-        value: Binding<UInt32>,
-        options: [UInt32]
-    ) -> some View {
-        Picker(label, selection: value) {
-            ForEach(options, id: \.self) { val in
-                Text(val == 0 ? "Default" : "\(val)")
-                    .tag(val)
-            }
-        }
-    }
 }
 
 private struct AudioSettingsDeviceRow: View {
@@ -611,8 +580,10 @@ private struct AudioSettingsDeviceRow: View {
     let rank: Int
     let isActive: Bool
     let isWarm: Bool
+    let isHidden: Bool
     let onSelect: () -> Void
-    let onToggleWarm: (Bool) -> Void
+    let onToggleWarm: () -> Void
+    let onToggleHidden: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
@@ -630,8 +601,15 @@ private struct AudioSettingsDeviceRow: View {
 
             // Name + subtitle
             VStack(alignment: .leading, spacing: 1) {
-                Text(device.name)
-                    .fontWeight(isActive ? .medium : .regular)
+                HStack(spacing: 6) {
+                    Text(device.name)
+                        .fontWeight(isActive ? .medium : .regular)
+                    if isActive {
+                        Image(systemName: "checkmark")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+                    }
+                }
                 if let subtitle = device.subtitle {
                     Text(subtitle)
                         .font(.caption2)
@@ -641,29 +619,121 @@ private struct AudioSettingsDeviceRow: View {
 
             Spacer()
 
-            // Keep warm toggle
-            Toggle("", isOn: Binding(
-                get: { isWarm },
-                set: { onToggleWarm($0) }
-            ))
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .labelsHidden()
-            .help("Keep microphone active between sessions")
-
-            // Select button
-            if isActive {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.orange)
-            } else {
-                Button { onSelect() } label: {
-                    Image(systemName: "circle")
-                        .foregroundStyle(.secondary)
+            // Icon buttons
+            HStack(spacing: 10) {
+                Button { onToggleWarm() } label: {
+                    Image(systemName: isWarm ? "flame.fill" : "flame")
+                        .foregroundStyle(isWarm ? .orange : .secondary.opacity(0.4))
                 }
                 .buttonStyle(.plain)
+                .help("Keep microphone active between sessions")
+
+                Button { onToggleHidden() } label: {
+                    Image(systemName: isHidden ? "eye.slash.fill" : "eye")
+                        .foregroundStyle(isHidden ? .orange : .secondary.opacity(0.4))
+                }
+                .buttonStyle(.plain)
+                .help("Hide from menu bar device list")
             }
+            .font(.body)
         }
         .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .onTapGesture { onSelect() }
+    }
+}
+
+// MARK: - Transcription Settings
+
+private struct TranscriptionSettingsView: View {
+    @Bindable var appState: AppState
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 20) {
+                SettingsCard("Pipeline") {
+                    HStack(spacing: 10) {
+                        Text("ASR")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Circle()
+                            .fill(modelColor)
+                            .frame(width: 8, height: 8)
+                        if appState.modelStatus == .loaded {
+                            Link(destination: URL(string: "https://huggingface.co/\(AppState.defaultModel.repoID)")!) {
+                                HStack(spacing: 4) {
+                                    Text(AppState.defaultModel.displayName)
+                                        .underline()
+                                    Image(systemName: "arrow.up.right.square")
+                                        .font(.caption)
+                                }
+                            }
+                        } else {
+                            Text(modelLabel)
+                                .fontWeight(.medium)
+                        }
+                    }
+
+                    if appState.modelStatus == .loaded {
+                        ForEach(AppState.pipelineComponents, id: \.name) { component in
+                            PipelineRow(
+                                label: component.role,
+                                value: component.name,
+                                url: component.url
+                            )
+                        }
+                    }
+                }
+
+                SettingsCard("Parameters") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Picker("Chunk size", selection: Binding(
+                            get: { appState.chunkSizeSec },
+                            set: { appState.chunkSizeSec = $0 }
+                        )) {
+                            ForEach([0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0] as [Float], id: \.self) { val in
+                                Text(val < 1 ? "\(Int(val * 1000))ms" : "\(String(format: "%.1f", val))s")
+                                    .tag(val)
+                            }
+                        }
+
+                        Picker("Streaming tokens", selection: $appState.maxNewTokensStreaming) {
+                            ForEach([0, 16, 32, 64, 128] as [UInt32], id: \.self) { val in
+                                Text(val == 0 ? "Default" : "\(val)").tag(val)
+                            }
+                        }
+
+                        Picker("Final tokens", selection: $appState.maxNewTokensFinal) {
+                            ForEach([0, 128, 256, 512, 1024] as [UInt32], id: \.self) { val in
+                                Text(val == 0 ? "Default" : "\(val)").tag(val)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .frame(maxWidth: 600, alignment: .leading)
+            .padding(24)
+        }
+    }
+
+    private var modelColor: Color {
+        switch appState.modelStatus {
+        case .loaded: .green
+        case .loading, .downloading: .orange
+        case .notLoaded: .gray
+        case .error: .red
+        }
+    }
+
+    private var modelLabel: String {
+        switch appState.modelStatus {
+        case .notLoaded: "not loaded"
+        case .downloading(let p): "downloading \(Int(p * 100))%"
+        case .loading: "loading..."
+        case .loaded: AppState.defaultModel.displayName
+        case .error(let e): "error: \(e.prefix(30))"
+        }
     }
 }
 
@@ -690,69 +760,15 @@ private struct HowBeeWorksView: View {
     }
 }
 
-private struct AdvancedSettingsView: View {
+private struct GeneralSettingsView: View {
     @Bindable var appState: AppState
 
     @State private var showDiagSheet = false
     @State private var diagOutput = ""
 
-    private static let chunkSizeOptions: [(label: String, value: Float)] = [
-        ("0.2s", 0.2),
-        ("0.35s", 0.35),
-        ("0.5s", 0.5),
-        ("0.75s", 0.75),
-        ("1s", 1.0),
-        ("1.5s", 1.5),
-        ("2s", 2.0),
-        ("2.5s", 2.5),
-        ("3s", 3.0),
-    ]
-
-    private static let streamingTokenOptions: [(label: String, value: UInt32)] = [
-        ("default", 0), ("8", 8), ("16", 16), ("32", 32), ("64", 64),
-    ]
-
-    private static let finalTokenOptions: [(label: String, value: UInt32)] = [
-        ("default", 0), ("64", 64), ("128", 128), ("256", 256), ("512", 512),
-    ]
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                SettingsCard("Pipeline") {
-                    HStack(spacing: 10) {
-                        Text("ASR")
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Circle()
-                            .fill(modelColor)
-                            .frame(width: 8, height: 8)
-                        if appState.modelStatus == .loaded {
-                            Link(destination: URL(string: "https://huggingface.co/\(AppState.defaultModel.repoID)")!) {
-                                HStack(spacing: 4) {
-                                    Text(modelLabel)
-                                        .underline()
-                                    Image(systemName: "arrow.up.right.square")
-                                        .font(.caption)
-                                }
-                            }
-                        } else {
-                            Text(modelLabel)
-                                .fontWeight(.medium)
-                        }
-                    }
-
-                    if appState.modelStatus == .loaded {
-                        ForEach(AppState.pipelineComponents, id: \.name) { component in
-                            PipelineRow(
-                                label: component.role,
-                                value: component.name,
-                                url: component.url
-                            )
-                        }
-                    }
-                }
-
                 SettingsCard("Behavior") {
                     VStack(alignment: .leading, spacing: 12) {
                         Toggle("Run on startup", isOn: Binding(
@@ -860,53 +876,6 @@ private struct AdvancedSettingsView: View {
         }
     }
 
-    private var modelLabel: String {
-        switch appState.modelStatus {
-        case .notLoaded: return "Not loaded"
-        case .downloading(let progress): return "Downloading (\(Int(progress * 100))%)"
-        case .loading: return "Loading..."
-        case .loaded: return AppState.defaultModel.displayName
-        case .error(let message): return "Error: \(message)"
-        }
-    }
-
-    private var modelColor: Color {
-        switch appState.modelStatus {
-        case .loaded: return .green
-        case .loading, .downloading: return .orange
-        case .error: return .red
-        case .notLoaded: return .gray
-        }
-    }
-
-    private var chunkSizePicker: some View {
-        Picker("Chunk size", selection: Binding(
-            get: { appState.chunkSizeSec },
-            set: { appState.chunkSizeSec = $0 }
-        )) {
-            ForEach(Self.chunkSizeOptions, id: \.value) { option in
-                Text(option.label).tag(option.value)
-            }
-        }
-        .pickerStyle(.menu)
-    }
-
-    private func tokenLimitPicker(
-        label: String,
-        options: [(label: String, value: UInt32)],
-        current: UInt32,
-        action: @escaping (UInt32) -> Void
-    ) -> some View {
-        Picker(label, selection: Binding(
-            get: { current },
-            set: action
-        )) {
-            ForEach(options, id: \.value) { option in
-                Text(option.label).tag(option.value)
-            }
-        }
-        .pickerStyle(.menu)
-    }
 }
 
 private struct SettingsCard<Content: View>: View {
@@ -1181,13 +1150,17 @@ private struct DeviceDropdown: View {
 private struct InputDeviceList: View {
     @Bindable var appState: AppState
 
+    private var visibleDevices: [AppState.InputDeviceInfo] {
+        appState.availableInputDevices.filter { !appState.hiddenDeviceUIDs.contains($0.uid) }
+    }
+
     var body: some View {
-        if appState.availableInputDevices.isEmpty {
+        if visibleDevices.isEmpty {
             Text("No input devices")
                 .foregroundStyle(.secondary)
         } else {
             VStack(spacing: 2) {
-                ForEach(appState.availableInputDevices, id: \.uid) { device in
+                ForEach(visibleDevices, id: \.uid) { device in
                     InputDeviceListRow(
                         device: device,
                         isActive: device.uid == appState.activeInputDeviceUID,
