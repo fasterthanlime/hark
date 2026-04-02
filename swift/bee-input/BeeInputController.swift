@@ -55,9 +55,14 @@ class BeeInputController: IMKInputController {
     }
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
-        guard let event, event.type == .keyDown,
-            let sessionID = BeeIMEBridgeState.shared.activeSessionID
-        else {
+        guard let event, event.type == .keyDown else {
+            return false
+        }
+        guard let sessionID = BeeIMEBridgeState.shared.activeSessionID else {
+            // User is typing but no session — switch away so keystrokes
+            // go to the real input source.
+            beeInputLog("handle: no session, switching to next input source")
+            switchToNextInputSource()
             return false
         }
 

@@ -712,8 +712,12 @@ final class AppState {
         switch uiState {
         case .pending(let session, _), .pendingLockRequested(let session):
             pendingTimer?.cancel()
-            parkSession(session, reason: "imeContextLost")
-        case .pushToTalk(let session), .locked(let session), .lockedOptionHeld(let session):
+            transitionToIdle()
+            Task { await session.abort() }
+        case .pushToTalk(let session):
+            transitionToIdle()
+            Task { await session.cancel() }
+        case .locked(let session), .lockedOptionHeld(let session):
             parkSession(session, reason: "imeContextLost")
         case .idle:
             break
@@ -782,7 +786,19 @@ final class AppState {
             return
         }
 
-        parkSession(session, reason: "appActivated:\(processIdentifier)")
+        switch uiState {
+        case .pending(let session, _), .pendingLockRequested(let session):
+            pendingTimer?.cancel()
+            transitionToIdle()
+            Task { await session.abort() }
+        case .pushToTalk(let session):
+            transitionToIdle()
+            Task { await session.cancel() }
+        case .locked, .lockedOptionHeld:
+            parkSession(session, reason: "appActivated:\(processIdentifier)")
+        case .idle:
+            break
+        }
     }
 
     private func handleDidTerminateApplication(processIdentifier: pid_t?) {

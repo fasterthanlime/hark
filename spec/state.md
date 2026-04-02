@@ -142,8 +142,14 @@ UI doesn't know yet whether this is a real activation.
 > to PushToTalk.
 
 > h[ui.pending-to-locked]
-> If ROpt is released in under ~300ms with no other keys pressed: transition
-> to Locked.
+> If ROpt is released in under ~300ms with no other keys pressed AND the
+> IME has been confirmed: transition to Locked.
+
+> h[ui.pending-lock-requested]
+> If ROpt is released before IME confirmation: transition to
+> PendingLockRequested. This is a sub-state where the user has indicated
+> they want locked mode, but the IME hasn't confirmed yet. When IME
+> confirmation arrives, transition directly to Locked.
 
 > h[ui.pending-abort]
 > If any other key is pressed while in Pending: abort the session,
@@ -156,15 +162,23 @@ UI doesn't know yet whether this is a real activation.
 
 > h[ui.pending-ime-timeout]
 > If IME start acknowledgement is not received within the configured startup
-> timeout budget, Bee MUST abort the session, transition to Idle, and play the
-> start-failure sound. It MUST NOT continue dictating in an unconfirmed state.
+> timeout budget (applies to both Pending and PendingLockRequested), Bee MUST
+> abort the session, transition to Idle, and play the start-failure sound. It
+> MUST NOT continue dictating in an unconfirmed state.
+
+> h[ui.pending-focus-loss]
+> If the target app loses focus while in Pending or PushToTalk, the session
+> is aborted (not parked). Parking only applies to Locked states.
 
 | Event | Swallowed? | Effect |
 |---|---|---|
-| ~300ms timer fires | — | → PushToTalk |
-| ROpt up (clean) | no | → Locked |
+| ~300ms timer fires (IME confirmed) | — | → PushToTalk |
+| ~300ms timer fires (IME unconfirmed) | — | keep waiting |
+| ROpt up (IME confirmed) | no | → Locked |
+| ROpt up (IME unconfirmed) | no | → PendingLockRequested |
 | P (no other modifiers) | **yes** | paste last history entry, abort session, → Idle |
 | any other key down | no | abort session, → Idle |
+| focus loss | — | abort session, → Idle |
 
 #### PushToTalk
 
@@ -530,9 +544,11 @@ The IME layer manages text insertion via the beeInput InputMethodKit IME.
 > the prefix is discarded.
 
 > h[ime.parking]
-> In locked mode, when the user switches away from the target app, the
-> IME session is parked: the controller stays alive and isDictating
-> remains true so the session resumes on return.
+> In Locked or LockedOptionHeld mode, when the user switches away from
+> the target app, the IME session is parked: recording continues and the
+> session resumes when the target app regains focus.
+> In Pending and PushToTalk, focus loss aborts/cancels the session
+> instead of parking — the user hasn't committed to locked mode yet.
 
 > h[ime.key-intercept]
 > While isDictating is true, the IME intercepts Enter (triggers submit)
