@@ -93,6 +93,7 @@ class BeeInputController: IMKInputController {
     // MARK: - Text handling
 
     func handleSetMarkedText(_ text: String) {
+        beeInputLog("handleSetMarkedText: \(text.prefix(40).debugDescription) hasClient=\(self.client() != nil)")
         guard let client = self.client() else {
             beeInputLog("handleSetMarkedText: no client, dropping")
             return
@@ -147,7 +148,7 @@ class BeeInputController: IMKInputController {
             return
         }
 
-        beeInputLog("commitText: \(finalText.prefix(60).debugDescription)")
+        beeInputLog("commitText: \(finalText.prefix(60).debugDescription) hasClient=\(true)")
         currentMarkedText = ""
         client.insertText(
             finalText + " ",
