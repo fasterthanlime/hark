@@ -215,7 +215,7 @@ final class BeeInputClient: Sendable {
     }
 
     /// Nudge the focused UI element via Accessibility to trigger IME re-activation.
-    /// Briefly moves focus away from the text field and back.
+    /// Clears focus then restores it, forcing the input context to reconnect.
     @MainActor
     static func axNudgeFocus() {
         let systemWide = AXUIElementCreateSystemWide()
@@ -228,20 +228,23 @@ final class BeeInputClient: Sendable {
 
         let element = focused as! AXUIElement
 
-        // Get the parent window
-        var windowRef: AnyObject?
-        let winErr = AXUIElementCopyAttributeValue(element, kAXWindowAttribute as CFString, &windowRef)
-        guard winErr == .success, let window = windowRef else {
-            beeLog("IME ACTIVATE: AX nudge — no parent window")
+        // Get the app that owns this element
+        var pidValue: pid_t = 0
+        AXUIElementGetPid(element, &pidValue)
+
+        guard let app = NSRunningApplication(processIdentifier: pidValue) else {
+            beeLog("IME ACTIVATE: AX nudge — can't find app for pid=\(pidValue)")
             return
         }
 
-        // Briefly set focus to the window (not the text field), then back
-        beeLog("IME ACTIVATE: AX nudge — moving focus to window")
-        AXUIElementSetAttributeValue(window as! AXUIElement, kAXFocusedUIElementAttribute as CFString, window)
+        let appElement = AXUIElementCreateApplication(pidValue)
+
+        // Clear focused element, brief pause, restore it
+        beeLog("IME ACTIVATE: AX nudge — clearing focus pid=\(pidValue)")
+        AXUIElementSetAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, kCFNull)
         usleep(30_000)  // 30ms
-        beeLog("IME ACTIVATE: AX nudge — restoring focus to element")
-        AXUIElementSetAttributeValue(window as! AXUIElement, kAXFocusedUIElementAttribute as CFString, element)
+        beeLog("IME ACTIVATE: AX nudge — restoring focus")
+        AXUIElementSetAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, element)
     }
 
     func deactivate(caller: String = #function, file: String = #fileID, line: Int = #line) {
