@@ -165,6 +165,7 @@ struct DiagnosticsView: View {
 
     @State private var batchResult: String?
     @State private var isBatchRunning = false
+    @State private var playingSound: NSSound?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -198,10 +199,20 @@ struct DiagnosticsView: View {
                 Divider().padding(.vertical, 1)
 
                 HStack(spacing: 8) {
-                    Button("Play") {
-                        NSSound(contentsOfFile: diag.audioWavPath, byReference: true)?.play()
+                    if playingSound?.isPlaying == true {
+                        Button("Stop") {
+                            playingSound?.stop()
+                            playingSound = nil
+                        }
+                        .font(.system(size: 10, weight: .semibold))
+                    } else {
+                        Button("Play") {
+                            let sound = NSSound(contentsOfFile: diag.audioWavPath, byReference: true)
+                            sound?.play()
+                            playingSound = sound
+                        }
+                        .font(.system(size: 10, weight: .semibold))
                     }
-                    .font(.system(size: 10, weight: .semibold))
 
                     if let transcriptionService {
                         Button(isBatchRunning ? "Running..." : "Re-transcribe (batch)") {
