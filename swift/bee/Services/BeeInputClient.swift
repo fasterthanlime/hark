@@ -612,29 +612,24 @@ final class BeeInputClient: Sendable {
     }
 
     static func switchAwayFromBeeInputIfNeeded() {
-        if let previous = previousInputSource, !isBeeInputSource(previous) {
-            let id = inputSourceID(previous)
-            let result = TISSelectInputSource(previous)
-            beeLog("TIS SELECT: \(id) (restore previous) result=\(result)")
-            previousInputSource = nil
-            if result == noErr { return }
+        // Always switch to an actual keyboard layout, not a palette/IME.
+        // If previousInputSource is a keyboard, use it. Otherwise find one.
+        let target: TISInputSource?
+        if let previous = previousInputSource, !isBeeInputSource(previous), isKeyboardLayout(previous) {
+            target = previous
+        } else {
+            target = findKeyboardLayout()
         }
         previousInputSource = nil
 
-        guard let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
-            isBeeInputSource(current)
-        else {
+        guard let target else {
+            beeLog("TIS SELECT: no keyboard layout available to switch to")
             return
         }
 
-        guard let fallback = fallbackInputSource(current: current) else {
-            beeLog("TIS SELECT: no fallback input source available")
-            return
-        }
-
-        let id = inputSourceID(fallback)
-        let result = TISSelectInputSource(fallback)
-        beeLog("TIS SELECT: \(id) (fallback) result=\(result)")
+        let id = inputSourceID(target)
+        let result = TISSelectInputSource(target)
+        beeLog("TIS SELECT: \(id) (deactivate) result=\(result)")
     }
 
     private static func fallbackInputSource(current: TISInputSource) -> TISInputSource? {
@@ -683,6 +678,14 @@ final class BeeInputClient: Sendable {
             return "<unknown>"
         }
         return Unmanaged<CFString>.fromOpaque(raw).takeUnretainedValue() as String
+    }
+
+    private static func isKeyboardLayout(_ source: TISInputSource) -> Bool {
+        guard let raw = TISGetInputSourceProperty(source, kTISPropertyInputSourceCategory) else {
+            return false
+        }
+        let category = Unmanaged<CFString>.fromOpaque(raw).takeUnretainedValue()
+        return category == kTISCategoryKeyboardInputSource
     }
 
     private static func isBeeInputSource(_ source: TISInputSource?) -> Bool {
