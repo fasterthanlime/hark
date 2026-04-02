@@ -84,7 +84,7 @@ struct MenuBarView: View {
             .padding(.vertical, 10)
             .padding(.trailing, 8)
         }
-        .frame(width: 390)
+        .frame(width: 420)
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
@@ -111,9 +111,14 @@ struct MenuBarView: View {
             if appState.audioEngine.echoEnabled {
                 appState.audioEngine.stopEcho()
             }
-            // Cool down if no active session needs the engine
-            if !appState.hotkeyState.isRecording && !appState.activeInputDeviceKeepWarm {
-                beeLog("MENUBAR: cooling down audio engine")
+            // Grace period: keep engine warm for 5 seconds after closing
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak appState] in
+                guard let appState else { return }
+                // Only cool down if panel wasn't reopened and no session/policy needs warmth
+                guard !appState.menuBarPanelOpen,
+                      !appState.hotkeyState.isRecording,
+                      !appState.activeInputDeviceKeepWarm else { return }
+                beeLog("MENUBAR: grace period expired, cooling down")
                 appState.audioEngine.coolDown()
             }
         }

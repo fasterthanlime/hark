@@ -100,7 +100,7 @@ final class StatusBarController: NSObject {
     private var frameObserver: NSObjectProtocol?
 
     private static let itemWidth: CGFloat = 26
-    private static let panelWidth: CGFloat = 390
+    private static let panelWidth: CGFloat = 420
 
     init(appState: AppState) {
         self.appState = appState
