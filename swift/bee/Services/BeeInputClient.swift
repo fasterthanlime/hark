@@ -207,11 +207,14 @@ final class BeeInputClient: Sendable {
             return
         }
 
+        let otherID = inputSourceID(other)
+        let beeID = inputSourceID(beeSource)
         let awayResult = TISSelectInputSource(other)
-        beeLog("IME ACTIVATE: TIS toggle — selected other (result=\(awayResult))")
-        usleep(200_000)  // 200ms — give OS time to process the switch
+        beeLog("IME ACTIVATE: TIS toggle — selected \(otherID) (result=\(awayResult))")
+        usleep(500_000)
         let backResult = TISSelectInputSource(beeSource)
-        beeLog("IME ACTIVATE: TIS toggle — re-selected bee (result=\(backResult))")
+        beeLog("IME ACTIVATE: TIS toggle — re-selected \(beeID) (result=\(backResult))")
+        usleep(500_000)
     }
 
     /// Nudge the focused UI element via Accessibility to trigger IME re-activation.
@@ -220,7 +223,8 @@ final class BeeInputClient: Sendable {
     static func axNudgeFocus() {
         let systemWide = AXUIElementCreateSystemWide()
         var focusedRef: AnyObject?
-        let err = AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef)
+        let err = AXUIElementCopyAttributeValue(
+            systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef)
         guard err == .success, let focused = focusedRef else {
             beeLog("IME ACTIVATE: AX nudge — no focused element (err=\(err.rawValue))")
             return
@@ -650,6 +654,13 @@ final class BeeInputClient: Sendable {
         return
             (TISCreateInputSourceList(properties as CFDictionary, false)?
             .takeRetainedValue() as? [TISInputSource]) ?? []
+    }
+
+    private static func inputSourceID(_ source: TISInputSource) -> String {
+        guard let raw = TISGetInputSourceProperty(source, kTISPropertyInputSourceID) else {
+            return "<unknown>"
+        }
+        return Unmanaged<CFString>.fromOpaque(raw).takeUnretainedValue() as String
     }
 
     private static func isBeeInputSource(_ source: TISInputSource?) -> Bool {
