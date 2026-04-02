@@ -178,8 +178,7 @@ final class AppState {
                 maxNewTokensFinal: maxNewTokensFinal
             )
             Task { await session.start(language: detectLanguage(), asrConfig: config) }
-            // return false // not swallowed
-            return true  // swallowed, just to test an IME theory
+            return false  // not swallowed
 
         case .locked(let session):
             uiState = .lockedOptionHeld(session)

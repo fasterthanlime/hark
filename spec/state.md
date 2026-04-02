@@ -457,10 +457,13 @@ The IME layer manages text insertion via the beeInput InputMethodKit IME.
 
 > h[ime.start-two-phase]
 > IME startup is a two-phase handshake:
-> 1) app requests session association with IME (session ID + target identity),
+> 1) app prepares session on the broker (session ID only — no target PID),
 > 2) app selects beeInput source,
-> 3) IME replies with start acknowledgement bound to a concrete active client.
+> 3) IME claims the prepared session and replies with start acknowledgement.
 > The session is not active until step (3) succeeds for the current session.
+> No PID matching is performed — the IME dictates into whatever app is
+> focused. Target tracking for app-switch parking is handled separately
+> by the app layer.
 
 > h[ime.start-no-early-effects]
 > Before IME start acknowledgement:
