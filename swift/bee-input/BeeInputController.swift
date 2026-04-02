@@ -64,13 +64,6 @@ class BeeInputController: IMKInputController {
         }
         let bridge = BeeIMEBridgeState.shared
         guard let sessionID = bridge.activeSessionID else {
-            // User is typing but no session — switch away so keystrokes
-            // go to the real input source. Only try once per activation.
-            if let session = bridge.currentSession, !session.didRequestSwitchAway {
-                session.didRequestSwitchAway = true
-                beeInputLog("handle: no session, switching to next input source")
-                switchToNextInputSource()
-            }
             return false
         }
 
@@ -94,38 +87,6 @@ class BeeInputController: IMKInputController {
     }
 
     // MARK: - Utilities
-
-    private static let beeBundleID = "fasterthanlime.inputmethod.bee"
-
-    func switchToNextInputSource() {
-        let properties: [CFString: Any] = [kTISPropertyInputSourceIsSelectCapable: true]
-        guard
-            let sources = TISCreateInputSourceList(properties as CFDictionary, false)?
-                .takeRetainedValue() as? [TISInputSource]
-        else { return }
-
-        let candidate = sources.first { source in
-            guard let bundleID = TISGetInputSourceProperty(source, kTISPropertyBundleID) else {
-                return true
-            }
-            let id = Unmanaged<CFString>.fromOpaque(bundleID).takeUnretainedValue() as String
-            return id != Self.beeBundleID
-        }
-
-        guard let next = candidate else {
-            beeInputLog("switchToNextInputSource: no alternative found")
-            return
-        }
-
-        let sourceID: String = {
-            guard let raw = TISGetInputSourceProperty(next, kTISPropertyInputSourceID) else {
-                return "<unknown>"
-            }
-            return Unmanaged<CFString>.fromOpaque(raw).takeUnretainedValue() as String
-        }()
-        let result = TISSelectInputSource(next)
-        beeInputLog("TIS SELECT: \(sourceID) (switchAway) result=\(result)")
-    }
 
     private func currentClientIdentity() -> String? {
         guard let client = self.client() else { return nil }

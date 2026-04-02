@@ -14,7 +14,6 @@ final class BeeIMESession {
     // State that used to live on the controller
     var currentMarkedText: String = ""
     var autoCommittedPrefix: String = ""
-    var didRequestSwitchAway: Bool = false
     var pendingClaimToken: UUID?
 
     init(controller: BeeInputController, pid: pid_t?, clientID: String?) {
@@ -55,12 +54,7 @@ final class BeeIMESession {
 
         let claim = BeeBrokerIMEClient.shared.claimPreparedSessionSync()
         guard let sessionID = claim.sessionID else {
-            if !claim.shouldStayActive {
-                beeInputLog("activateServer: no session, switching to next input source")
-                controller?.switchToNextInputSource()
-            } else {
-                beeInputLog("activateServer: no session (staying active, recent session)")
-            }
+            beeInputLog("activateServer: no session (palette mode, staying active)")
             return
         }
 

@@ -124,7 +124,11 @@ final class BeeInputClient: Sendable {
 
     func deactivate(caller: String = #function, file: String = #fileID, line: Int = #line) {
         beeLog("IME DEACTIVATE called from \(file):\(line) \(caller)")
-        Self.deselectBeeInputSource()
+        // Deselect the palette so the next TISSelectInputSource triggers activateServer.
+        if let source = Self.findBeeInputSource() {
+            let result = TISDeselectInputSource(source)
+            beeLog("TIS DESELECT: \(Self.inputSourceID(source)) result=\(result)")
+        }
     }
 
     /// Wait for the IME to connect to the broker.
@@ -171,21 +175,39 @@ final class BeeInputClient: Sendable {
 
     @discardableResult
     static func ensureIMERegistered() -> Bool {
-        // Check if already registered
-        if findBeeInputSource() != nil { return true }
+        let allProps: [CFString: Any] = [kTISPropertyBundleID: beeBundleID as CFString]
+        let allSources = (TISCreateInputSourceList(allProps as CFDictionary, true)?
+            .takeRetainedValue() as? [TISInputSource]) ?? []
 
-        // Look for ~/Library/Input Methods/bee-input.app
+        beeLog("IME REGISTER: found \(allSources.count) source(s) (includeAll=true)")
+
+        if let source = allSources.first {
+            let enabled = TISGetInputSourceProperty(source, kTISPropertyInputSourceIsEnabled)
+                .map { Unmanaged<CFNumber>.fromOpaque($0).takeUnretainedValue() as! Bool } ?? false
+            if !enabled {
+                beeLog("IME REGISTER: source disabled, enabling")
+                TISEnableInputSource(source)
+            }
+            return true
+        }
+
+        // Not registered at all — register from disk
         let inputMethodsDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Input Methods/beeInput.app")
         guard FileManager.default.fileExists(atPath: inputMethodsDir.path) else {
+            beeLog("IME REGISTER: beeInput.app not found in ~/Library/Input Methods/")
             return false
         }
 
         let status = TISRegisterInputSource(inputMethodsDir as CFURL)
+        beeLog("IME REGISTER: TISRegisterInputSource result=\(status)")
         guard status == noErr else { return false }
 
-        // Enable it
-        if let source = findBeeInputSource() {
+        // Enable the newly registered source (don't select — first hotkey will do that)
+        let newSources = (TISCreateInputSourceList(allProps as CFDictionary, true)?
+            .takeRetainedValue() as? [TISInputSource]) ?? []
+        beeLog("IME REGISTER: after registration, found \(newSources.count) source(s)")
+        if let source = newSources.first {
             TISEnableInputSource(source)
             return true
         }
@@ -195,8 +217,7 @@ final class BeeInputClient: Sendable {
     static func restoreInputSourceIfNeeded(
         caller: String = #function, file: String = #fileID, line: Int = #line
     ) {
-        beeLog("IME RESTORE called from \(file):\(line) \(caller)")
-        deselectBeeInputSource()
+        // Palette input sources stay selected permanently — nothing to restore.
     }
 
     private static func getXPCConnection() -> NSXPCConnection {
@@ -460,15 +481,6 @@ final class BeeInputClient: Sendable {
                 }
             }
         }
-    }
-
-    static func deselectBeeInputSource() {
-        guard let beeSource = findBeeInputSource() else {
-            beeLog("TIS DESELECT: bee input source not found")
-            return
-        }
-        let result = TISDeselectInputSource(beeSource)
-        beeLog("TIS DESELECT: \(inputSourceID(beeSource)) result=\(result)")
     }
 
     private static func inputSourceID(_ source: TISInputSource) -> String {
