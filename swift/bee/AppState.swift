@@ -4,6 +4,7 @@ import ApplicationServices
 import CoreAudio
 import Foundation
 import SwiftUI
+import UserNotifications
 import os
 
 private let logger = Logger(subsystem: "fasterthanlime.bee", category: "AppState")
@@ -1441,10 +1442,41 @@ final class AppState {
 
         persistAudioPreferences()
 
-        let needsRestart = topologyChanged || previousUID != activeInputDeviceUID
+        let deviceChanged = previousUID != activeInputDeviceUID
+        let needsRestart = topologyChanged || deviceChanged
         beeLog("AUDIO: refreshInputDevices(\(reason)): count=\(info.count), prev=\(previousUID ?? "nil"), now=\(activeInputDeviceUID ?? "nil"), topologyChanged=\(topologyChanged), needsRestart=\(needsRestart)")
 
+        // Notify user when device auto-switches
+        if deviceChanged, let newName = activeInputDeviceName {
+            let previousName = info.first(where: { $0.uid == previousUID })?.name ?? "unknown"
+            sendDeviceSwitchNotification(from: previousName, to: newName, reason: reason)
+        }
+
         reconfigureAudioEngineIfNeeded(forceRestart: needsRestart)
+    }
+
+    private func sendDeviceSwitchNotification(from previousName: String, to newName: String, reason: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "Audio input changed"
+        content.body = "\(newName)"
+        content.sound = nil  // silent — don't interrupt
+
+        let request = UNNotificationRequest(
+            identifier: "device-switch-\(UUID().uuidString)",
+            content: content,
+            trigger: nil  // deliver immediately
+        )
+
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { granted, _ in
+            guard granted else { return }
+            UNUserNotificationCenter.current().add(request) { error in
+                if let error {
+                    beeLog("AUDIO: notification error: \(error)")
+                }
+            }
+        }
+
+        beeLog("AUDIO: device switched from \(previousName) to \(newName) (\(reason))")
     }
 
     private func reconfigureAudioEngineIfNeeded(forceRestart: Bool) {
