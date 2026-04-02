@@ -71,9 +71,23 @@ run_step() {
 
 run_step "Building MLX Rust FFI (release)" "cd \"$PROJECT_ROOT/rust\" && cargo build --release -p bee-ffi"
 run_step "Generating Xcode project" "cd \"$SWIFT_DIR\" && xcodegen generate --spec \"$XCODE_SPEC\""
-run_step "Building bee (Release)" "cd \"$SWIFT_DIR\" && xcodebuild -project \"$XCODE_PROJECT\" -scheme bee -configuration Release CONFIGURATION_BUILD_DIR=\"$BUILD_DIR\" build"
-run_step "Building beeInput (Release)" "cd \"$SWIFT_DIR\" && xcodebuild -project \"$XCODE_PROJECT\" -scheme beeInput -configuration Release CONFIGURATION_BUILD_DIR=\"$BUILD_DIR\" build"
-run_step "Building beeBroker (Release)" "cd \"$SWIFT_DIR\" && xcodebuild -project \"$XCODE_PROJECT\" -scheme beeBroker -configuration Release CONFIGURATION_BUILD_DIR=\"$BUILD_DIR\" build"
+banner "Building bee + beeInput + beeBroker (Release, parallel)"
+pids=()
+for scheme in bee beeInput beeBroker; do
+  (cd "$SWIFT_DIR" && xcodebuild -project "$XCODE_PROJECT" -scheme "$scheme" -configuration Release CONFIGURATION_BUILD_DIR="$BUILD_DIR" build 2>&1 | tail -1) &
+  pids+=($!)
+done
+failed=0
+for pid in "${pids[@]}"; do
+  if ! wait "$pid"; then
+    failed=1
+  fi
+done
+if [ "$failed" -ne 0 ]; then
+  printf '%s\n' "${RED}${BOLD}Swift build failed${RESET}"
+  exit 1
+fi
+printf '%s\n' "${GREEN}${BOLD}All Swift targets built${RESET}"
 
 run_step "Installing bee to /Applications/bee.app" "rsync -a --delete \"$BUILD_DIR/bee.app/\" /Applications/bee.app/"
 run_step "Installing beeInput to $INPUT_METHOD_DIR/beeInput.app" "mkdir -p \"$INPUT_METHOD_DIR\" && rsync -a --delete \"$BUILD_DIR/beeInput.app/\" \"$INPUT_METHOD_DIR/beeInput.app/\""
