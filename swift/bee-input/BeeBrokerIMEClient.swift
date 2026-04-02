@@ -75,8 +75,6 @@ final class BeeBrokerIMEClient {
         }
     }
 
-    /// Synchronous (blocking) claim — use from activateServer to prevent
-    /// deactivateServer from racing during the XPC round-trip.
     /// Synchronous claim — blocks so deactivateServer can't race.
     func claimPreparedSessionSync() -> UUID? {
         let conn = getConnection()
@@ -146,7 +144,7 @@ private final class BeeIMEPeerSink: NSObject, BeeBrokerPeerXPC {
             }
 
             beeInputLog("newPreparedSession: claimed session=\(claimedSessionID.uuidString.prefix(8))")
-            bridge.attachSession(sessionID: claimedSessionID, clientIdentity: bridge.activeClientIdentity)
+            bridge.attachSession(sessionID: claimedSessionID)
             bridge.flushPending()
             BeeBrokerIMEClient.shared.imeAttach(sessionID: claimedSessionID)
         }

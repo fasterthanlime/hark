@@ -24,10 +24,7 @@ class BeeInputController: IMKInputController {
         }
 
         beeInputLog("activateServer: claimed session=\(sessionID.uuidString.prefix(8))")
-        BeeIMEBridgeState.shared.attachSession(
-            sessionID: sessionID,
-            clientIdentity: clientIdentity
-        )
+        BeeIMEBridgeState.shared.attachSession(sessionID: sessionID)
         BeeIMEBridgeState.shared.flushPending()
         BeeBrokerIMEClient.shared.imeAttach(sessionID: sessionID)
     }
