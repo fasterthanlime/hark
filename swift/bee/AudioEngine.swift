@@ -49,6 +49,15 @@ final class AudioEngine: @unchecked Sendable {
     var selectedDeviceUID: String?
     var deviceWarmPolicy: [String: Bool] = [:]
 
+    // Audio echo/monitoring (1-second delay playback)
+    private(set) var echoEnabled = false
+    private var echoEngine: AVAudioEngine?
+    private var echoPlayerNode: AVAudioPlayerNode?
+    private var echoBuffer: [Float] = []
+    private var echoWriteIndex = 0
+    private let echoDelaySamples = 16000  // 1 second at 16kHz
+    private var echoFormat: AVAudioFormat?
+
     // Audio level & stats (updated from audio callback)
     private(set) var currentLevel: Float = 0      // 0..1, smoothed dB-scaled meter level
     private(set) var currentLevelDb: Float = -60   // dBFS, smoothed
@@ -298,11 +307,15 @@ final class AudioEngine: @unchecked Sendable {
             }
         }
 
-        // Resample to 16kHz and send to pipelines
-        if !activePipelines.isEmpty {
+        // Resample to 16kHz and send to pipelines + echo
+        let needsResampled = !activePipelines.isEmpty || echoEnabled
+        if needsResampled {
             let resampled = resampleCached(Array(samples))
             for (_, pipeline) in activePipelines {
                 pipeline.send(resampled)
+            }
+            if echoEnabled {
+                feedEcho(resampled)
             }
         }
 
@@ -378,6 +391,77 @@ final class AudioEngine: @unchecked Sendable {
         let pipeline = activePipelines.removeValue(forKey: sessionID)
         lock.unlock()
         pipeline?.finish()
+    }
+
+    // MARK: - Audio Echo (monitoring)
+
+    func startEcho() {
+        guard !echoEnabled else { return }
+        beeLog("AUDIO: Starting echo monitoring")
+
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Self.targetSampleRate, channels: 1, interleaved: false)!
+        echoFormat = format
+
+        let engine = AVAudioEngine()
+        let player = AVAudioPlayerNode()
+        engine.attach(player)
+        engine.connect(player, to: engine.mainMixerNode, format: format)
+
+        do {
+            try engine.start()
+            player.play()
+        } catch {
+            beeLog("AUDIO: Echo engine failed: \(error)")
+            return
+        }
+
+        lock.lock()
+        echoEngine = engine
+        echoPlayerNode = player
+        echoBuffer = [Float](repeating: 0, count: echoDelaySamples)
+        echoWriteIndex = 0
+        echoEnabled = true
+        lock.unlock()
+    }
+
+    func stopEcho() {
+        beeLog("AUDIO: Stopping echo monitoring")
+        lock.lock()
+        echoEnabled = false
+        let engine = echoEngine
+        let player = echoPlayerNode
+        echoEngine = nil
+        echoPlayerNode = nil
+        echoBuffer.removeAll()
+        lock.unlock()
+
+        player?.stop()
+        engine?.stop()
+    }
+
+    /// Called from the audio callback (under lock) to feed echo buffer.
+    private func feedEcho(_ samples: [Float]) {
+        guard echoEnabled, let player = echoPlayerNode, let format = echoFormat else { return }
+
+        // Write to delay buffer
+        for sample in samples {
+            echoBuffer[echoWriteIndex % echoDelaySamples] = sample
+            echoWriteIndex += 1
+        }
+
+        // Read delayed samples
+        guard echoWriteIndex >= echoDelaySamples else { return }
+        let readStart = (echoWriteIndex - echoDelaySamples + samples.count) % echoDelaySamples
+        let count = samples.count
+
+        guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)) else { return }
+        pcmBuffer.frameLength = AVAudioFrameCount(count)
+        if let cd = pcmBuffer.floatChannelData {
+            for i in 0..<count {
+                cd[0][i] = echoBuffer[(readStart + i) % echoDelaySamples]
+            }
+        }
+        player.scheduleBuffer(pcmBuffer, completionHandler: nil)
     }
 
     // MARK: - Resampling

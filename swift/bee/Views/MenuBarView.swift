@@ -11,8 +11,23 @@ struct MenuBarView: View {
                 InputDeviceList(appState: appState)
                     .padding(.horizontal, 6)
 
-                InputVolumeSlider(audioEngine: appState.audioEngine)
-                    .padding(.horizontal, 10)
+                HStack(spacing: 8) {
+                    InputVolumeSlider(audioEngine: appState.audioEngine)
+
+                    Button {
+                        if appState.audioEngine.echoEnabled {
+                            appState.audioEngine.stopEcho()
+                        } else {
+                            appState.audioEngine.startEcho()
+                        }
+                    } label: {
+                        Image(systemName: appState.audioEngine.echoEnabled ? "ear.fill" : "ear")
+                            .foregroundStyle(appState.audioEngine.echoEnabled ? .orange : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Listen to yourself (1s delay)")
+                }
+                .padding(.horizontal, 10)
 
                 Divider().padding(.horizontal, 2)
                 if appState.transcriptionHistory.isEmpty {
@@ -92,6 +107,9 @@ struct MenuBarView: View {
         .onDisappear {
             beeLog("MENUBAR: panel closed")
             appState.menuBarPanelOpen = false
+            if appState.audioEngine.echoEnabled {
+                appState.audioEngine.stopEcho()
+            }
             // Cool down if no active session needs the engine
             if !appState.hotkeyState.isRecording && !appState.activeInputDeviceKeepWarm {
                 beeLog("MENUBAR: cooling down audio engine")
