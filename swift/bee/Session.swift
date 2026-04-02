@@ -96,19 +96,8 @@ actor Session {
         self.ch1 = ch1
         self.ch2 = ch2
 
-        // IME: activate and show bee cursor
         beeLog("SESSION START")
-        let imeActivated = await inputClient.activate(sessionID: id, targetPID: targetProcessID)
-        guard imeActivated else {
-            logger.error("[\(self.id)] Failed to activate IME for target pid")
-            inputClient.stopDictating(sessionID: id)
-            emitCompletion(.aborted(id: id))
-            return
-        }
-        beeLog("SESSION: IME selected, awaiting IME session confirmation (ime=\(ime))")
-        if ime == .inactive {
-            ime = .activating
-        }
+        // IME activation runs in parallel from AppState (MainActor)
 
         // Register with AudioEngine (Channel 0 starts flowing)
         audioEngine.startCapture(for: self.id, pipeline: ch0)

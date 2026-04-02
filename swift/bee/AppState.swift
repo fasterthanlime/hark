@@ -187,12 +187,19 @@ final class AppState {
                 maxNewTokensStreaming: maxNewTokensStreaming,
                 maxNewTokensFinal: maxNewTokensFinal
             )
-            // Kick off IME activation on MainActor immediately, then
-            // start the audio/ASR pipeline on the Session actor.
             let language = detectLanguage()
-            beeLog("APP: handleROptDown done, dispatching Task")
+            beeLog("APP: handleROptDown done, dispatching Tasks")
+            // IME activation on MainActor — fires immediately, no actor hop
+            Task { @MainActor in
+                beeLog("APP: IME activate Task started")
+                let ok = await inputClient.activate(sessionID: session.id, targetPID: targetPID)
+                if !ok {
+                    beeLog("APP: IME activation failed")
+                }
+            }
+            // Audio/ASR pipeline on Session actor — runs in parallel
             Task {
-                beeLog("APP: Task started")
+                beeLog("APP: Session Task started")
                 await session.start(language: language, asrConfig: config)
             }
             return false  // not swallowed
