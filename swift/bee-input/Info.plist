@@ -29,6 +29,8 @@
     <array>
         <string>Latn</string>
     </array>
+    <key>InputMethodType</key>
+    <string>palette</string>
     <key>tsInputMethodIconFileKey</key>
     <string>bee.tiff</string>
 </dict>
