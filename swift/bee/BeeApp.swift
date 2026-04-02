@@ -62,11 +62,9 @@ final class StatusBarController: NSObject {
     private let statusItem: NSStatusItem
     private let popover: NSPopover
     private var globalMonitor: Any?
-    private var localMonitor: Any?
     private weak var appState: AppState?
     private var animationProgress: CGFloat = 0  // 0 = idle, 1 = recording
     private var animationTimer: Timer?
-    private var lastCloseTime: CFTimeInterval = 0
 
     private static let itemWidth: CGFloat = 26
 
@@ -86,27 +84,8 @@ final class StatusBarController: NSObject {
             button.image?.isTemplate = true
             button.imagePosition = .imageOnly
             button.contentTintColor = nil
-        }
-
-        // Intercept mouseDown on the status item button before drag detection
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-            guard let self, let button = self.statusItem.button else { return event }
-            guard event.window == button.window else { return event }
-            // Let cmd+click through for menu bar icon repositioning
-            guard !event.modifierFlags.contains(.command) else { return event }
-
-            let locationInButton = button.convert(event.locationInWindow, from: nil)
-            if button.bounds.contains(locationInButton) {
-                // If the popover just closed (transient behavior), don't reopen
-                let timeSinceClose = CACurrentMediaTime() - self.lastCloseTime
-                if self.popover.isShown || timeSinceClose < 0.2 {
-                    self.closePopover()
-                } else {
-                    self.showPopover()
-                }
-                return nil // consume the event
-            }
-            return event
+            button.action = #selector(handleClick)
+            button.target = self
         }
 
         // Close popover when clicking outside
@@ -129,6 +108,14 @@ final class StatusBarController: NSObject {
         updateIcon()
     }
 
+    @objc private func handleClick() {
+        if popover.isShown {
+            closePopover()
+        } else {
+            showPopover()
+        }
+    }
+
     private func showPopover() {
         guard let button = statusItem.button else { return }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -137,7 +124,6 @@ final class StatusBarController: NSObject {
 
     private func closePopover() {
         popover.performClose(nil)
-        lastCloseTime = CACurrentMediaTime()
     }
 
     @objc func updateIcon() {
@@ -235,13 +221,25 @@ final class StatusBarController: NSObject {
 
     @objc private func handleOpenMainWindow() {
         closePopover()
+        openSettingsWindow()
+    }
+
+    func openSettingsWindow() {
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-        DispatchQueue.main.async {
-            let normalWindow = NSApp.windows.first { window in
-                !(window is NSPanel) && window.isVisible
+
+        // Find existing settings window or create one
+        let existingWindow = NSApp.windows.first { window in
+            !(window is NSPanel)
+        }
+        if let window = existingWindow {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            // Trigger SwiftUI Settings scene
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            DispatchQueue.main.async {
+                NSApp.windows.first { !(($0) is NSPanel) }?.makeKeyAndOrderFront(nil)
             }
-            normalWindow?.makeKeyAndOrderFront(nil)
         }
     }
 }

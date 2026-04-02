@@ -42,7 +42,7 @@ struct MenuBarView: View {
                 }
             }
             label: {
-                MenuActionRow(title: "Open settings", shortcut: "⌘,")
+                MenuActionRow(title: "Settings", shortcut: "⌘,")
             }
             .buttonStyle(.plain)
             .keyboardShortcut(",", modifiers: [.command])
@@ -164,7 +164,7 @@ struct BeeSettingsView: View {
             Group {
                 switch selection {
                 case .overview:
-                    BeeOverviewView(appState: appState)
+                    BeeOverviewView(appState: appState, selection: $selection)
                 case .history:
                     BeeHistoryView(appState: appState)
                 case .howBeeWorks:
@@ -182,6 +182,7 @@ struct BeeSettingsView: View {
 
 private struct BeeOverviewView: View {
     @Bindable var appState: AppState
+    @Binding var selection: SidebarItem
 
     var body: some View {
         ScrollView {
@@ -209,7 +210,43 @@ private struct BeeOverviewView: View {
 
                 // Input device + status
                 HStack(spacing: 12) {
-                    InputDeviceList(appState: appState)
+                    if let activeDevice = appState.availableInputDevices.first(where: { $0.uid == appState.activeInputDeviceUID }) {
+                        Picker(selection: Binding(
+                            get: { appState.activeInputDeviceUID ?? "" },
+                            set: { appState.selectInputDevice(uid: $0) }
+                        )) {
+                            ForEach(appState.availableInputDevices, id: \.uid) { device in
+                                Label {
+                                    VStack(alignment: .leading) {
+                                        Text(device.name)
+                                        if let sub = device.subtitle {
+                                            Text(sub).font(.caption2).foregroundStyle(.secondary)
+                                        }
+                                    }
+                                } icon: {
+                                    DeviceIcon(device: device)
+                                }
+                                .tag(device.uid)
+                            }
+                        } label: {
+                            Label {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(activeDevice.name)
+                                    if let sub = activeDevice.subtitle {
+                                        Text(sub)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            } icon: {
+                                DeviceIcon(device: activeDevice)
+                                    .foregroundStyle(.orange)
+                                    .font(.title3)
+                                    .frame(width: 20, height: 20)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                    }
 
                     Spacer()
 
@@ -233,8 +270,22 @@ private struct BeeOverviewView: View {
                                 .foregroundStyle(.secondary)
                         }
                     } else {
-                        ForEach(appState.transcriptionHistory.prefix(3)) { item in
-                            TranscriptRow(text: item.text, timestamp: item.timestamp, appIcon: item.appIcon)
+                        if let first = appState.transcriptionHistory.first {
+                            TranscriptRow(text: first.text, timestamp: first.timestamp, appIcon: first.appIcon)
+                        }
+                        if appState.transcriptionHistory.count > 1 {
+                            Button {
+                                selection = .history
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text("View all \(appState.transcriptionHistory.count) transcripts")
+                                    Image(systemName: "arrow.right")
+                                        .font(.caption)
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -669,6 +720,19 @@ private struct SettingsCard<Content: View>: View {
     }
 }
 
+private struct DeviceIcon: View {
+    let device: AppState.InputDeviceInfo
+    var body: some View {
+        if let asset = device.customIconAsset {
+            Image(asset)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+        } else if let sfName = device.iconName {
+            Image(systemName: sfName)
+        }
+    }
+}
+
 private struct InputDeviceList: View {
     @Bindable var appState: AppState
 
@@ -700,7 +764,7 @@ private struct InputDeviceListRow: View {
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: 8) {
-                Image(systemName: device.iconName)
+                DeviceIcon(device: device)
                     .font(.title3)
                     .foregroundStyle(isActive ? .orange : .secondary)
                     .frame(width: 24)
@@ -907,7 +971,7 @@ private struct AudioDeviceRow: View {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(isActive ? Color.orange.opacity(0.12) : Color.primary.opacity(0.04))
                     .frame(width: 32, height: 32)
-                Image(systemName: device.iconName)
+                DeviceIcon(device: device)
                     .font(.system(size: 14))
                     .foregroundStyle(isActive ? .orange : .secondary)
             }

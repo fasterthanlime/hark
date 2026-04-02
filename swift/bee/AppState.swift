@@ -161,8 +161,11 @@ final class AppState {
         let isDefault: Bool
         let transport: AudioTransport
         let modelUID: String?
+        let manufacturer: String?
 
-        var iconName: String {
+        /// SF Symbol name, or nil if using a custom asset image
+        var iconName: String? {
+            if customIconAsset != nil { return nil }
             if let model = modelUID {
                 if model.contains("iPhone") { return "iphone" }
                 if model.contains("iPad") { return "ipad" }
@@ -170,12 +173,18 @@ final class AppState {
             }
             switch transport {
             case .builtIn: return "laptopcomputer"
-            case .usb: return "cable.connector"
+            case .usb: return "dot.radiowaves.up.forward"
             case .bluetooth: return "headphones"
             case .continuityCamera: return "iphone"
             case .virtual, .aggregate: return "waveform.circle"
             case .unknown: return "mic"
             }
+        }
+
+        /// Custom asset image name for known hardware
+        var customIconAsset: String? {
+            if let mfr = manufacturer, mfr.contains("Focusrite") { return "FocusriteIcon" }
+            return nil
         }
 
         /// Clean model UID for display — strip USB vendor:product suffixes like ":1235:8218"
@@ -192,13 +201,11 @@ final class AppState {
 
         var subtitle: String? {
             var parts: [String] = []
-            if let model = cleanModelUID {
-                parts.append(model)
-            } else {
-                parts.append(transport.rawValue)
+            if let mfr = manufacturer, !mfr.isEmpty {
+                parts.append(mfr)
             }
             if isDefault { parts.append("Default") }
-            return parts.joined(separator: " · ")
+            return parts.isEmpty ? nil : parts.joined(separator: " · ")
         }
     }
 
@@ -1355,7 +1362,8 @@ final class AppState {
                     isBuiltIn: device.deviceType == .microphone,
                     isDefault: device.uniqueID == defaultUID,
                     transport: transport,
-                    modelUID: modelUID
+                    modelUID: modelUID,
+                    manufacturer: device.manufacturer
                 )
             }
             .sorted { lhs, rhs in
