@@ -423,17 +423,32 @@ final class AudioEngine: @unchecked Sendable {
 
     // MARK: - Input Volume
 
+    /// Find the element that has input volume for this device (master=0 or channel=1).
+    private static func inputVolumeElement(deviceID: AudioDeviceID) -> UInt32? {
+        for element: UInt32 in [0, 1] {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyVolumeScalar,
+                mScope: kAudioDevicePropertyScopeInput,
+                mElement: element
+            )
+            if AudioObjectHasProperty(deviceID, &address) {
+                return element
+            }
+        }
+        return nil
+    }
+
     /// Get the input volume (0..1) for a device. Returns nil if the device doesn't support it.
     static func getInputVolume(deviceID: AudioDeviceID) -> Float? {
+        guard let element = inputVolumeElement(deviceID: deviceID) else { return nil }
+
         var volume: Float32 = 0
         var size = UInt32(MemoryLayout<Float32>.size)
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyVolumeScalar,
             mScope: kAudioDevicePropertyScopeInput,
-            mElement: kAudioObjectPropertyElementMain
+            mElement: element
         )
-
-        guard AudioObjectHasProperty(deviceID, &address) else { return nil }
 
         let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &volume)
         return status == noErr ? volume : nil
@@ -442,15 +457,15 @@ final class AudioEngine: @unchecked Sendable {
     /// Set the input volume (0..1) for a device. Returns true if successful.
     @discardableResult
     static func setInputVolume(deviceID: AudioDeviceID, volume: Float) -> Bool {
+        guard let element = inputVolumeElement(deviceID: deviceID) else { return false }
+
         var vol = max(0, min(1, volume))
         let size = UInt32(MemoryLayout<Float32>.size)
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyVolumeScalar,
             mScope: kAudioDevicePropertyScopeInput,
-            mElement: kAudioObjectPropertyElementMain
+            mElement: element
         )
-
-        guard AudioObjectHasProperty(deviceID, &address) else { return false }
 
         var settable: DarwinBoolean = false
         AudioObjectIsPropertySettable(deviceID, &address, &settable)

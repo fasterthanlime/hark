@@ -136,6 +136,7 @@ final class AppState {
     private var savedVolume: Float?
 
     // Debug
+    var menuBarPanelOpen = false
     var debugEnabled = false {
         didSet {
             UserDefaults.standard.set(debugEnabled, forKey: DefaultsKey.debugOverlayEnabled)
@@ -1299,14 +1300,13 @@ final class AppState {
         guard hotkeyState.session == nil else { return }
         if hotkeyState.isRecording { return }
 
-        if activeInputDeviceKeepWarm {
+        let shouldBeWarm = activeInputDeviceKeepWarm || menuBarPanelOpen
+        if shouldBeWarm {
             if !audioEngine.isWarm {
                 do {
                     try audioEngine.warmUp()
                 } catch {
-                    logger.error(
-                        "Failed to warm audio engine for active device: \(error.localizedDescription, privacy: .public)"
-                    )
+                    beeLog("AUDIO: Failed to warm engine: \(error.localizedDescription)")
                 }
             }
         } else if audioEngine.isWarm {

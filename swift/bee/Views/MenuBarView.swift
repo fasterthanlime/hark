@@ -77,7 +77,8 @@ struct MenuBarView: View {
         }
         .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
         .onAppear {
-            // Warm up audio engine for the level meter
+            beeLog("MENUBAR: panel opened")
+            appState.menuBarPanelOpen = true
             if !appState.audioEngine.isWarm {
                 beeLog("MENUBAR: warming up audio engine for level meter")
                 do {
@@ -89,7 +90,8 @@ struct MenuBarView: View {
             }
         }
         .onDisappear {
-            beeLog("MENUBAR: view disappearing")
+            beeLog("MENUBAR: panel closed")
+            appState.menuBarPanelOpen = false
             // Cool down if no active session needs the engine
             if !appState.hotkeyState.isRecording && !appState.activeInputDeviceKeepWarm {
                 beeLog("MENUBAR: cooling down audio engine")
