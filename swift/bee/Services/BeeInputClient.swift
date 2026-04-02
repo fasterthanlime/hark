@@ -209,7 +209,7 @@ final class BeeInputClient: Sendable {
 
         let awayResult = TISSelectInputSource(other)
         beeLog("IME ACTIVATE: TIS toggle — selected other (result=\(awayResult))")
-        usleep(50_000)  // 50ms
+        usleep(200_000)  // 200ms — give OS time to process the switch
         let backResult = TISSelectInputSource(beeSource)
         beeLog("IME ACTIVATE: TIS toggle — re-selected bee (result=\(backResult))")
     }
