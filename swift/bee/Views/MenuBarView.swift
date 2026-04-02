@@ -6,56 +6,65 @@ struct MenuBarView: View {
     @Bindable var appState: AppState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            InputDeviceList(appState: appState)
-                .padding(.horizontal, 6)
-
-            Divider().padding(.horizontal, 2)
-            if appState.transcriptionHistory.isEmpty {
-                Text("Transcripts will appear here")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                InputDeviceList(appState: appState)
                     .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
-            } else {
-                VStack(spacing: 4) {
-                    ForEach(appState.transcriptionHistory.prefix(3)) { item in
-                        TranscriptRow(text: item.text, timestamp: item.timestamp, appIcon: item.appIcon)
+
+                Divider().padding(.horizontal, 2)
+                if appState.transcriptionHistory.isEmpty {
+                    Text("Transcripts will appear here")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
+                } else {
+                    VStack(spacing: 4) {
+                        ForEach(appState.transcriptionHistory.prefix(3)) { item in
+                            TranscriptRow(text: item.text, timestamp: item.timestamp, appIcon: item.appIcon)
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                }
+
+                Divider().padding(.horizontal, 2)
+
+                Button {
+                    NSApp.keyWindow?.orderOut(nil)
+                    SettingsOpener.action?()
+                    NSApp.activate(ignoringOtherApps: true)
+                    DispatchQueue.main.async {
+                        for window in NSApp.windows where !(window is NSPanel) {
+                            window.makeKeyAndOrderFront(nil)
+                            return
+                        }
                     }
                 }
-                .padding(.horizontal, 6)
-            }
-
-            Divider().padding(.horizontal, 2)
-
-            Button {
-                NSApp.keyWindow?.orderOut(nil)
-                SettingsOpener.action?()
-                NSApp.activate(ignoringOtherApps: true)
-                DispatchQueue.main.async {
-                    for window in NSApp.windows where !(window is NSPanel) {
-                        window.makeKeyAndOrderFront(nil)
-                        return
-                    }
+                label: {
+                    MenuActionRow(title: "Settings", shortcut: "⌘,")
                 }
-            }
-            label: {
-                MenuActionRow(title: "Settings", shortcut: "⌘,")
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut(",", modifiers: [.command])
+                .buttonStyle(.plain)
+                .keyboardShortcut(",", modifiers: [.command])
 
-            Button {
-                BeeInputClient.restoreInputSourceIfNeeded()
-                NSApplication.shared.terminate(nil)
+                Button {
+                    BeeInputClient.restoreInputSourceIfNeeded()
+                    NSApplication.shared.terminate(nil)
+                }
+                label: {
+                    MenuActionRow(title: "Quit", shortcut: "⌘Q")
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut("q", modifiers: [.command])
             }
-            label: {
-                MenuActionRow(title: "Quit", shortcut: "⌘Q")
+            .padding(10)
+
+            if appState.audioEngine.isWarm {
+                VerticalLevelMeter(audioEngine: appState.audioEngine)
+                    .frame(width: 6)
+                    .padding(.vertical, 10)
+                    .padding(.trailing, 6)
             }
-            .buttonStyle(.plain)
-            .keyboardShortcut("q", modifiers: [.command])
         }
-        .padding(10)
         .frame(width: 340)
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -855,7 +864,6 @@ private struct InputDeviceList: View {
                     InputDeviceListRow(
                         device: device,
                         isActive: device.uid == appState.activeInputDeviceUID,
-                        audioEngine: appState.audioEngine,
                         onSelect: { appState.selectInputDevice(uid: device.uid) }
                     )
                 }
@@ -867,7 +875,6 @@ private struct InputDeviceList: View {
 private struct InputDeviceListRow: View {
     let device: AppState.InputDeviceInfo
     let isActive: Bool
-    let audioEngine: AudioEngine
     let onSelect: () -> Void
 
     @State private var isHovered = false
@@ -890,14 +897,9 @@ private struct InputDeviceListRow: View {
                 }
                 Spacer()
                 if isActive {
-                    if audioEngine.isWarm {
-                        VerticalLevelMeter(audioEngine: audioEngine)
-                            .frame(width: 4, height: 16)
-                    } else {
-                        Image(systemName: "checkmark")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.orange)
-                    }
+                    Image(systemName: "checkmark")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
                 }
             }
             .padding(.horizontal, 10)

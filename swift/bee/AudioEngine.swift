@@ -50,13 +50,20 @@ final class AudioEngine: @unchecked Sendable {
     var deviceWarmPolicy: [String: Bool] = [:]
 
     // Audio level & stats (updated from audio callback)
-    private(set) var currentLevel: Float = 0
+    private(set) var currentLevel: Float = 0      // 0..1, smoothed dB-scaled meter level
+    private(set) var currentLevelDb: Float = -60   // dBFS, smoothed
     private(set) var totalBuffersReceived: UInt64 = 0
     private(set) var totalSamplesReceived: UInt64 = 0
     private(set) var activePipelineCount: Int = 0
     private(set) var channelCount: UInt32 = 0
     private(set) var currentRMS: Float = 0
     private(set) var peakLevel: Float = 0
+
+    // Meter smoothing constants
+    private static let meterFloor: Float = -60     // dBFS floor
+    private static let attackTime: Float = 0.01    // 10ms (PPM-style fast attack)
+    private static let releaseTime: Float = 0.3    // 300ms (VU-style slow release)
+    private var smoothedDb: Float = -60
 
     // MARK: - Engine Lifecycle
 
@@ -232,6 +239,8 @@ final class AudioEngine: @unchecked Sendable {
         preBufferCapacity = 0
         preBufferWriteIndex = 0
         currentLevel = 0
+        currentLevelDb = Self.meterFloor
+        smoothedDb = Self.meterFloor
         currentRMS = 0
         peakLevel = 0
         totalBuffersReceived = 0
@@ -297,7 +306,7 @@ final class AudioEngine: @unchecked Sendable {
             }
         }
 
-        // Compute RMS level and stats
+        // Compute RMS and peak
         var sumSquares: Float = 0
         var peak: Float = 0
         for sample in samples {
@@ -307,8 +316,24 @@ final class AudioEngine: @unchecked Sendable {
         }
         let rms = sqrtf(sumSquares / Float(count))
         currentRMS = rms
-        currentLevel = min(1, rms * 5)
         peakLevel = peak
+
+        // Convert RMS to dBFS: dB = 20 * log10(rms), floor at -60 dB
+        let rawDb = rms > 0 ? 20.0 * log10f(rms) : Self.meterFloor
+        let clampedDb = max(Self.meterFloor, min(0, rawDb))
+
+        // Attack/release smoothing
+        // Compute coefficient from time constant: α = 1 - exp(-dt / τ)
+        let dt = Float(count) / Float(nativeSampleRate)
+        let isRising = clampedDb > smoothedDb
+        let tau = isRising ? Self.attackTime : Self.releaseTime
+        let alpha = 1.0 - expf(-dt / tau)
+        smoothedDb += alpha * (clampedDb - smoothedDb)
+
+        currentLevelDb = smoothedDb
+        // Map -60..0 dBFS to 0..1 for display
+        currentLevel = max(0, min(1, (smoothedDb - Self.meterFloor) / -Self.meterFloor))
+
         totalBuffersReceived += 1
         totalSamplesReceived += UInt64(count)
         activePipelineCount = activePipelines.count
