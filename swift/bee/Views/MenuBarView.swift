@@ -153,25 +153,42 @@ struct BeeSettingsView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            List(selection: $selection) {
-                Section("bee") {
-                    Label("Overview", systemImage: "sparkles")
-                        .tag(SidebarItem.overview)
-                    Label("History", systemImage: "clock.arrow.circlepath")
-                        .tag(SidebarItem.history)
-                }
+            VStack(spacing: 0) {
+                List(selection: $selection) {
+                    Section {
+                        Label("Overview", systemImage: "sparkles")
+                            .tag(SidebarItem.overview)
+                        Label("History", systemImage: "clock.arrow.circlepath")
+                            .tag(SidebarItem.history)
+                        Label("How bee works", systemImage: "keyboard")
+                            .tag(SidebarItem.howBeeWorks)
+                    }
 
-                Section("guide") {
-                    Label("How bee works", systemImage: "keyboard")
-                        .tag(SidebarItem.howBeeWorks)
+                    Section {
+                        Label("Settings", systemImage: "gearshape")
+                            .tag(SidebarItem.advanced)
+                    }
                 }
+                .listStyle(.sidebar)
 
-                Section("settings") {
-                    Label("Advanced", systemImage: "slider.horizontal.3")
-                        .tag(SidebarItem.advanced)
+                Spacer()
+
+                HStack(spacing: 8) {
+                    Image("BeeColor")
+                        .resizable()
+                        .frame(width: 20, height: 20)
+                    Text("bee")
+                        .font(.callout.weight(.semibold))
+                    if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+                        Text("v\(version)")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .listStyle(.sidebar)
             .frame(width: 200)
 
             Divider()
@@ -204,34 +221,7 @@ private struct BeeOverviewView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 24) {
-                // Hero
-                VStack(spacing: 8) {
-                    Image("BeeColor")
-                        .resizable()
-                        .frame(width: 64, height: 64)
-
-                    Text("bee")
-                        .font(.title.weight(.bold))
-
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(stateColor)
-                            .frame(width: 8, height: 8)
-                        Text(statusLabel)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
-                        Text("v\(version)")
-                            .font(.caption2)
-                            .foregroundStyle(.quaternary)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.top, 8)
-
+            VStack(spacing: 20) {
                 // Stats
                 if appState.totalSessions > 0 {
                     HStack(spacing: 12) {
@@ -253,27 +243,32 @@ private struct BeeOverviewView: View {
                     }
                 }
 
-                // Model & pipeline
-                SettingsCard("Pipeline") {
-                    StatusRow(label: "ASR", value: modelLabel, color: modelColor)
-
-                    if appState.loadedModelDisplayName != nil {
-                        ForEach(AppState.pipelineComponents, id: \.name) { component in
-                            PipelineRow(
-                                label: component.role,
-                                value: component.name,
-                                url: component.url
-                            )
+                // Input device + status
+                HStack(spacing: 12) {
+                    Picker(selection: Binding(
+                        get: { appState.activeInputDeviceUID ?? "" },
+                        set: { appState.selectInputDevice(uid: $0) }
+                    )) {
+                        if appState.availableInputDevices.isEmpty {
+                            Text("No input devices").tag("")
+                        } else {
+                            ForEach(appState.availableInputDevices, id: \.uid) { device in
+                                Text(device.name).tag(device.uid)
+                            }
                         }
+                    } label: {
+                        Label("Input", systemImage: "mic.fill")
                     }
+                    .pickerStyle(.menu)
 
-                    Divider()
+                    Spacer()
 
-                    HStack(spacing: 10) {
-                        Image(systemName: "mic.fill")
-                            .foregroundStyle(.secondary)
-                            .font(.caption)
-                        Text(appState.activeInputDeviceName ?? "No input device")
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(stateColor)
+                            .frame(width: 8, height: 8)
+                        Text(statusLabel)
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -293,19 +288,18 @@ private struct BeeOverviewView: View {
                 }
 
                 // Footer
-                VStack(spacing: 6) {
-                    Link("fasterthanlime/bee on GitHub", destination: URL(string: "https://github.com/fasterthanlime/bee")!)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 16) {
+                    Link("GitHub", destination: URL(string: "https://github.com/fasterthanlime/bee")!)
+                    Text("·").foregroundStyle(.quaternary)
                     Button("Quit bee") {
                         BeeInputClient.restoreInputSourceIfNeeded()
                         NSApp.terminate(nil)
                     }
                     .buttonStyle(.plain)
-                    .font(.caption)
-                    .foregroundStyle(.quaternary)
+                    .foregroundStyle(.secondary)
                 }
-                .padding(.top, 4)
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
             .padding(24)
             .frame(maxWidth: 600)
@@ -347,24 +341,6 @@ private struct BeeOverviewView: View {
         }
     }
 
-    private var modelLabel: String {
-        switch appState.modelStatus {
-        case .notLoaded: return "Not loaded"
-        case .downloading(let progress): return "Downloading (\(Int(progress * 100))%)"
-        case .loading: return "Loading..."
-        case .loaded: return AppState.defaultModel.displayName
-        case .error(let message): return "Error: \(message)"
-        }
-    }
-
-    private var modelColor: Color {
-        switch appState.modelStatus {
-        case .loaded: return .green
-        case .loading, .downloading: return .orange
-        case .error: return .red
-        case .notLoaded: return .gray
-        }
-    }
 }
 
 private struct StatCard: View {
@@ -471,6 +447,40 @@ private struct AdvancedSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                SettingsCard("Pipeline") {
+                    HStack(spacing: 10) {
+                        Text("ASR")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Circle()
+                            .fill(modelColor)
+                            .frame(width: 8, height: 8)
+                        if appState.modelStatus == .loaded {
+                            Link(destination: URL(string: "https://huggingface.co/\(AppState.defaultModel.repoID)")!) {
+                                HStack(spacing: 4) {
+                                    Text(modelLabel)
+                                        .underline()
+                                    Image(systemName: "arrow.up.right.square")
+                                        .font(.caption)
+                                }
+                            }
+                        } else {
+                            Text(modelLabel)
+                                .fontWeight(.medium)
+                        }
+                    }
+
+                    if appState.modelStatus == .loaded {
+                        ForEach(AppState.pipelineComponents, id: \.name) { component in
+                            PipelineRow(
+                                label: component.role,
+                                value: component.name,
+                                url: component.url
+                            )
+                        }
+                    }
+                }
+
                 SettingsCard("Audio") {
                     VStack(alignment: .leading, spacing: 0) {
                         if appState.availableInputDevices.isEmpty {
@@ -549,6 +559,24 @@ private struct AdvancedSettingsView: View {
         }
     }
 
+    private var modelLabel: String {
+        switch appState.modelStatus {
+        case .notLoaded: return "Not loaded"
+        case .downloading(let progress): return "Downloading (\(Int(progress * 100))%)"
+        case .loading: return "Loading..."
+        case .loaded: return AppState.defaultModel.displayName
+        case .error(let message): return "Error: \(message)"
+        }
+    }
+
+    private var modelColor: Color {
+        switch appState.modelStatus {
+        case .loaded: return .green
+        case .loading, .downloading: return .orange
+        case .error: return .red
+        case .notLoaded: return .gray
+        }
+    }
 
     private var chunkSizePicker: some View {
         Picker("Chunk size", selection: Binding(
@@ -639,8 +667,14 @@ private struct PipelineRow: View {
             Text(label)
                 .foregroundStyle(.secondary)
             Spacer()
-            Link(value, destination: url)
-                .fontWeight(.medium)
+            Link(destination: url) {
+                HStack(spacing: 4) {
+                    Text(value)
+                        .underline()
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.caption)
+                }
+            }
         }
     }
 }
@@ -667,19 +701,32 @@ private struct TranscriptRow: View {
     let text: String
     var timestamp: Date? = nil
 
+    @State private var copied = false
+
     var body: some View {
         Button {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
+            copied = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                copied = false
+            }
         } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                if let timestamp {
-                    Text(timestamp, style: .relative)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let timestamp {
+                        Text(timestamp, style: .relative)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    Text(text)
+                        .lineLimit(3)
                 }
-                Text(text)
-                    .lineLimit(3)
+                Spacer()
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.caption)
+                    .foregroundColor(copied ? .green : .gray)
+                    .animation(.easeInOut(duration: 0.2), value: copied)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
@@ -728,14 +775,20 @@ private struct AudioDeviceRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(isActive ? .orange : .secondary)
+            ZStack {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isActive ? Color.orange.opacity(0.12) : Color.primary.opacity(0.04))
+                    .frame(width: 32, height: 32)
+                Image(systemName: device.iconName)
+                    .font(.system(size: 14))
+                    .foregroundStyle(isActive ? .orange : .secondary)
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(device.name)
                     .fontWeight(isActive ? .medium : .regular)
-                if device.isBuiltIn {
-                    Text("Built-in")
+                if let subtitle = device.subtitle {
+                    Text(subtitle)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -743,14 +796,18 @@ private struct AudioDeviceRow: View {
 
             Spacer()
 
-            Toggle("Keep warm", isOn: Binding(
-                get: { isWarm },
-                set: { onToggleWarm($0) }
-            ))
-            .toggleStyle(.switch)
-            .labelsHidden()
-            .controlSize(.small)
-            .help("Keep this device's audio engine running for instant start")
+            VStack(spacing: 2) {
+                Toggle("Keep warm", isOn: Binding(
+                    get: { isWarm },
+                    set: { onToggleWarm($0) }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.small)
+                Text("Keep warm")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())

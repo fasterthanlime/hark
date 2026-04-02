@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import os
 
@@ -18,9 +19,42 @@ private let logger = Logger(subsystem: "fasterthanlime.bee", category: "Session"
 /// - abort: all channels cancelled, no finalize
 /// - cancel: drain → finalize → history entry, IME clears
 /// - commit: drain → finalize → IME commits text
+struct TargetApp: Sendable {
+    let pid: pid_t?
+    let bundleID: String?
+    let name: String?
+    let icon: NSImage?
+
+    private static let terminalBundleIDs: Set<String> = [
+        "com.apple.Terminal",
+        "com.googlecode.iterm2",
+        "net.kovidgoyal.kitty",
+        "com.mitchellh.ghostty",
+        "io.alacritty",
+        "org.alacritty",
+        "dev.warp.Warp-stable",
+        "dev.warp.Warp",
+        "co.zeit.hyper",
+        "com.panic.Prompt3",
+        "com.qvacua.VimR",
+    ]
+
+    var isTerminal: Bool {
+        guard let bundleID else { return false }
+        return Self.terminalBundleIDs.contains(bundleID)
+    }
+
+    init(from app: NSRunningApplication?) {
+        self.pid = app?.processIdentifier
+        self.bundleID = app?.bundleIdentifier
+        self.name = app?.localizedName
+        self.icon = app?.icon
+    }
+}
+
 actor Session {
     let id: UUID
-    let targetProcessID: pid_t?
+    let targetApp: TargetApp
     let createdAt: Date
 
     // Layer states — observable by the debug overlay
@@ -62,14 +96,14 @@ actor Session {
         audioEngine: AudioEngine,
         transcriptionService: TranscriptionService,
         inputClient: BeeInputClient,
-        targetProcessID: pid_t?
+        targetApp: TargetApp
     ) {
         self.id = UUID()
         self.createdAt = Date()
         self.audioEngine = audioEngine
         self.transcriptionService = transcriptionService
         self.inputClient = inputClient
-        self.targetProcessID = targetProcessID
+        self.targetApp = targetApp
     }
 
     // MARK: - Start
@@ -420,7 +454,7 @@ actor Session {
     @discardableResult
     func requestResumeActivation() async -> Bool {
         guard ime == .parked else { return true }
-        let activated = await inputClient.activate(sessionID: id, targetPID: targetProcessID)
+        let activated = await inputClient.activate(sessionID: id, targetPID: targetApp.pid)
         if !activated {
             beeLog("SESSION: resume activation failed id=\(id.uuidString.prefix(8))")
         } else {
@@ -672,7 +706,8 @@ actor Session {
                 await MainActor.run { inputClient.deactivate() }
 
                 if submit {
-                    await bestEffortSleep(ms: 50, label: "finishIME submit")
+                    let delayMs = targetApp.isTerminal ? 200 : 50
+                    await bestEffortSleep(ms: delayMs, label: "finishIME submit")
                     inputClient.simulateReturn()
                 }
             } else {

@@ -1,6 +1,7 @@
 import AVFoundation
 import AppKit
 import ApplicationServices
+import CoreAudio
 import Foundation
 import SwiftUI
 import os
@@ -24,6 +25,9 @@ final class AppState {
         static let totalSessions = "stats.totalSessions"
         static let totalWords = "stats.totalWords"
         static let totalCharacters = "stats.totalCharacters"
+        static let chunkSizeSec = "transcription.chunkSizeSec"
+        static let maxNewTokensStreaming = "transcription.maxNewTokensStreaming"
+        static let maxNewTokensFinal = "transcription.maxNewTokensFinal"
     }
 
     private static let imeSubmitName = NSNotification.Name("fasterthanlime.bee.imeSubmit")
@@ -39,9 +43,7 @@ final class AppState {
     private(set) var imeSessionState: IMESessionState = .inactive
     private var pendingTimer: Task<Void, Never>?
     private var consumeNextROptUp = false
-    private var activeSessionTargetPID: pid_t?
-    fileprivate var activeSessionTargetAppName: String?
-    fileprivate var activeSessionTargetAppIcon: NSImage?
+    fileprivate var activeSessionTarget: TargetApp?
     // pendingIMEAckWorkItem declared near startIMEAckTimeoutIfNeeded
     private var distributedObservers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -104,9 +106,15 @@ final class AppState {
     var totalCharacters: Int = 0
 
     // ASR settings
-    var chunkSizeSec: Float = 0.5
-    var maxNewTokensStreaming: UInt32 = 0  // 0 = Rust default (32)
-    var maxNewTokensFinal: UInt32 = 0  // 0 = Rust default (512)
+    var chunkSizeSec: Float = 0.5 {
+        didSet { UserDefaults.standard.set(chunkSizeSec, forKey: DefaultsKey.chunkSizeSec) }
+    }
+    var maxNewTokensStreaming: UInt32 = 0 {  // 0 = Rust default (32)
+        didSet { UserDefaults.standard.set(Int(maxNewTokensStreaming), forKey: DefaultsKey.maxNewTokensStreaming) }
+    }
+    var maxNewTokensFinal: UInt32 = 0 {  // 0 = Rust default (512)
+        didSet { UserDefaults.standard.set(Int(maxNewTokensFinal), forKey: DefaultsKey.maxNewTokensFinal) }
+    }
 
     // Debug
     var debugEnabled = false {
@@ -117,11 +125,81 @@ final class AppState {
     var lastSessionDiag: SessionDiag.Snapshot?
     var parkedOverlayText = ""
 
+    enum AudioTransport: String, Sendable {
+        case builtIn = "Built-in"
+        case usb = "USB"
+        case bluetooth = "Bluetooth"
+        case virtual = "Virtual"
+        case aggregate = "Aggregate"
+        case unknown = "External"
+    }
+
     struct InputDeviceInfo: Sendable {
         let uid: String
         let name: String
         let isBuiltIn: Bool
         let isDefault: Bool
+        let transport: AudioTransport
+
+        var iconName: String {
+            switch transport {
+            case .builtIn: return "laptopcomputer"
+            case .usb: return "cable.connector"
+            case .bluetooth: return "headphones"
+            case .virtual, .aggregate: return "waveform.circle"
+            case .unknown: return "mic"
+            }
+        }
+
+        var subtitle: String? {
+            var parts: [String] = []
+            parts.append(transport.rawValue)
+            if isDefault { parts.append("Default") }
+            return parts.joined(separator: " · ")
+        }
+    }
+
+    static func queryTransportType(uid: String) -> AudioTransport {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        // First resolve UID to AudioDeviceID
+        var deviceID = AudioDeviceID(0)
+        var cfUID = uid as CFString
+        var translation = AudioValueTranslation(
+            mInputData: &cfUID,
+            mInputDataSize: UInt32(MemoryLayout<CFString>.size),
+            mOutputData: &deviceID,
+            mOutputDataSize: UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        var translationSize = UInt32(MemoryLayout<AudioValueTranslation>.size)
+        var lookupAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDeviceForUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status1 = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &lookupAddress, 0, nil,
+            &translationSize, &translation
+        )
+        guard status1 == noErr, deviceID != 0 else { return .unknown }
+
+        var transportType: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status2 = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &transportType)
+        guard status2 == noErr else { return .unknown }
+
+        switch transportType {
+        case kAudioDeviceTransportTypeBuiltIn: return .builtIn
+        case kAudioDeviceTransportTypeUSB: return .usb
+        case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE: return .bluetooth
+        case kAudioDeviceTransportTypeVirtual: return .virtual
+        case kAudioDeviceTransportTypeAggregate: return .aggregate
+        default: return .unknown
+        }
     }
 
     func selectInputDevice(uid: String) {
@@ -166,6 +244,12 @@ final class AppState {
         self.totalSessions = defaults.integer(forKey: DefaultsKey.totalSessions)
         self.totalWords = defaults.integer(forKey: DefaultsKey.totalWords)
         self.totalCharacters = defaults.integer(forKey: DefaultsKey.totalCharacters)
+        let savedChunk = defaults.float(forKey: DefaultsKey.chunkSizeSec)
+        if savedChunk > 0 { self.chunkSizeSec = savedChunk }
+        let savedStreaming = defaults.integer(forKey: DefaultsKey.maxNewTokensStreaming)
+        self.maxNewTokensStreaming = UInt32(savedStreaming)
+        let savedFinal = defaults.integer(forKey: DefaultsKey.maxNewTokensFinal)
+        self.maxNewTokensFinal = UInt32(savedFinal)
         restoreAudioPreferences()
         installExternalObservers()
         installCaptureDeviceObservers()
@@ -213,16 +297,13 @@ final class AppState {
     func handleROptDown() -> Bool {
         switch hotkeyState {
         case .idle:
-            let targetApp = NSWorkspace.shared.frontmostApplication
-            let targetPID = targetApp?.processIdentifier
+            let target = TargetApp(from: NSWorkspace.shared.frontmostApplication)
             beeLog(
-                "APP: hotkey down targetPID=\(targetPID.map(String.init) ?? "nil") targetApp=\(targetApp?.localizedName ?? "nil")"
+                "APP: hotkey down targetPID=\(target.pid.map(String.init) ?? "nil") targetApp=\(target.name ?? "nil")"
             )
-            let session = createSession(targetProcessID: targetPID)
+            let session = createSession(targetApp: target)
             beeLog("APP: session created id=\(session.id.uuidString.prefix(8))")
-            activeSessionTargetPID = targetPID
-            activeSessionTargetAppName = targetApp?.localizedName
-            activeSessionTargetAppIcon = targetApp?.icon
+            activeSessionTarget = target
             pendingIMEAckWorkItem?.cancel()
             pendingIMEAckWorkItem = nil
             imeSessionState = .activating
@@ -240,7 +321,7 @@ final class AppState {
             // IME activation on MainActor — fires immediately, no actor hop
             Task { @MainActor in
                 beeLog("APP: IME activate Task started")
-                let ok = await inputClient.activate(sessionID: session.id, targetPID: targetPID)
+                let ok = await inputClient.activate(sessionID: session.id, targetPID: target.pid)
                 if !ok {
                     beeLog("APP: IME activation failed")
                 }
@@ -496,12 +577,12 @@ final class AppState {
 
     // MARK: - Session Factory
 
-    private func createSession(targetProcessID: pid_t?) -> Session {
+    private func createSession(targetApp: TargetApp) -> Session {
         let session = Session(
             audioEngine: audioEngine,
             transcriptionService: transcriptionService,
             inputClient: inputClient,
-            targetProcessID: targetProcessID
+            targetApp: targetApp
         )
 
         Task {
@@ -543,9 +624,7 @@ final class AppState {
 
         if hotkeyState.session?.id == resultID {
             transitionToIdle()
-            activeSessionTargetPID = nil
-            activeSessionTargetAppName = nil
-            activeSessionTargetAppIcon = nil
+            activeSessionTarget = nil
         }
 
         applyWarmPolicyForCurrentState()
@@ -807,7 +886,7 @@ final class AppState {
         }
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         beeLog(
-            "SESSION: imeContextLost id=\(hotkeyState.session?.id.uuidString.prefix(8) ?? "nil") targetPID=\(activeSessionTargetPID.map(String.init) ?? "nil") frontmostPID=\(frontmostPID.map(String.init) ?? "nil") hadMarkedText=\(hadMarkedText.map(String.init) ?? "nil")"
+            "SESSION: imeContextLost id=\(hotkeyState.session?.id.uuidString.prefix(8) ?? "nil") targetPID=\(activeSessionTarget?.pid.map(String.init) ?? "nil") frontmostPID=\(frontmostPID.map(String.init) ?? "nil") hadMarkedText=\(hadMarkedText.map(String.init) ?? "nil")"
         )
 
         switch hotkeyState {
@@ -867,7 +946,7 @@ final class AppState {
     private func handleDidActivateApplication(processIdentifier: pid_t?, bundleIdentifier: String?)
     {
         guard let session = hotkeyState.session else { return }
-        guard let targetPID = activeSessionTargetPID else { return }
+        guard let targetPID = activeSessionTarget?.pid else { return }
         guard let processIdentifier else { return }
 
         // Ignore Bee + beeInput activations; they're implementation detail
@@ -922,7 +1001,7 @@ final class AppState {
     private func handleDidTerminateApplication(processIdentifier: pid_t?) {
         guard let processIdentifier else { return }
         guard let session = hotkeyState.session else { return }
-        guard processIdentifier == activeSessionTargetPID else { return }
+        guard processIdentifier == activeSessionTarget?.pid else { return }
 
         beeLog("SESSION: target terminated pid=\(processIdentifier)")
         transitionToIdle()
@@ -965,14 +1044,6 @@ final class AppState {
     }
 
     private func showParkedOverlay(for session: Session) {
-        if activeSessionTargetAppName == nil,
-            let targetPID = activeSessionTargetPID,
-            let app = NSRunningApplication(processIdentifier: targetPID)
-        {
-            activeSessionTargetAppName = app.localizedName
-            activeSessionTargetAppIcon = app.icon
-        }
-
         if parkedOverlayPanel == nil {
             let panel = NSPanel(
                 contentRect: NSRect(x: 0, y: 0, width: 420, height: 118),
@@ -1113,12 +1184,15 @@ final class AppState {
 
         let info =
             captureDevices
+            .filter { !$0.uniqueID.hasPrefix("CADefaultDevice") }
             .map { device in
-                InputDeviceInfo(
+                let transport = Self.queryTransportType(uid: device.uniqueID)
+                return InputDeviceInfo(
                     uid: device.uniqueID,
                     name: device.localizedName,
                     isBuiltIn: device.deviceType == .microphone,
-                    isDefault: device.uniqueID == defaultUID
+                    isDefault: device.uniqueID == defaultUID,
+                    transport: transport
                 )
             }
             .sorted { lhs, rhs in
@@ -1196,7 +1270,7 @@ private struct ParkedOverlayView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            if let icon = appState.activeSessionTargetAppIcon {
+            if let icon = appState.activeSessionTarget?.icon {
                 Image(nsImage: icon)
                     .resizable()
                     .frame(width: 28, height: 28)
@@ -1208,7 +1282,7 @@ private struct ParkedOverlayView: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Dictating in \(appState.activeSessionTargetAppName ?? "Target App")")
+                Text("Dictating in \(appState.activeSessionTarget?.name ?? "Target App")")
                     .font(.system(.headline, weight: .semibold))
                     .lineLimit(1)
                 Text(
