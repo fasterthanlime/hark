@@ -341,7 +341,7 @@ final class AppState {
                 "SESSION: IME not confirmed quick enough (imeState=\(self.imeSessionState)), trying focus cycle id=\(sessionID.uuidString.prefix(8))"
             )
             self.imeSessionState = .activating
-            BeeInputClient.axNudgeFocus()
+            BeeInputClient.tisToggleCycle()
 
             // Schedule abort after another 1s
             let abortWork = DispatchWorkItem { [weak self] in
