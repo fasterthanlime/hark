@@ -98,15 +98,17 @@ actor Session {
 
         // IME: activate and show bee cursor
         beeLog("SESSION START")
-        let imeActivated = await inputClient.activate(sessionID: id)
+        let imeActivated = await inputClient.activate(sessionID: id, targetPID: targetProcessID)
         guard imeActivated else {
             logger.error("[\(self.id)] Failed to activate IME for target pid")
             inputClient.stopDictating(sessionID: id)
             emitCompletion(.aborted(id: id))
             return
         }
-        beeLog("SESSION: IME selected, awaiting IME session confirmation")
-        ime = .parked
+        beeLog("SESSION: IME selected, awaiting IME session confirmation (ime=\(ime))")
+        if ime == .inactive {
+            ime = .activating
+        }
 
         // Register with AudioEngine (Channel 0 starts flowing)
         audioEngine.startCapture(for: self.id, pipeline: ch0)
@@ -429,7 +431,7 @@ actor Session {
     @discardableResult
     func requestResumeActivation() async -> Bool {
         guard ime == .parked else { return true }
-        let activated = await inputClient.activate(sessionID: id)
+        let activated = await inputClient.activate(sessionID: id, targetPID: targetProcessID)
         if !activated {
             beeLog("SESSION: resume activation failed id=\(id.uuidString.prefix(8))")
         } else {
@@ -439,11 +441,12 @@ actor Session {
     }
 
     func routeDidBecomeActive() {
-        guard ime == .parked else { return }
+        guard ime == .inactive || ime == .activating || ime == .parked else { return }
+        let prevState = ime
         ime = .active
         let snapshot = textSnapshot.get()
         inputClient.setMarkedText(Self.addCursor(snapshot), sessionID: id)
-        beeLog("SESSION: resumed id=\(id.uuidString.prefix(8))")
+        beeLog("SESSION: routeDidBecomeActive \(prevState)→active id=\(id.uuidString.prefix(8))")
     }
 
     @discardableResult
@@ -728,10 +731,18 @@ extension Session {
     }
 
     enum IMEState: Sendable, CustomStringConvertible {
-        case inactive, active, parked, committed, cleared, tornDown
+        case inactive       // not yet activated
+        case activating     // activate() called, waiting for confirmation
+        case active         // confirmed, text can flow
+        case parked         // target app lost focus, waiting for return
+        case committed      // final text inserted
+        case cleared        // marked text cleared (cancel)
+        case tornDown       // abort, no cleanup
+
         var description: String {
             switch self {
             case .inactive: "inactive"
+            case .activating: "activating"
             case .active: "active"
             case .parked: "parked"
             case .committed: "committed"

@@ -47,7 +47,7 @@ private final class BeeAppControlSink: NSObject, BeeBrokerPeerXPC {
         )
     }
 
-    func handleNewPreparedSession(_ sessionID: String) {}
+    func handleNewPreparedSession(_ sessionID: String, targetPID: Int32) {}
     func handleClearSession(_ sessionID: String) {}
     func handleSetMarkedText(_ sessionID: String, text: String) {}
     func handleCommitText(_ sessionID: String, text: String, submit: Bool) {}
@@ -77,11 +77,12 @@ final class BeeInputClient: Sendable {
     // MARK: - Input Source Switching
 
     @discardableResult
-    func activate(sessionID: UUID) async -> Bool {
+    func activate(sessionID: UUID, targetPID: pid_t?) async -> Bool {
         let activationID = UUID().uuidString
         let prepared = await Self.prepareSessionXPC(
             sessionID: sessionID,
-            activationID: activationID
+            activationID: activationID,
+            targetPID: Int32(targetPID ?? 0)
         )
         guard prepared else {
             beeLog(
@@ -97,26 +98,10 @@ final class BeeInputClient: Sendable {
             return false
         }
 
-        let imeReady = await Self.waitForIMEXPC()
-        if !imeReady {
-            beeLog("IME ACTIVATE: waitForIME failed")
-        }
-
         beeLog(
             "IME ACTIVATE: selection done id=\(sessionID.uuidString.prefix(8)) activationID=\(activationID.prefix(8)), waiting for IME confirm event"
         )
         return true
-    }
-
-    /// Re-select bee input source. Called by retry logic when activateServer
-    /// doesn't fire after the initial selection.
-    @MainActor
-    static func retrySelectBeeInputSource() {
-        guard let beeSource = findBeeInputSource() else { return }
-        let result = TISSelectInputSource(beeSource)
-        beeLog("IME RETRY: TISSelectInputSource result=\(result)")
-        // NOTE: simulated Shift key-up removed — was causing immediate
-        // deactivateServer after activateServer.
     }
 
     private static func selectBeeInputSource() async -> Bool {
@@ -142,6 +127,19 @@ final class BeeInputClient: Sendable {
         }
 
         return true
+    }
+
+    /// Force a focus cycle: hide the target app briefly, then reactivate it.
+    /// This creates a real focus loss/gain that makes the OS call activateServer.
+    @MainActor
+    static func forceFocusCycle() {
+        guard let targetApp = NSWorkspace.shared.frontmostApplication else { return }
+        beeLog("IME ACTIVATE: focus cycle — hiding \(targetApp.localizedName ?? "?")")
+        targetApp.hide()
+        usleep(200_000)  // 200ms — not cancellable
+        beeLog("IME ACTIVATE: focus cycle — reactivating \(targetApp.localizedName ?? "?")")
+        targetApp.unhide()
+        targetApp.activate()
     }
 
     func deactivate() {
@@ -291,7 +289,7 @@ final class BeeInputClient: Sendable {
         }
     }
 
-    private static func prepareSessionXPC(sessionID: UUID, activationID: String)
+    private static func prepareSessionXPC(sessionID: UUID, activationID: String, targetPID: Int32)
         async -> Bool
     {
         sendHelloIfNeeded()
@@ -312,6 +310,7 @@ final class BeeInputClient: Sendable {
             proxy.prepareSession(
                 sessionID.uuidString,
                 activationID: activationID,
+                targetPID: targetPID,
                 appInstanceID: appInstanceID
             ) { ok in
                 continuation.resume(returning: ok)

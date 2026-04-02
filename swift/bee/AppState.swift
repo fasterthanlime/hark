@@ -323,36 +323,45 @@ final class AppState {
     private func startIMEAckTimeoutIfNeeded(session: Session) {
         guard pendingIMEAckTimeoutTask == nil else { return }
         pendingIMEAckTimeoutTask = Task { @MainActor [weak self] in
-            // Retry TISSelectInputSource every 300ms, abort after 2.6s total.
-            let retryInterval: Duration = .milliseconds(300)
-            let maxRetries = 8  // 8 × 300ms ≈ 2.4s, plus initial wait
+            // Wait 500ms — enough for session setup (~180ms) + TIS + 60ms deferred claim.
+            try? await Task.sleep(for: .milliseconds(500))
+            guard let self else { return }
 
-            for attempt in 1...maxRetries {
-                try? await Task.sleep(for: retryInterval)
-                guard let self else { return }
-
-                switch self.hotkeyState {
-                case .held(let s) where s.id == session.id && self.imeSessionState != .active: break
-                case .released(let s) where s.id == session.id: break
-                default:
-                    // Session confirmed or cancelled — stop retrying
-                    self.pendingIMEAckTimeoutTask = nil
-                    return
-                }
-
-                if attempt < maxRetries {
-                    beeLog("SESSION: IME retry \(attempt) id=\(session.id.uuidString.prefix(8))")
-                    BeeInputClient.retrySelectBeeInputSource()
-                } else {
-                    beeLog("SESSION: IME confirm timeout id=\(session.id.uuidString.prefix(8)), aborting")
-                    // self.logFocusDiagnostics(reason: "ime-confirm-timeout")
-                    self.playStartFailureSound()
-                    self.pendingTimer?.cancel()
-                    self.transitionToIdle()
-                    Task { await session.abort() }
-                }
+            guard self.imeSessionState != .active else {
+                self.pendingIMEAckTimeoutTask = nil
+                return
             }
-            self?.pendingIMEAckTimeoutTask = nil
+            guard self.hotkeyState.session?.id == session.id else {
+                self.pendingIMEAckTimeoutTask = nil
+                return
+            }
+
+            // TISSelectInputSource didn't trigger activateServer, or it fired
+            // but was immediately revoked. Try a focus cycle to force it.
+            beeLog("SESSION: IME not stable after 200ms (imeState=\(self.imeSessionState)), trying focus cycle id=\(session.id.uuidString.prefix(8))")
+
+            self.imeSessionState = .activating
+
+            BeeInputClient.forceFocusCycle()
+
+            // Wait another 800ms for the focus cycle to work.
+            try? await Task.sleep(for: .milliseconds(800))
+
+            guard self.imeSessionState != .active else {
+                self.pendingIMEAckTimeoutTask = nil
+                return
+            }
+            guard self.hotkeyState.session?.id == session.id else {
+                self.pendingIMEAckTimeoutTask = nil
+                return
+            }
+
+            beeLog("SESSION: IME confirm timeout id=\(session.id.uuidString.prefix(8)), aborting")
+            self.playStartFailureSound()
+            self.pendingTimer?.cancel()
+            self.transitionToIdle()
+            Task { await session.abort() }
+            self.pendingIMEAckTimeoutTask = nil
         }
     }
 
@@ -723,6 +732,10 @@ final class AppState {
     private func handleIMEContextLost(sessionID: UUID?, hadMarkedText: Bool?) {
         guard isNotificationForActiveSession(sessionID) else { return }
         if imeSessionState == .parked {
+            return
+        }
+        if imeSessionState == .activating {
+            // IME deferred claim handles this — ignore during activation
             return
         }
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier

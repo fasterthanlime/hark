@@ -7,8 +7,10 @@ class BeeInputController: IMKInputController {
     private var currentMarkedText: String = ""
     private var autoCommittedPrefix: String = ""
     private var didRequestSwitchAway: Bool = false
+    private var pendingClaim: DispatchWorkItem?
 
     override func activateServer(_ sender: Any!) {
+        beeInputLog("activateServer: entry")
         super.activateServer(sender)
         didRequestSwitchAway = false
         let bridge = BeeIMEBridgeState.shared
@@ -16,7 +18,29 @@ class BeeInputController: IMKInputController {
         let clientIdentity = currentClientIdentity()
         bridge.activate(self, pid: frontmostPID, clientID: clientIdentity)
 
-        // Synchronous XPC claim — blocks so deactivateServer can't race.
+        // Defer the claim by 60ms. If deactivateServer fires before then,
+        // the claim is cancelled and the session stays prepared for retry.
+        pendingClaim?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingClaim = nil
+            self.performClaim()
+        }
+        pendingClaim = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
+    }
+
+    private func performClaim() {
+        // Check frontmost PID before claiming — during a focus cycle,
+        // activateServer may fire on the wrong app. Don't burn the session.
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+        let expectedPID = BeeBrokerIMEClient.shared.expectedTargetPID
+
+        if expectedPID != 0 && frontmostPID != pid_t(expectedPID) {
+            beeInputLog("activateServer: PID mismatch (frontmost=\(frontmostPID) expected=\(expectedPID)), skipping claim")
+            return
+        }
+
         let claim = BeeBrokerIMEClient.shared.claimPreparedSessionSync()
         guard let sessionID = claim.sessionID else {
             if !claim.shouldStayActive {
@@ -28,13 +52,21 @@ class BeeInputController: IMKInputController {
             return
         }
 
-        beeInputLog("activateServer: claimed session=\(sessionID.uuidString.prefix(8))")
+        beeInputLog("activateServer: claimed session=\(sessionID.uuidString.prefix(8)) pid=\(frontmostPID)")
+        let bridge = BeeIMEBridgeState.shared
         bridge.attachSession(sessionID: sessionID)
         bridge.flushPending()
         BeeBrokerIMEClient.shared.imeAttach(sessionID: sessionID)
     }
 
     override func deactivateServer(_ sender: Any!) {
+        // Cancel any pending claim — the activation was spurious
+        if let pending = pendingClaim {
+            pending.cancel()
+            pendingClaim = nil
+            beeInputLog("deactivateServer: cancelled pending claim")
+        }
+
         let bridge = BeeIMEBridgeState.shared
         let hadMarkedText = !currentMarkedText.isEmpty
         let isDictating = bridge.isDictating

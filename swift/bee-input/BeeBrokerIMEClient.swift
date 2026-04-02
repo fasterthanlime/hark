@@ -9,6 +9,12 @@ final class BeeBrokerIMEClient {
     private var connection: NSXPCConnection?
     private var started = false
     private let callbackSink = BeeIMEPeerSink()
+    private var _expectedTargetPID: Int32 = 0
+
+    var expectedTargetPID: Int32 {
+        get { lock.withLock { _expectedTargetPID } }
+        set { lock.withLock { _expectedTargetPID = newValue } }
+    }
 
     private init() {}
 
@@ -78,6 +84,7 @@ final class BeeBrokerIMEClient {
     struct ClaimResult {
         var sessionID: UUID?
         var shouldStayActive: Bool
+        var targetPID: Int32 = 0
     }
 
     /// Synchronous claim — blocks so deactivateServer can't race.
@@ -91,9 +98,10 @@ final class BeeBrokerIMEClient {
         guard let proxy else { return ClaimResult(sessionID: nil, shouldStayActive: false) }
 
         var result = ClaimResult(sessionID: nil, shouldStayActive: false)
-        proxy.claimPreparedSession(imeInstanceID: imeInstanceID) { found, sessionIDRaw, shouldStay in
+        proxy.claimPreparedSession(imeInstanceID: imeInstanceID) { found, sessionIDRaw, shouldStay, targetPID in
             if found, let id = UUID(uuidString: sessionIDRaw) {
                 result.sessionID = id
+                result.targetPID = targetPID
             }
             result.shouldStayActive = shouldStay
         }
@@ -135,7 +143,8 @@ final class BeeBrokerIMEClient {
 }
 
 private final class BeeIMEPeerSink: NSObject, BeeBrokerPeerXPC {
-    func handleNewPreparedSession(_ sessionID: String) {
+    func handleNewPreparedSession(_ sessionID: String, targetPID: Int32) {
+        BeeBrokerIMEClient.shared.expectedTargetPID = targetPID
         DispatchQueue.main.async {
             let bridge = BeeIMEBridgeState.shared
 

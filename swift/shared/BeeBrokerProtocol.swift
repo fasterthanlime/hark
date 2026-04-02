@@ -10,6 +10,7 @@ protocol BeeBrokerXPC {
     func prepareSession(
         _ sessionID: String,
         activationID: String,
+        targetPID: Int32,
         appInstanceID: String,
         withReply reply: @escaping (Bool) -> Void
     )
@@ -18,7 +19,7 @@ protocol BeeBrokerXPC {
     /// when no session was claimed (e.g. session recently ended).
     func claimPreparedSession(
         imeInstanceID: String,
-        withReply reply: @escaping (Bool, String, Bool) -> Void
+        withReply reply: @escaping (Bool, String, Bool, Int32) -> Void
     )
     func clearSession(_ sessionID: String, appInstanceID: String, withReply reply: @escaping () -> Void)
 
@@ -63,7 +64,7 @@ protocol BeeBrokerXPC {
 @objc
 protocol BeeBrokerPeerXPC {
     // Broker -> IME: new session prepared, try claiming without activateServer.
-    func handleNewPreparedSession(_ sessionID: String)
+    func handleNewPreparedSession(_ sessionID: String, targetPID: Int32)
 
     // App -> IME forwarded commands.
     func handleClearSession(_ sessionID: String)

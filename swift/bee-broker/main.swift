@@ -18,6 +18,7 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
     struct SessionInfo {
         var id: String
         var appInstanceID: String
+        var targetPID: Int32
     }
 
     enum SessionState {
@@ -94,6 +95,7 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
     func prepareSession(
         _ sessionID: String,
         activationID: String,
+        targetPID: Int32,
         appInstanceID: String,
         withReply reply: @escaping (Bool) -> Void
     ) {
@@ -103,11 +105,11 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
         }
         queue.async {
             self.appConnections[appInstanceID] = conn
-            let info = SessionInfo(id: sessionID, appInstanceID: appInstanceID)
+            let info = SessionInfo(id: sessionID, appInstanceID: appInstanceID, targetPID: targetPID)
             self.session = .prepared(info)
             if let ime = self.imeProxy() {
-                brokerLog("prepareSession: id=\(sessionID.prefix(8)) → notifying IME")
-                ime.handleNewPreparedSession(sessionID)
+                brokerLog("prepareSession: id=\(sessionID.prefix(8)) targetPID=\(targetPID) → notifying IME")
+                ime.handleNewPreparedSession(sessionID, targetPID: targetPID)
             } else {
                 brokerLog("prepareSession: id=\(sessionID.prefix(8)) (IME not connected)")
             }
@@ -117,10 +119,10 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
 
     func claimPreparedSession(
         imeInstanceID: String,
-        withReply reply: @escaping (Bool, String, Bool) -> Void
+        withReply reply: @escaping (Bool, String, Bool, Int32) -> Void
     ) {
         guard let conn = NSXPCConnection.current() else {
-            reply(false, "", false)
+            reply(false, "", false, 0)
             return
         }
         queue.async {
@@ -128,21 +130,18 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
             self.activeIMEInstanceID = imeInstanceID
 
             guard case .prepared(let info) = self.session else {
-                // No session to claim. Should the IME stay selected?
-                // Yes if a session ended recently (avoids post-commit suicide loop)
-                // or if there's a claimed session still in flight.
                 let recentlyActive = Date().timeIntervalSince(self.lastSessionEndTime) < 2.0
                 let inFlight = {
                     if case .claimed = self.session { return true }
                     return false
                 }()
                 let shouldStay = recentlyActive || inFlight
-                reply(false, "", shouldStay)
+                reply(false, "", shouldStay, 0)
                 return
             }
             self.session = .claimed(info)
             brokerLog("claimPreparedSession: session=\(info.id.prefix(8))")
-            reply(true, info.id, true)
+            reply(true, info.id, true, info.targetPID)
         }
     }
 

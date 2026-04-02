@@ -72,15 +72,26 @@ run_step() {
 run_step "Building MLX Rust FFI (release)" "cd \"$PROJECT_ROOT/rust\" && cargo build --release -p bee-ffi"
 run_step "Generating Xcode project" "cd \"$SWIFT_DIR\" && xcodegen generate --spec \"$XCODE_SPEC\""
 banner "Building bee + beeInput + beeBroker (Release, parallel)"
+rm -rf "$BUILD_DIR"
+mkdir -p "$BUILD_DIR"
+schemes=(bee beeInput beeBroker)
 pids=()
-for scheme in bee beeInput beeBroker; do
-  (cd "$SWIFT_DIR" && xcodebuild -project "$XCODE_PROJECT" -scheme "$scheme" -configuration Release CONFIGURATION_BUILD_DIR="$BUILD_DIR" build 2>&1 | tail -1) &
+logs=()
+for scheme in "${schemes[@]}"; do
+  logfile="$BUILD_DIR/$scheme-build.log"
+  logs+=("$logfile")
+  (cd "$SWIFT_DIR" && xcodebuild -project "$XCODE_PROJECT" -scheme "$scheme" -configuration Release CONFIGURATION_BUILD_DIR="$BUILD_DIR" -derivedDataPath "$BUILD_DIR/DerivedData-$scheme" build >"$logfile" 2>&1) &
   pids+=($!)
 done
 failed=0
-for pid in "${pids[@]}"; do
-  if ! wait "$pid"; then
+for i in "${!pids[@]}"; do
+  if ! wait "${pids[$i]}"; then
     failed=1
+    printf '%s\n' "${RED}${BOLD}Build failed: ${schemes[$i]}${RESET}"
+    printf '%s\n' "${YELLOW}Log: ${logs[$i]}${RESET}"
+    grep -E '^.*error:' "${logs[$i]}" | head -20 || tail -20 "${logs[$i]}"
+  else
+    printf '%s\n' "${GREEN}Built: ${schemes[$i]}${RESET}"
   fi
 done
 if [ "$failed" -ne 0 ]; then
