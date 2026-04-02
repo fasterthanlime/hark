@@ -184,18 +184,62 @@ final class BeeInputClient: Sendable {
         window.alphaValue = 0.0
         window.isReleasedWhenClosed = false
 
-        let beePID = ProcessInfo.processInfo.processIdentifier
         NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
         window.makeKeyAndOrderFront(nil)
-        Self.waitUntil("bee frontmost") {
-            NSWorkspace.shared.frontmostApplication?.processIdentifier == beePID
+
+        // Wait for target app to become frontmost via notification, then close
+        Task { @MainActor in
+            await Self.waitForFrontmost(pid: ProcessInfo.processInfo.processIdentifier, timeout: 0.5)
+            window.close()
+            beeLog("IME ACTIVATE: stealth focus cycle — reactivating \(targetApp.localizedName ?? "?") pid=\(targetPID)")
+            targetApp.activate(options: [.activateIgnoringOtherApps])
+            await Self.waitForFrontmost(pid: targetPID, timeout: 0.5)
+            beeLog("IME ACTIVATE: stealth focus cycle — target is frontmost")
         }
-        window.close()
-        beeLog("IME ACTIVATE: stealth focus cycle — reactivating \(targetApp.localizedName ?? "?") pid=\(targetPID)")
-        targetApp.activate(options: [.activateIgnoringOtherApps])
-        Self.waitUntil("target frontmost") {
-            NSWorkspace.shared.frontmostApplication?.processIdentifier == targetPID
+    }
+
+    /// Async wait for an app to become frontmost, using workspace notifications.
+    @MainActor
+    private static func waitForFrontmost(pid: pid_t, timeout: TimeInterval) async {
+        let start = ProcessInfo.processInfo.systemUptime
+        // Check immediately
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+            let ms = (ProcessInfo.processInfo.systemUptime - start) * 1000
+            beeLog("IME ACTIVATE: waitForFrontmost pid=\(pid) took \(String(format: "%.1f", ms))ms (immediate)")
+            return
         }
+
+        // Wait for notification
+        let nc = NSWorkspace.shared.notificationCenter
+        let result = await withTaskGroup(of: Bool.self) { group in
+            group.addTask { @MainActor in
+                // Listen for app activation
+                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                    var observer: NSObjectProtocol?
+                    observer = nc.addObserver(
+                        forName: NSWorkspace.didActivateApplicationNotification,
+                        object: nil, queue: .main
+                    ) { notification in
+                        let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                        if app?.processIdentifier == pid {
+                            if let observer { nc.removeObserver(observer) }
+                            cont.resume()
+                        }
+                    }
+                }
+                return true
+            }
+            group.addTask {
+                // Timeout
+                try? await Task.sleep(for: .milliseconds(Int(timeout * 1000)))
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+        let ms = (ProcessInfo.processInfo.systemUptime - start) * 1000
+        beeLog("IME ACTIVATE: waitForFrontmost pid=\(pid) took \(String(format: "%.1f", ms))ms \(result ? "" : "(timeout)")")
     }
 
     /// Cycle input sources: select a non-bee source, then re-select bee.
@@ -277,7 +321,7 @@ final class BeeInputClient: Sendable {
     }
 
     /// Spin the run loop until a condition is true, with a hard cap.
-    private static func waitUntil(_ label: String, _ condition: () -> Bool, timeout: TimeInterval = 0.2) {
+    private static func waitUntil(_ label: String, _ condition: () -> Bool, timeout: TimeInterval = 0.5) {
         let start = ProcessInfo.processInfo.systemUptime
         let deadline = Date(timeIntervalSinceNow: timeout)
         while !condition() && Date() < deadline {
