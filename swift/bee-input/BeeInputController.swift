@@ -73,6 +73,18 @@ class BeeInputController: IMKInputController {
         beeInputLog(
             "deactivateServer: session=\(sessionID?.uuidString.prefix(8) ?? "none") hadMarkedText=\(hadMarkedText)"
         )
+
+        // Clear orphaned marked text before deactivating
+        if hadMarkedText, let client = self.client() {
+            beeInputLog("deactivateServer: clearing orphaned marked text")
+            client.setMarkedText(
+                "",
+                selectionRange: NSRange(location: 0, length: 0),
+                replacementRange: NSRange(location: NSNotFound, length: 0)
+            )
+            currentMarkedText = ""
+        }
+
         bridge.deactivate(self)
 
         if isDictating, let sessionID {
