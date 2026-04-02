@@ -336,9 +336,7 @@ final class AppState {
         guard pendingIMEAckWorkItem == nil else { return }
 
         let sessionID = session.id
-        // Fallback focus cycle for when activateServer never fires at all.
-        // (The XPC revoked path handles spurious activate/deactivate pairs.)
-        let focusCycleWork = DispatchWorkItem { [weak self] in
+        let abortWork = DispatchWorkItem { [weak self] in
             guard let self else { return }
             guard self.imeSessionState != .active, self.imeSessionState != .parked else {
                 self.pendingIMEAckWorkItem = nil
@@ -348,34 +346,15 @@ final class AppState {
                 self.pendingIMEAckWorkItem = nil
                 return
             }
-            beeLog("SESSION: IME not confirmed after 500ms, fallback focus cycle id=\(sessionID.uuidString.prefix(8))")
-            if let targetPID = self.activeSessionTargetPID {
-                BeeInputClient.stealthFocusCycle(targetPID: targetPID)
-            }
-
-            // Schedule abort after another 2s
-            let abortWork = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                guard self.imeSessionState != .active, self.imeSessionState != .parked else {
-                    self.pendingIMEAckWorkItem = nil
-                    return
-                }
-                guard self.hotkeyState.session?.id == sessionID else {
-                    self.pendingIMEAckWorkItem = nil
-                    return
-                }
-                beeLog("SESSION: IME confirm timeout id=\(sessionID.uuidString.prefix(8)) imeState=\(self.imeSessionState), aborting")
-                self.playStartFailureSound()
-                self.pendingTimer?.cancel()
-                self.transitionToIdle()
-                Task { await session.abort() }
-                self.pendingIMEAckWorkItem = nil
-            }
-            self.pendingIMEAckWorkItem = abortWork
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: abortWork)
+            beeLog("SESSION: IME confirm timeout id=\(sessionID.uuidString.prefix(8)) imeState=\(self.imeSessionState), aborting")
+            self.playStartFailureSound()
+            self.pendingTimer?.cancel()
+            self.transitionToIdle()
+            Task { await session.abort() }
+            self.pendingIMEAckWorkItem = nil
         }
-        pendingIMEAckWorkItem = focusCycleWork
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: focusCycleWork)
+        pendingIMEAckWorkItem = abortWork
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: abortWork)
     }
 
     private func logFocusDiagnostics(reason: String) {
@@ -783,12 +762,7 @@ final class AppState {
 
     private func handleIMEActivationRevoked() {
         guard imeSessionState == .activating else { return }
-        guard let targetPID = activeSessionTargetPID else { return }
-        // Cancel the fallback timeout — we're handling it now
-        pendingIMEAckWorkItem?.cancel()
-        pendingIMEAckWorkItem = nil
-        beeLog("SESSION: IME activation revoked, doing focus cycle for pid=\(targetPID)")
-        BeeInputClient.stealthFocusCycle(targetPID: targetPID)
+        beeLog("SESSION: IME activation revoked (palette mode — no focus cycle needed)")
     }
 
     private func handleIMESessionStarted(sessionID: UUID?) {

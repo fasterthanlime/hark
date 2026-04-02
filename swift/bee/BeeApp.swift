@@ -7,7 +7,7 @@ extension Notification.Name {
 
 final class BeeLifecycleDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
-        BeeInputClient.switchAwayFromBeeInputIfNeeded()
+        BeeInputClient.deselectBeeInputSource()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

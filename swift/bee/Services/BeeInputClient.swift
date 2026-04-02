@@ -69,7 +69,6 @@ final class BeeInputClient: Sendable {
     private static let beeBundleID = "fasterthanlime.inputmethod.bee"
     private static let appInstanceID = UUID().uuidString
 
-    nonisolated(unsafe) private static var previousInputSource: TISInputSource?
     nonisolated(unsafe) private static var xpcConnection: NSXPCConnection?
     nonisolated(unsafe) private static var appControlSink = BeeAppControlSink()
     nonisolated(unsafe) private static var helloSent = false
@@ -118,221 +117,14 @@ final class BeeInputClient: Sendable {
             return false
         }
 
-        if let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
-            !isBeeInputSource(current)
-        {
-            previousInputSource = current
-        }
-
-        // Deferred Selection: give the target app time to finish its
-        // responder chain update before we switch input sources.
-        try? await Task.sleep(for: .milliseconds(20))
-
         let result = TISSelectInputSource(beeSource)
         beeLog("TIS SELECT: \(inputSourceID(beeSource)) (activate) result=\(result)")
-        guard result == noErr else {
-            return false
-        }
-
-        return true
-    }
-
-    /// Force a focus cycle: hide the target app briefly, then reactivate it.
-    /// This creates a real focus loss/gain that makes the OS call activateServer.
-    @MainActor
-    static func forceFocusCycle() {
-        guard let targetApp = NSWorkspace.shared.frontmostApplication else { return }
-
-        let env = ProcessInfo.processInfo.environment
-        let hideDelayMS = UInt32(env["BEE_FOCUS_CYCLE_HIDE_DELAY_MS"] ?? "500") ?? 0
-        let unhideDelayMS = UInt32(env["BEE_FOCUS_CYCLE_UNHIDE_DELAY_MS"] ?? "500") ?? 0
-        let activateDelayMS = UInt32(env["BEE_FOCUS_CYCLE_ACTIVATE_DELAY_MS"] ?? "500") ?? 500
-
-        beeLog("IME ACTIVATE: focus cycle — hiding \(targetApp.localizedName ?? "?")")
-        targetApp.hide()
-        if hideDelayMS > 0 {
-            usleep(hideDelayMS * 1_000)
-        }
-
-        beeLog("IME ACTIVATE: focus cycle — reactivating \(targetApp.localizedName ?? "?")")
-        targetApp.unhide()
-        if unhideDelayMS > 0 {
-            usleep(unhideDelayMS * 1_000)
-        }
-
-        targetApp.activate()
-        if activateDelayMS > 0 {
-            usleep(activateDelayMS * 1_000)
-        }
-    }
-
-    @MainActor
-    static func stealthFocusCycle(targetPID: pid_t) {
-        guard let targetApp = NSRunningApplication(processIdentifier: targetPID) else {
-            beeLog("IME ACTIVATE: stealth focus cycle — can't find app for pid=\(targetPID)")
-            return
-        }
-        beeLog("IME ACTIVATE: stealth focus cycle — target=\(targetApp.localizedName ?? "?") pid=\(targetPID)")
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
-            styleMask: [],
-            backing: .buffered,
-            defer: false
-        )
-        window.level = .floating
-        window.alphaValue = 0.0
-        window.isReleasedWhenClosed = false
-
-        NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
-        window.makeKeyAndOrderFront(nil)
-
-        // Wait for target app to become frontmost via notification, then close
-        Task { @MainActor in
-            await Self.waitForFrontmost(pid: ProcessInfo.processInfo.processIdentifier, timeout: 0.5)
-            window.close()
-            beeLog("IME ACTIVATE: stealth focus cycle — reactivating \(targetApp.localizedName ?? "?") pid=\(targetPID)")
-            targetApp.activate(options: [.activateIgnoringOtherApps])
-            await Self.waitForFrontmost(pid: targetPID, timeout: 0.5)
-            beeLog("IME ACTIVATE: stealth focus cycle — target is frontmost")
-        }
-    }
-
-    /// Async wait for an app to become frontmost, using workspace notifications.
-    @MainActor
-    private static func waitForFrontmost(pid: pid_t, timeout: TimeInterval) async {
-        let start = ProcessInfo.processInfo.systemUptime
-        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
-            let ms = (ProcessInfo.processInfo.systemUptime - start) * 1000
-            beeLog("IME ACTIVATE: waitForFrontmost pid=\(pid) took \(String(format: "%.1f", ms))ms (immediate)")
-            return
-        }
-
-        let nc = NSWorkspace.shared.notificationCenter
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            var observer: NSObjectProtocol?
-            var timerItem: DispatchWorkItem?
-            var resumed = false
-
-            observer = nc.addObserver(
-                forName: NSWorkspace.didActivateApplicationNotification,
-                object: nil, queue: .main
-            ) { notification in
-                let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-                if app?.processIdentifier == pid, !resumed {
-                    resumed = true
-                    timerItem?.cancel()
-                    if let observer { nc.removeObserver(observer) }
-                    cont.resume()
-                }
-            }
-
-            let timer = DispatchWorkItem {
-                if !resumed {
-                    resumed = true
-                    if let observer { nc.removeObserver(observer) }
-                    cont.resume()
-                }
-            }
-            timerItem = timer
-            DispatchQueue.main.asyncAfter(deadline: .now() + timeout, execute: timer)
-        }
-        let ms = (ProcessInfo.processInfo.systemUptime - start) * 1000
-        beeLog("IME ACTIVATE: waitForFrontmost pid=\(pid) took \(String(format: "%.1f", ms))ms")
-    }
-
-    /// Cycle input sources: select a non-bee source, then re-select bee.
-    /// Forces the Text Input Management system to tear down and re-create the
-    /// IME connection, triggering activateServer.
-    @MainActor
-    static func tisToggleCycle() {
-        guard let beeSource = findBeeInputSource() else {
-            beeLog("IME ACTIVATE: TIS toggle — bee source not found")
-            return
-        }
-        guard let other = findKeyboardLayout() else {
-            beeLog("IME ACTIVATE: TIS toggle — no keyboard layout found")
-            return
-        }
-
-        let otherID = inputSourceID(other)
-        let beeID = inputSourceID(beeSource)
-        let awayResult = TISSelectInputSource(other)
-        beeLog("TIS SELECT: \(otherID) (toggle away) result=\(awayResult)")
-        usleep(200_000)
-        let backResult = TISSelectInputSource(beeSource)
-        beeLog("TIS SELECT: \(beeID) (toggle back) result=\(backResult)")
-    }
-
-    /// Find an actual keyboard layout (not an IME or palette) to use for TIS toggling.
-    private static func findKeyboardLayout() -> TISInputSource? {
-        // Prefer the current ASCII-capable keyboard layout
-        if let ascii = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
-            !isBeeInputSource(ascii)
-        {
-            return ascii
-        }
-
-        // Fall back to any keyboard layout that isn't bee
-        let props: [CFString: Any] = [
-            kTISPropertyInputSourceCategory: kTISCategoryKeyboardInputSource,
-            kTISPropertyInputSourceIsSelectCapable: true,
-        ]
-        guard
-            let sources = TISCreateInputSourceList(props as CFDictionary, false)?
-                .takeRetainedValue() as? [TISInputSource]
-        else { return nil }
-        return sources.first(where: { !isBeeInputSource($0) })
-    }
-
-    /// Nudge the focused UI element via Accessibility to trigger IME re-activation.
-    /// Clears focus then restores it, forcing the input context to reconnect.
-    @MainActor
-    static func axNudgeFocus() {
-        let systemWide = AXUIElementCreateSystemWide()
-        var focusedRef: AnyObject?
-        let err = AXUIElementCopyAttributeValue(
-            systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef)
-        guard err == .success, let focused = focusedRef else {
-            beeLog("IME ACTIVATE: AX nudge — no focused element (err=\(err.rawValue))")
-            return
-        }
-
-        let element = focused as! AXUIElement
-
-        // Get the app that owns this element
-        var pidValue: pid_t = 0
-        AXUIElementGetPid(element, &pidValue)
-
-        guard let app = NSRunningApplication(processIdentifier: pidValue) else {
-            beeLog("IME ACTIVATE: AX nudge — can't find app for pid=\(pidValue)")
-            return
-        }
-
-        let appElement = AXUIElementCreateApplication(pidValue)
-
-        // Clear focused element, brief pause, restore it
-        beeLog("IME ACTIVATE: AX nudge — clearing focus pid=\(pidValue)")
-        AXUIElementSetAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, kCFNull)
-        usleep(30_000)  // 30ms
-        beeLog("IME ACTIVATE: AX nudge — restoring focus")
-        AXUIElementSetAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, element)
-    }
-
-    /// Spin the run loop until a condition is true, with a hard cap.
-    private static func waitUntil(_ label: String, _ condition: () -> Bool, timeout: TimeInterval = 0.5) {
-        let start = ProcessInfo.processInfo.systemUptime
-        let deadline = Date(timeIntervalSinceNow: timeout)
-        while !condition() && Date() < deadline {
-            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.001))
-        }
-        let elapsed = (ProcessInfo.processInfo.systemUptime - start) * 1000
-        beeLog("IME ACTIVATE: waitUntil \(label) took \(String(format: "%.1f", elapsed))ms")
+        return result == noErr
     }
 
     func deactivate(caller: String = #function, file: String = #fileID, line: Int = #line) {
         beeLog("IME DEACTIVATE called from \(file):\(line) \(caller)")
-        Self.switchAwayFromBeeInputIfNeeded()
+        Self.deselectBeeInputSource()
     }
 
     /// Wait for the IME to connect to the broker.
@@ -404,7 +196,7 @@ final class BeeInputClient: Sendable {
         caller: String = #function, file: String = #fileID, line: Int = #line
     ) {
         beeLog("IME RESTORE called from \(file):\(line) \(caller)")
-        switchAwayFromBeeInputIfNeeded()
+        deselectBeeInputSource()
     }
 
     private static func getXPCConnection() -> NSXPCConnection {
@@ -670,66 +462,13 @@ final class BeeInputClient: Sendable {
         }
     }
 
-    static func switchAwayFromBeeInputIfNeeded() {
-        // Always switch to an actual keyboard layout, not a palette/IME.
-        // If previousInputSource is a keyboard, use it. Otherwise find one.
-        let target: TISInputSource?
-        if let previous = previousInputSource, !isBeeInputSource(previous), isKeyboardLayout(previous) {
-            target = previous
-        } else {
-            target = findKeyboardLayout()
-        }
-        previousInputSource = nil
-
-        guard let target else {
-            beeLog("TIS SELECT: no keyboard layout available to switch to")
+    static func deselectBeeInputSource() {
+        guard let beeSource = findBeeInputSource() else {
+            beeLog("TIS DESELECT: bee input source not found")
             return
         }
-
-        let id = inputSourceID(target)
-        let result = TISSelectInputSource(target)
-        beeLog("TIS SELECT: \(id) (deactivate) result=\(result)")
-    }
-
-    private static func fallbackInputSource(current: TISInputSource) -> TISInputSource? {
-        if let next = nextInputSource(after: current) {
-            return next
-        }
-
-        if let ascii = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
-            !isBeeInputSource(ascii)
-        {
-            return ascii
-        }
-
-        return selectCapableInputSources().first(where: { !isBeeInputSource($0) })
-    }
-
-    private static func nextInputSource(after current: TISInputSource) -> TISInputSource? {
-        let sources = selectCapableInputSources()
-        guard !sources.isEmpty else { return nil }
-
-        guard let currentIndex = sources.firstIndex(where: { CFEqual($0, current) }) else {
-            return sources.first(where: { !isBeeInputSource($0) })
-        }
-
-        for offset in 1...sources.count {
-            let index = (currentIndex + offset) % sources.count
-            let candidate = sources[index]
-            if !isBeeInputSource(candidate) {
-                return candidate
-            }
-        }
-        return nil
-    }
-
-    private static func selectCapableInputSources() -> [TISInputSource] {
-        let properties: [CFString: Any] = [
-            kTISPropertyInputSourceIsSelectCapable: true
-        ]
-        return
-            (TISCreateInputSourceList(properties as CFDictionary, false)?
-            .takeRetainedValue() as? [TISInputSource]) ?? []
+        let result = TISDeselectInputSource(beeSource)
+        beeLog("TIS DESELECT: \(inputSourceID(beeSource)) result=\(result)")
     }
 
     private static func inputSourceID(_ source: TISInputSource) -> String {
@@ -737,21 +476,6 @@ final class BeeInputClient: Sendable {
             return "<unknown>"
         }
         return Unmanaged<CFString>.fromOpaque(raw).takeUnretainedValue() as String
-    }
-
-    private static func isKeyboardLayout(_ source: TISInputSource) -> Bool {
-        guard let raw = TISGetInputSourceProperty(source, kTISPropertyInputSourceCategory) else {
-            return false
-        }
-        let category = Unmanaged<CFString>.fromOpaque(raw).takeUnretainedValue()
-        return category == kTISCategoryKeyboardInputSource
-    }
-
-    private static func isBeeInputSource(_ source: TISInputSource?) -> Bool {
-        guard let source, let beeSource = findBeeInputSource() else {
-            return false
-        }
-        return CFEqual(source, beeSource)
     }
 
     private static func findBeeInputSource() -> TISInputSource? {
