@@ -218,8 +218,12 @@ class BeeInputController: IMKInputController {
             return
         }
 
+        let sourceID: String = {
+            guard let raw = TISGetInputSourceProperty(next, kTISPropertyInputSourceID) else { return "<unknown>" }
+            return Unmanaged<CFString>.fromOpaque(raw).takeUnretainedValue() as String
+        }()
         let result = TISSelectInputSource(next)
-        beeInputLog("switchToNextInputSource: result=\(result)")
+        beeInputLog("TIS SELECT: \(sourceID) (switchAway) result=\(result)")
     }
 
     private func currentClientIdentity() -> String? {

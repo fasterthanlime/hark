@@ -121,7 +121,7 @@ final class BeeInputClient: Sendable {
         try? await Task.sleep(for: .milliseconds(20))
 
         let result = TISSelectInputSource(beeSource)
-        beeLog("IME ACTIVATE: TISSelectInputSource result=\(result)")
+        beeLog("TIS SELECT: \(inputSourceID(beeSource)) (activate) result=\(result)")
         guard result == noErr else {
             return false
         }
@@ -210,10 +210,10 @@ final class BeeInputClient: Sendable {
         let otherID = inputSourceID(other)
         let beeID = inputSourceID(beeSource)
         let awayResult = TISSelectInputSource(other)
-        beeLog("IME ACTIVATE: TIS toggle — selected \(otherID) (result=\(awayResult))")
+        beeLog("TIS SELECT: \(otherID) (toggle away) result=\(awayResult)")
         usleep(200_000)
         let backResult = TISSelectInputSource(beeSource)
-        beeLog("IME ACTIVATE: TIS toggle — re-selected \(beeID) (result=\(backResult))")
+        beeLog("TIS SELECT: \(beeID) (toggle back) result=\(backResult)")
     }
 
     /// Find an actual keyboard layout (not an IME or palette) to use for TIS toggling.
@@ -611,8 +611,9 @@ final class BeeInputClient: Sendable {
 
     static func switchAwayFromBeeInputIfNeeded() {
         if let previous = previousInputSource, !isBeeInputSource(previous) {
+            let id = inputSourceID(previous)
             let result = TISSelectInputSource(previous)
-            beeLog("IME DEACTIVATE: restore previous result=\(result)")
+            beeLog("TIS SELECT: \(id) (restore previous) result=\(result)")
             previousInputSource = nil
             if result == noErr { return }
         }
@@ -625,12 +626,13 @@ final class BeeInputClient: Sendable {
         }
 
         guard let fallback = fallbackInputSource(current: current) else {
-            beeLog("IME DEACTIVATE: no fallback input source available")
+            beeLog("TIS SELECT: no fallback input source available")
             return
         }
 
+        let id = inputSourceID(fallback)
         let result = TISSelectInputSource(fallback)
-        beeLog("IME DEACTIVATE: fallback select result=\(result)")
+        beeLog("TIS SELECT: \(id) (fallback) result=\(result)")
     }
 
     private static func fallbackInputSource(current: TISInputSource) -> TISInputSource? {
