@@ -126,10 +126,10 @@ final class AppState {
 
     enum HotkeyState {
         case idle
-        case held(Session)              // ROpt held, session starting
-        case released(Session)          // ROpt released (tap), wants locked when IME ready
-        case pushToTalk(Session)        // ROpt held past 300ms, recording
-        case locked(Session)            // hands-free recording
+        case held(Session)  // ROpt held, session starting
+        case released(Session)  // ROpt released (tap), wants locked when IME ready
+        case pushToTalk(Session)  // ROpt held past 300ms, recording
+        case locked(Session)  // hands-free recording
         case lockedOptionHeld(Session)  // locked, ROpt pressed again
 
         var session: Session? {
@@ -153,9 +153,9 @@ final class AppState {
 
     enum IMESessionState {
         case inactive
-        case activating   // prepareSession done, waiting for IME confirmation
-        case active       // IME confirmed, text can be routed
-        case parked       // target app lost focus, session paused
+        case activating  // prepareSession done, waiting for IME confirmation
+        case active  // IME confirmed, text can be routed
+        case parked  // target app lost focus, session paused
     }
 
     // MARK: - Event Handlers
@@ -306,13 +306,11 @@ final class AppState {
 
     private func startPendingTimer(session: Session) {
         pendingTimer = Task { @MainActor in
-            do { try await Task.sleep(for: .milliseconds(300)) }
-            catch { return }
+            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
             while !Task.isCancelled {
                 guard case .held(let s) = hotkeyState, s.id == session.id else { return }
                 guard imeSessionState == .active else {
-                    do { try await Task.sleep(for: .milliseconds(100)) }
-                    catch { return }
+                    do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
                     continue
                 }
                 hotkeyState = .pushToTalk(s)
@@ -339,9 +337,11 @@ final class AppState {
                 return
             }
 
-            beeLog("SESSION: IME not confirmed after 500ms (imeState=\(self.imeSessionState)), trying focus cycle id=\(sessionID.uuidString.prefix(8))")
+            beeLog(
+                "SESSION: IME not confirmed quick enough (imeState=\(self.imeSessionState)), trying focus cycle id=\(sessionID.uuidString.prefix(8))"
+            )
             self.imeSessionState = .activating
-            BeeInputClient.forceFocusCycle()
+            BeeInputClient.axNudgeFocus()
 
             // Schedule abort after another 1s
             let abortWork = DispatchWorkItem { [weak self] in
@@ -354,7 +354,8 @@ final class AppState {
                     self.pendingIMEAckWorkItem = nil
                     return
                 }
-                beeLog("SESSION: IME confirm timeout id=\(sessionID.uuidString.prefix(8)), aborting")
+                beeLog(
+                    "SESSION: IME confirm timeout id=\(sessionID.uuidString.prefix(8)), aborting")
                 self.playStartFailureSound()
                 self.pendingTimer?.cancel()
                 self.transitionToIdle()
@@ -362,10 +363,22 @@ final class AppState {
                 self.pendingIMEAckWorkItem = nil
             }
             self.pendingIMEAckWorkItem = abortWork
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: abortWork)
+            let imeAckAbortDelayMs =
+                ProcessInfo.processInfo.environment["IME_ACK_ABORT_DELAY_MS"]
+                .flatMap(Int.init) ?? 1000
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + .milliseconds(imeAckAbortDelayMs),
+                execute: abortWork
+            )
         }
         pendingIMEAckWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+        let imeAckDelayMs =
+            ProcessInfo.processInfo.environment["IME_ACK_DELAY_MS"]
+            .flatMap(Int.init) ?? 500
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + .milliseconds(imeAckDelayMs),
+            execute: work
+        )
     }
 
     private func logFocusDiagnostics(reason: String) {

@@ -193,6 +193,36 @@ final class BeeInputClient: Sendable {
         }
     }
 
+    /// Nudge the focused UI element via Accessibility to trigger IME re-activation.
+    /// Briefly moves focus away from the text field and back.
+    @MainActor
+    static func axNudgeFocus() {
+        let systemWide = AXUIElementCreateSystemWide()
+        var focusedRef: AnyObject?
+        let err = AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef)
+        guard err == .success, let focused = focusedRef else {
+            beeLog("IME ACTIVATE: AX nudge — no focused element (err=\(err.rawValue))")
+            return
+        }
+
+        let element = focused as! AXUIElement
+
+        // Get the parent window
+        var windowRef: AnyObject?
+        let winErr = AXUIElementCopyAttributeValue(element, kAXWindowAttribute as CFString, &windowRef)
+        guard winErr == .success, let window = windowRef else {
+            beeLog("IME ACTIVATE: AX nudge — no parent window")
+            return
+        }
+
+        // Briefly set focus to the window (not the text field), then back
+        beeLog("IME ACTIVATE: AX nudge — moving focus to window")
+        AXUIElementSetAttributeValue(window as! AXUIElement, kAXFocusedUIElementAttribute as CFString, window)
+        usleep(30_000)  // 30ms
+        beeLog("IME ACTIVATE: AX nudge — restoring focus to element")
+        AXUIElementSetAttributeValue(window as! AXUIElement, kAXFocusedUIElementAttribute as CFString, element)
+    }
+
     func deactivate(caller: String = #function, file: String = #fileID, line: Int = #line) {
         beeLog("IME DEACTIVATE called from \(file):\(line) \(caller)")
         Self.switchAwayFromBeeInputIfNeeded()
