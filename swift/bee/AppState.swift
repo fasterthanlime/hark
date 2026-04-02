@@ -145,6 +145,7 @@ final class AppState {
 
     // Debug
     var menuBarPanelOpen = false
+    var audioSettingsOpen = false
     var debugEnabled = false {
         didSet {
             UserDefaults.standard.set(debugEnabled, forKey: DefaultsKey.debugOverlayEnabled)
@@ -1438,7 +1439,7 @@ final class AppState {
             return
         }
 
-        let shouldBeWarm = activeInputDeviceKeepWarm || menuBarPanelOpen
+        let shouldBeWarm = activeInputDeviceKeepWarm || menuBarPanelOpen || audioSettingsOpen
         if shouldBeWarm {
             if !audioEngine.isWarm {
                 do {

@@ -536,16 +536,25 @@ private struct AudioSettingsView: View {
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear {
+            appState.audioSettingsOpen = true
             if !appState.audioEngine.isWarm {
+                beeLog("AUDIO SETTINGS: warming up audio engine")
                 try? appState.audioEngine.warmUp()
             }
         }
         .onDisappear {
+            appState.audioSettingsOpen = false
             if echoActive {
                 appState.audioEngine.stopEcho()
                 echoActive = false
             }
-            if !appState.hotkeyState.isRecording && !appState.activeInputDeviceKeepWarm && !appState.menuBarPanelOpen {
+            // Grace period before cooling down
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak appState] in
+                guard let appState else { return }
+                guard !appState.audioSettingsOpen,
+                      !appState.menuBarPanelOpen,
+                      !appState.hotkeyState.isRecording,
+                      !appState.activeInputDeviceKeepWarm else { return }
                 appState.audioEngine.coolDown()
             }
         }
