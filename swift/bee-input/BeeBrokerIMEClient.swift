@@ -77,29 +77,42 @@ final class BeeBrokerIMEClient {
         }
     }
 
-    func claimPreparedSession(
+    /// Synchronous (blocking) claim — use from activateServer to prevent
+    /// deactivateServer from racing during the XPC round-trip.
+    func claimPreparedSessionSync(
         clientPID: pid_t?,
-        clientID: String?,
-        completion: @escaping (_ found: Bool, _ sessionID: UUID?, _ targetPID: pid_t?, _ activationID: String?) -> Void
-    ) {
+        clientID: String?
+    ) -> (found: Bool, sessionID: UUID?, targetPID: pid_t?, activationID: String?) {
         let conn = getConnection()
-        let proxy = conn.remoteObjectProxyWithErrorHandler { error in
+        let proxy = conn.synchronousRemoteObjectProxyWithErrorHandler { error in
             beeInputLog("BROKER claimPreparedSession error: \(error.localizedDescription)")
             self.invalidateConnection()
-            completion(false, nil, nil, nil)
         } as? BeeBrokerXPC
-        proxy?.claimPreparedSession(
+
+        guard let proxy else {
+            return (false, nil, nil, nil)
+        }
+
+        var resultFound = false
+        var resultSessionID: UUID?
+        var resultTargetPID: pid_t?
+        var resultActivationID: String?
+
+        proxy.claimPreparedSession(
             clientPID: clientPID.map { Int32($0) } ?? -1,
             clientID: clientID ?? "",
             imeInstanceID: imeInstanceID
         ) { found, sessionIDRaw, targetPIDRaw, activationID in
             guard found, let sessionID = UUID(uuidString: sessionIDRaw) else {
-                completion(false, nil, nil, nil)
                 return
             }
-            let targetPID: pid_t? = targetPIDRaw >= 0 ? pid_t(targetPIDRaw) : nil
-            completion(true, sessionID, targetPID, activationID.isEmpty ? nil : activationID)
+            resultFound = true
+            resultSessionID = sessionID
+            resultTargetPID = targetPIDRaw >= 0 ? pid_t(targetPIDRaw) : nil
+            resultActivationID = activationID.isEmpty ? nil : activationID
         }
+
+        return (resultFound, resultSessionID, resultTargetPID, resultActivationID)
     }
 
     func imeSubmit(sessionID: UUID) {
@@ -163,32 +176,26 @@ private final class BeeIMEPeerSink: NSObject, BeeBrokerPeerXPC {
                 beeInputLog("handleNewPreparedSession: PID mismatch controller=\(controllerPID) target=\(pid), waiting for activateServer")
                 return
             }
-            beeInputLog("handleNewPreparedSession: controller still active, claiming session=\(sessionID.prefix(8)) directly")
-            BeeBrokerIMEClient.shared.claimPreparedSession(
+            beeInputLog("handleNewPreparedSession: claiming session=\(sessionID.prefix(8)) directly")
+
+            // Synchronous claim — no race with activateServer/deactivateServer
+            let result = BeeBrokerIMEClient.shared.claimPreparedSessionSync(
                 clientPID: controllerPID,
                 clientID: clientIdentity
-            ) { found, claimedSessionID, _, _ in
-                DispatchQueue.main.async {
-                    guard found, let claimedSessionID else {
-                        beeInputLog("handleNewPreparedSession: claim failed")
-                        return
-                    }
-                    guard bridge.activeController === controller else {
-                        beeInputLog("handleNewPreparedSession: controller changed during claim")
-                        return
-                    }
-                    beeInputLog("handleNewPreparedSession: attached session=\(claimedSessionID.uuidString.prefix(8))")
-                    // Re-register as active so text routing works
-                    bridge.registerActiveController(controller, clientPID: controllerPID, clientIdentity: clientIdentity)
-                    bridge.attachSession(sessionID: claimedSessionID, clientIdentity: clientIdentity)
-                    bridge.flushPending()
-                    BeeBrokerIMEClient.shared.imeAttach(
-                        sessionID: claimedSessionID,
-                        clientPID: controllerPID,
-                        clientID: clientIdentity
-                    )
-                }
+            )
+            guard result.found, let claimedSessionID = result.sessionID else {
+                beeInputLog("handleNewPreparedSession: claim failed")
+                return
             }
+            beeInputLog("handleNewPreparedSession: attached session=\(claimedSessionID.uuidString.prefix(8))")
+            bridge.registerActiveController(controller, clientPID: controllerPID, clientIdentity: clientIdentity)
+            bridge.attachSession(sessionID: claimedSessionID, clientIdentity: clientIdentity)
+            bridge.flushPending()
+            BeeBrokerIMEClient.shared.imeAttach(
+                sessionID: claimedSessionID,
+                clientPID: controllerPID,
+                clientID: clientIdentity
+            )
         }
     }
 

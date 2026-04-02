@@ -21,70 +21,33 @@ class BeeInputController: IMKInputController {
         beeInputLog(
             "activateServer: client=\(clientName) clientID=\(clientIdentity ?? "nil") frontmostPID=\(frontmostPID.map(String.init) ?? "nil")"
         )
-        BeeBrokerIMEClient.shared.claimPreparedSession(
+
+        // Synchronous XPC call — blocks main thread so deactivateServer
+        // can't race in before we finish attaching.
+        let result = BeeBrokerIMEClient.shared.claimPreparedSessionSync(
             clientPID: frontmostPID,
             clientID: clientIdentity
-        ) { [weak self] found, sessionID, _, _ in
-            DispatchQueue.main.async {
-                beeInputLog(
-                    """
-                    activateServer: prepared-session callback on main queue found=\(found) \
-                    sessionID=\(sessionID.map(String.init) ?? "nil") callbackClientID=\(clientIdentity ?? "nil") \
-                    callbackPID=\(frontmostPID.map(String.init) ?? "nil")
-                    """)
-                guard let self else {
-                    beeInputLog(
-                        "activateServer: prepared-session callback dropped because self was released"
-                    )
-                    return
-                }
-                beeInputLog(
-                    "activateServer: callback self alive activeControllerMatches=\(BeeIMEBridgeState.shared.activeController === self)"
-                )
-                guard BeeIMEBridgeState.shared.activeController === self else {
-                    beeInputLog(
-                        "activateServer: prepared-session callback ignored because controller is no longer active"
-                    )
-                    return
-                }
-                guard found,
-                    let sessionID
-                else {
-                    beeInputLog(
-                        """
-                        activateServer: no prepared session for client, ignoring \
-                        clientID=\(clientIdentity ?? "nil") pid=\(frontmostPID.map(String.init) ?? "nil")
-                        """)
-                    return
-                }
-                beeInputLog(
-                    """
-                    activateServer: attaching session sessionID=\(sessionID) \
-                    clientID=\(clientIdentity ?? "nil")
-                    """)
-                BeeIMEBridgeState.shared.attachSession(
-                    sessionID: sessionID,
-                    clientIdentity: clientIdentity
-                )
-                beeInputLog(
-                    "activateServer: attachSession complete, flushing pending bridge events")
-                BeeIMEBridgeState.shared.flushPending()
-                beeInputLog(
-                    """
-                    activateServer: flushPending complete, sending imeAttach sessionID=\(sessionID) \
-                    pid=\(frontmostPID.map(String.init) ?? "nil") clientID=\(clientIdentity ?? "nil")
-                    """)
-                BeeBrokerIMEClient.shared.imeAttach(
-                    sessionID: sessionID,
-                    clientPID: frontmostPID,
-                    clientID: clientIdentity
-                )
-                beeInputLog("activateServer: imeAttach sent")
-            }
-        }
-        beeInputLog(
-            "activateServer: done!"
         )
+
+        guard result.found, let sessionID = result.sessionID else {
+            beeInputLog(
+                "activateServer: no prepared session, ignoring clientID=\(clientIdentity ?? "nil") pid=\(frontmostPID.map(String.init) ?? "nil")"
+            )
+            return
+        }
+
+        beeInputLog("activateServer: attaching session=\(sessionID.uuidString.prefix(8)) clientID=\(clientIdentity ?? "nil")")
+        BeeIMEBridgeState.shared.attachSession(
+            sessionID: sessionID,
+            clientIdentity: clientIdentity
+        )
+        BeeIMEBridgeState.shared.flushPending()
+        BeeBrokerIMEClient.shared.imeAttach(
+            sessionID: sessionID,
+            clientPID: frontmostPID,
+            clientID: clientIdentity
+        )
+        beeInputLog("activateServer: done!")
     }
 
     override func deactivateServer(_ sender: Any!) {
