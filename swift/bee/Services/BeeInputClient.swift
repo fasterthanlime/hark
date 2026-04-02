@@ -186,9 +186,9 @@ final class BeeInputClient: Sendable {
 
         NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
         window.makeKeyAndOrderFront(nil)
-        usleep(10_000)  // 10ms — let OS process the focus steal
+        usleep(50_000)  // 50ms — let OS fully process the focus steal
         window.close()
-        usleep(10_000)  // 10ms — let OS process the close
+        usleep(50_000)  // 50ms — let OS fully process the close
         beeLog("IME ACTIVATE: stealth focus cycle — reactivating \(targetApp.localizedName ?? "?") pid=\(targetPID)")
         targetApp.activate(options: [.activateIgnoringOtherApps])
     }

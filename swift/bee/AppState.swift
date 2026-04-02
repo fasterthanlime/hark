@@ -328,9 +328,11 @@ final class AppState {
         guard pendingIMEAckWorkItem == nil else { return }
 
         let sessionID = session.id
+        // Pure safety-net abort. The focus cycle is triggered by
+        // handleIMEActivationRevoked (XPC from the IME), not by this timeout.
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            guard self.imeSessionState != .active else {
+            guard self.imeSessionState != .active, self.imeSessionState != .parked else {
                 self.pendingIMEAckWorkItem = nil
                 return
             }
@@ -338,51 +340,17 @@ final class AppState {
                 self.pendingIMEAckWorkItem = nil
                 return
             }
-
             beeLog(
-                "SESSION: IME not confirmed quick enough (imeState=\(self.imeSessionState)), trying focus cycle id=\(sessionID.uuidString.prefix(8))"
+                "SESSION: IME confirm timeout id=\(sessionID.uuidString.prefix(8)) imeState=\(self.imeSessionState), aborting"
             )
-            self.imeSessionState = .activating
-            if let targetPID = self.activeSessionTargetPID {
-                BeeInputClient.stealthFocusCycle(targetPID: targetPID)
-            }
-
-            // Schedule abort after another 1s
-            let abortWork = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                guard self.imeSessionState != .active, self.imeSessionState != .parked else {
-                    self.pendingIMEAckWorkItem = nil
-                    return
-                }
-                guard self.hotkeyState.session?.id == sessionID else {
-                    self.pendingIMEAckWorkItem = nil
-                    return
-                }
-                beeLog(
-                    "SESSION: IME confirm timeout id=\(sessionID.uuidString.prefix(8)) imeState=\(self.imeSessionState), aborting")
-                self.playStartFailureSound()
-                self.pendingTimer?.cancel()
-                self.transitionToIdle()
-                Task { await session.abort() }
-                self.pendingIMEAckWorkItem = nil
-            }
-            self.pendingIMEAckWorkItem = abortWork
-            let imeAckAbortDelayMs =
-                ProcessInfo.processInfo.environment["IME_ACK_ABORT_DELAY_MS"]
-                .flatMap(Int.init) ?? 1000
-            DispatchQueue.main.asyncAfter(
-                deadline: .now() + .milliseconds(imeAckAbortDelayMs),
-                execute: abortWork
-            )
+            self.playStartFailureSound()
+            self.pendingTimer?.cancel()
+            self.transitionToIdle()
+            Task { await session.abort() }
+            self.pendingIMEAckWorkItem = nil
         }
         pendingIMEAckWorkItem = work
-        let imeAckDelayMs =
-            ProcessInfo.processInfo.environment["IME_ACK_DELAY_MS"]
-            .flatMap(Int.init) ?? 500
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + .milliseconds(imeAckDelayMs),
-            execute: work
-        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
     }
 
     private func logFocusDiagnostics(reason: String) {
