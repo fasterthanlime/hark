@@ -156,6 +156,7 @@ final class BeeInputClient: Sendable {
     // MARK: - IME Commands
 
     func setMarkedText(_ text: String, sessionID: UUID) {
+        beeLog("setMarkedText → broker session=\(sessionID.uuidString.prefix(8))")
         Self.setMarkedTextXPC(text, sessionID: sessionID)
     }
 

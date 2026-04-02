@@ -178,6 +178,7 @@ private final class BeeBrokerService: NSObject, BeeBrokerXPC {
     ) {
         queue.async {
             guard let ime = self.imeProxy() else {
+                brokerLog("setMarkedText: no IME proxy, dropping")
                 reply(false)
                 return
             }
