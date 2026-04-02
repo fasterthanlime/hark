@@ -202,44 +202,43 @@ final class BeeInputClient: Sendable {
     @MainActor
     private static func waitForFrontmost(pid: pid_t, timeout: TimeInterval) async {
         let start = ProcessInfo.processInfo.systemUptime
-        // Check immediately
         if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
             let ms = (ProcessInfo.processInfo.systemUptime - start) * 1000
             beeLog("IME ACTIVATE: waitForFrontmost pid=\(pid) took \(String(format: "%.1f", ms))ms (immediate)")
             return
         }
 
-        // Wait for notification
         let nc = NSWorkspace.shared.notificationCenter
-        let result = await withTaskGroup(of: Bool.self) { group in
-            group.addTask { @MainActor in
-                // Listen for app activation
-                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                    var observer: NSObjectProtocol?
-                    observer = nc.addObserver(
-                        forName: NSWorkspace.didActivateApplicationNotification,
-                        object: nil, queue: .main
-                    ) { notification in
-                        let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-                        if app?.processIdentifier == pid {
-                            if let observer { nc.removeObserver(observer) }
-                            cont.resume()
-                        }
-                    }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            var observer: NSObjectProtocol?
+            var timerItem: DispatchWorkItem?
+            var resumed = false
+
+            observer = nc.addObserver(
+                forName: NSWorkspace.didActivateApplicationNotification,
+                object: nil, queue: .main
+            ) { notification in
+                let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                if app?.processIdentifier == pid, !resumed {
+                    resumed = true
+                    timerItem?.cancel()
+                    if let observer { nc.removeObserver(observer) }
+                    cont.resume()
                 }
-                return true
             }
-            group.addTask {
-                // Timeout
-                try? await Task.sleep(for: .milliseconds(Int(timeout * 1000)))
-                return false
+
+            let timer = DispatchWorkItem {
+                if !resumed {
+                    resumed = true
+                    if let observer { nc.removeObserver(observer) }
+                    cont.resume()
+                }
             }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
+            timerItem = timer
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout, execute: timer)
         }
         let ms = (ProcessInfo.processInfo.systemUptime - start) * 1000
-        beeLog("IME ACTIVATE: waitForFrontmost pid=\(pid) took \(String(format: "%.1f", ms))ms \(result ? "" : "(timeout)")")
+        beeLog("IME ACTIVATE: waitForFrontmost pid=\(pid) took \(String(format: "%.1f", ms))ms")
     }
 
     /// Cycle input sources: select a non-bee source, then re-select bee.
