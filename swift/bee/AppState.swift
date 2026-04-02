@@ -1115,21 +1115,41 @@ final class AppState {
 
     // MARK: - Volume Ducking
 
+    private var volumeFadeTask: Task<Void, Never>?
+
     private func duckVolume() {
         guard lowerVolumeDuringDictation else { return }
         if let current = Self.getSystemVolume() {
             savedVolume = current
-            Self.setSystemVolume(current * dictationVolumeLevel)
+            fadeVolume(to: current * dictationVolumeLevel)
         }
     }
 
     private func restoreVolume() {
         guard let volume = savedVolume else { return }
         savedVolume = nil
-        Self.setSystemVolume(volume)
+        fadeVolume(to: volume)
     }
 
-    private static func getSystemVolume() -> Float? {
+    private func fadeVolume(to target: Float, duration: Double = 0.18) {
+        volumeFadeTask?.cancel()
+        let steps = 20
+        let stepMs = Int(duration * 1000) / steps
+        volumeFadeTask = Task {
+            guard let start = Self.getSystemVolume() else { return }
+            let delta = target - start
+            for i in 1...steps {
+                if Task.isCancelled { break }
+                let t = Float(i) / Float(steps)
+                let smooth = t * t * (3 - 2 * t)
+                Self.setSystemVolume(start + delta * smooth)
+                try? await Task.sleep(for: .milliseconds(stepMs))
+            }
+            Self.setSystemVolume(target)
+        }
+    }
+
+    nonisolated private static func getSystemVolume() -> Float? {
         var deviceID = AudioDeviceID(0)
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)
         var address = AudioObjectPropertyAddress(
@@ -1148,7 +1168,7 @@ final class AppState {
         return s2 == noErr ? volume : nil
     }
 
-    private static func setSystemVolume(_ volume: Float) {
+    nonisolated private static func setSystemVolume(_ volume: Float) {
         var deviceID = AudioDeviceID(0)
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)
         var address = AudioObjectPropertyAddress(
