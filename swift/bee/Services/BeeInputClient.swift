@@ -159,8 +159,12 @@ final class BeeInputClient: Sendable {
     }
 
     @MainActor
-    static func stealthFocusCycle() {
-        beeLog("IME ACTIVATE: stealth focus cycle — creating temp window")
+    static func stealthFocusCycle(targetPID: pid_t) {
+        guard let targetApp = NSRunningApplication(processIdentifier: targetPID) else {
+            beeLog("IME ACTIVATE: stealth focus cycle — can't find app for pid=\(targetPID)")
+            return
+        }
+        beeLog("IME ACTIVATE: stealth focus cycle — target=\(targetApp.localizedName ?? "?") pid=\(targetPID)")
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
@@ -172,20 +176,13 @@ final class BeeInputClient: Sendable {
         window.alphaValue = 0.0
         window.isReleasedWhenClosed = false
 
-        // Force our app to become frontmost, stealing focus from target
         NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
         window.makeKeyAndOrderFront(nil)
 
-        let previousApp = NSWorkspace.shared.frontmostApplication
-
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            beeLog("IME ACTIVATE: stealth focus cycle — closing temp window")
+            beeLog("IME ACTIVATE: stealth focus cycle — closing, reactivating \(targetApp.localizedName ?? "?") pid=\(targetPID)")
             window.close()
-
-            if let previousApp {
-                beeLog("IME ACTIVATE: stealth focus cycle — reactivating \(previousApp.localizedName ?? "?") pid=\(previousApp.processIdentifier)")
-                previousApp.activate(options: [.activateIgnoringOtherApps])
-            }
+            targetApp.activate(options: [.activateIgnoringOtherApps])
         }
     }
 
