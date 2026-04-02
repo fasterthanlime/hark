@@ -193,6 +193,27 @@ final class BeeInputClient: Sendable {
         }
     }
 
+    /// Cycle input sources: select a non-bee source, then re-select bee.
+    /// Forces the Text Input Management system to tear down and re-create the
+    /// IME connection, triggering activateServer.
+    @MainActor
+    static func tisToggleCycle() {
+        guard let beeSource = findBeeInputSource() else {
+            beeLog("IME ACTIVATE: TIS toggle — bee source not found")
+            return
+        }
+        guard let other = fallbackInputSource(current: beeSource) else {
+            beeLog("IME ACTIVATE: TIS toggle — no alternative input source")
+            return
+        }
+
+        let awayResult = TISSelectInputSource(other)
+        beeLog("IME ACTIVATE: TIS toggle — selected other (result=\(awayResult))")
+        usleep(50_000)  // 50ms
+        let backResult = TISSelectInputSource(beeSource)
+        beeLog("IME ACTIVATE: TIS toggle — re-selected bee (result=\(backResult))")
+    }
+
     /// Nudge the focused UI element via Accessibility to trigger IME re-activation.
     /// Briefly moves focus away from the text field and back.
     @MainActor
