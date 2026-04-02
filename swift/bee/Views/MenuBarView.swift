@@ -4,6 +4,7 @@ import SwiftUI
 
 struct MenuBarView: View {
     @Bindable var appState: AppState
+    @State private var echoActive = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -64,32 +65,37 @@ struct MenuBarView: View {
 
             VStack(spacing: 6) {
                 Button {
-                    if appState.audioEngine.echoEnabled {
+                    if echoActive {
                         appState.audioEngine.stopEcho()
                     } else {
                         appState.audioEngine.startEcho()
                     }
+                    echoActive = appState.audioEngine.echoEnabled
                 } label: {
-                    Image(systemName: appState.audioEngine.echoEnabled ? "ear.fill" : "ear")
+                    Image(systemName: echoActive ? "ear.fill" : "ear")
                         .font(.body)
-                        .foregroundStyle(appState.audioEngine.echoEnabled ? .orange : .secondary)
+                        .foregroundStyle(echoActive ? .orange : .secondary)
                         .frame(width: 28, height: 28)
                         .background(
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(appState.audioEngine.echoEnabled ? Color.orange.opacity(0.15) : .clear)
+                                .fill(echoActive ? Color.orange.opacity(0.15) : .clear)
                         )
                 }
                 .buttonStyle(.plain)
                 .help("Listen to yourself (1s delay)")
 
-                HStack(spacing: 4) {
-                    VerticalVolumeSlider(audioEngine: appState.audioEngine)
-                        .frame(width: 6)
+                HStack(spacing: 6) {
+                    VerticalVolumeSlider(
+                        audioEngine: appState.audioEngine,
+                        selectedDeviceUID: appState.activeInputDeviceUID
+                    )
+                    .frame(width: 6)
                     VerticalLevelMeter(audioEngine: appState.audioEngine)
                 }
             }
-            .padding(.vertical, 10)
-            .padding(.trailing, 8)
+            .padding(.vertical, 12)
+            .padding(.trailing, 12)
+            .padding(.leading, 4)
         }
         .frame(width: 420)
         .background(.ultraThinMaterial)
@@ -115,8 +121,9 @@ struct MenuBarView: View {
         .onDisappear {
             beeLog("MENUBAR: panel closed")
             appState.menuBarPanelOpen = false
-            if appState.audioEngine.echoEnabled {
+            if echoActive {
                 appState.audioEngine.stopEcho()
+                echoActive = false
             }
             // Grace period: keep engine warm for 5 seconds after closing
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak appState] in
@@ -864,6 +871,7 @@ private struct VerticalLevelMeter: View {
 
 private struct VerticalVolumeSlider: View {
     let audioEngine: AudioEngine
+    let selectedDeviceUID: String?
     @State private var volume: Float = 1.0
     @State private var isSupported = false
 
@@ -891,9 +899,12 @@ private struct VerticalVolumeSlider: View {
                             }
                         }
                 )
+            } else {
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(Color.primary.opacity(0.03))
             }
         }
-        .task { refreshVolume() }
+        .task(id: selectedDeviceUID) { refreshVolume() }
     }
 
     func refreshVolume() {
