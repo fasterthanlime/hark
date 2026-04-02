@@ -374,6 +374,7 @@ final class AppState {
         installExternalObservers()
         installCaptureDeviceObservers()
         refreshInputDevices(reason: "startup")
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in }
     }
 
     // MARK: - State
@@ -1456,27 +1457,19 @@ final class AppState {
     }
 
     private func sendDeviceSwitchNotification(from previousName: String, to newName: String, reason: String) {
+        beeLog("AUDIO: device switched from \(previousName) to \(newName) (\(reason))")
+
         let content = UNMutableNotificationContent()
         content.title = "Audio input changed"
-        content.body = "\(newName)"
-        content.sound = nil  // silent — don't interrupt
+        content.body = newName
+        content.sound = nil
 
         let request = UNNotificationRequest(
-            identifier: "device-switch-\(UUID().uuidString)",
+            identifier: "device-switch",
             content: content,
-            trigger: nil  // deliver immediately
+            trigger: nil
         )
-
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { granted, _ in
-            guard granted else { return }
-            UNUserNotificationCenter.current().add(request) { error in
-                if let error {
-                    beeLog("AUDIO: notification error: \(error)")
-                }
-            }
-        }
-
-        beeLog("AUDIO: device switched from \(previousName) to \(newName) (\(reason))")
+        UNUserNotificationCenter.current().add(request)
     }
 
     private func reconfigureAudioEngineIfNeeded(forceRestart: Bool) {
