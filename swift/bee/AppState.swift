@@ -171,6 +171,7 @@ final class AppState {
                 "APP: hotkey down targetPID=\(targetPID.map(String.init) ?? "nil") targetApp=\(targetApp?.localizedName ?? "nil")"
             )
             let session = createSession(targetProcessID: targetPID)
+            beeLog("APP: session created id=\(session.id.uuidString.prefix(8))")
             activeSessionTargetPID = targetPID
             activeSessionTargetAppName = targetApp?.localizedName
             activeSessionTargetAppIcon = targetApp?.icon
@@ -186,7 +187,15 @@ final class AppState {
                 maxNewTokensStreaming: maxNewTokensStreaming,
                 maxNewTokensFinal: maxNewTokensFinal
             )
-            Task { await session.start(language: detectLanguage(), asrConfig: config) }
+            // Kick off IME activation on MainActor immediately, then
+            // start the audio/ASR pipeline on the Session actor.
+            let language = detectLanguage()
+            beeLog("APP: handleROptDown done, dispatching Task")
+            Task { @MainActor in
+                beeLog("APP: Task started")
+                let imeOk = await self.inputClient.activate(sessionID: session.id, targetPID: targetPID)
+                await session.start(language: language, asrConfig: config, imeAlreadyActivated: imeOk)
+            }
             return false  // not swallowed
 
         case .locked(let session):
