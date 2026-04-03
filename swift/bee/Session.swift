@@ -116,7 +116,12 @@ actor Session {
 
     // MARK: - Start
 
-    func start(language: String?, asrConfig: TranscriptionService.SessionConfig) async {
+    private var animationMorphSpeed: Float = 1.0
+    private var animationAppendSpeed: Float = 1.0
+
+    func start(language: String?, asrConfig: TranscriptionService.SessionConfig, animationMorphSpeed: Float = 1.0, animationAppendSpeed: Float = 1.0) async {
+        self.animationMorphSpeed = animationMorphSpeed
+        self.animationAppendSpeed = animationAppendSpeed
         logger.info("[\(self.id)] Starting session")
 
         // Warm up engine if cold
@@ -392,6 +397,7 @@ actor Session {
                             let total = morphWeight + appendWeight + trimWeight
                             let roll = Int.random(in: 0..<max(total, 1))
 
+                            var didAppend = false
                             if roll < morphWeight && !wrongIndices.isEmpty {
                                 // Fix a random wrong character in-place
                                 let idx = wrongIndices.randomElement()!
@@ -399,11 +405,13 @@ actor Session {
                             } else if roll < morphWeight + appendWeight && canAppend {
                                 // Append next correct character
                                 chars.append(target[chars.count])
+                                didAppend = true
                             } else if canTrim {
                                 // Remove last character
                                 chars.removeLast()
                             } else if canAppend {
                                 chars.append(target[chars.count])
+                                didAppend = true
                             } else if !wrongIndices.isEmpty {
                                 let idx = wrongIndices.randomElement()!
                                 chars[idx] = target[idx]
@@ -418,7 +426,10 @@ actor Session {
                             )
 
                             steps += 1
-                            let delayMs = steps > 20 ? 8 : (steps > 10 ? 15 : 25)
+                            let speed = didAppend ? self.animationAppendSpeed : self.animationMorphSpeed
+                            if speed <= 0 { break }
+                            let baseMs = steps > 20 ? 8 : (steps > 10 ? 15 : 25)
+                            let delayMs = max(1, Int(Float(baseMs) / speed))
                             do { try await Task.sleep(for: .milliseconds(delayMs)) } catch { break }
                         }
 

@@ -688,39 +688,57 @@ private struct TranscriptionSettingsView: View {
                 }
 
                 SettingsCard("Parameters") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Picker("Chunk size", selection: Binding(
-                            get: { appState.chunkSizeSec },
-                            set: { appState.chunkSizeSec = $0 }
-                        )) {
-                            ForEach([0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0] as [Float], id: \.self) { val in
-                                Text(val < 1 ? "\(Int(val * 1000))ms" : "\(String(format: "%.1f", val))s")
-                                    .tag(val)
-                            }
+                    VStack(spacing: 10) {
+                        ParamSlider(
+                            label: "Chunk size",
+                            value: Binding(
+                                get: { Double(appState.chunkSizeSec) },
+                                set: { appState.chunkSizeSec = Float($0) }
+                            ),
+                            range: 0.1...2.0, step: 0.05
+                        ) { v in
+                            let ms = Int(v * 1000)
+                            return ms < 1000 ? "\(ms)ms" : String(format: "%.1fs", v)
                         }
 
-                        Picker("Commit tokens", selection: $appState.commitTokenCount) {
-                            ForEach([0, 8, 12, 16, 24, 32] as [UInt32], id: \.self) { val in
-                                Text(val == 0 ? "Default" : "\(val)").tag(val)
-                            }
+                        ParamSlider(
+                            label: "Commit tokens",
+                            value: Binding(
+                                get: { Double(appState.commitTokenCount) },
+                                set: { appState.commitTokenCount = UInt32($0) }
+                            ),
+                            range: 4...48, step: 1
+                        ) { "\(Int($0))" }
+
+                        ParamSlider(
+                            label: "Rollback tokens",
+                            value: Binding(
+                                get: { Double(appState.rollbackTokenNum) },
+                                set: { appState.rollbackTokenNum = UInt32($0) }
+                            ),
+                            range: 1...16, step: 1
+                        ) { "\(Int($0))" }
+
+                        ParamSlider(
+                            label: "Morph speed",
+                            value: Binding(
+                                get: { Double(appState.animationMorphSpeed) },
+                                set: { appState.animationMorphSpeed = Float($0) }
+                            ),
+                            range: 0...3, step: 0.05
+                        ) { v in
+                            v < 0.01 ? "Off" : String(format: "%.2g×", v)
                         }
 
-                        Picker("Rollback tokens", selection: $appState.rollbackTokenNum) {
-                            ForEach([0, 2, 3, 5, 8, 12] as [UInt32], id: \.self) { val in
-                                Text(val == 0 ? "Default" : "\(val)").tag(val)
-                            }
-                        }
-
-                        Picker("Streaming tokens", selection: $appState.maxNewTokensStreaming) {
-                            ForEach([0, 16, 32, 64, 128] as [UInt32], id: \.self) { val in
-                                Text(val == 0 ? "Default" : "\(val)").tag(val)
-                            }
-                        }
-
-                        Picker("Final tokens", selection: $appState.maxNewTokensFinal) {
-                            ForEach([0, 128, 256, 512, 1024] as [UInt32], id: \.self) { val in
-                                Text(val == 0 ? "Default" : "\(val)").tag(val)
-                            }
+                        ParamSlider(
+                            label: "Append speed",
+                            value: Binding(
+                                get: { Double(appState.animationAppendSpeed) },
+                                set: { appState.animationAppendSpeed = Float($0) }
+                            ),
+                            range: 0...3, step: 0.05
+                        ) { v in
+                            v < 0.01 ? "Off" : String(format: "%.2g×", v)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -895,6 +913,34 @@ private struct GeneralSettingsView: View {
         }
     }
 
+}
+
+private struct ParamSlider: View {
+    let label: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+    let format: (Double) -> String
+
+    init(label: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double, format: @escaping (Double) -> String) {
+        self.label = label
+        self._value = value
+        self.range = range
+        self.step = step
+        self.format = format
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(label)
+                .foregroundStyle(.secondary)
+                .frame(width: 140, alignment: .leading)
+            Slider(value: $value, in: range, step: step)
+            Text(format(value))
+                .monospacedDigit()
+                .frame(width: 52, alignment: .trailing)
+        }
+    }
 }
 
 private struct SettingsCard<Content: View>: View {

@@ -37,6 +37,7 @@ pub struct AsrSession {
     _engine: Arc<Engine>,
     session: Session<'static>,
     last_text: String,
+    finished: bool,
 }
 
 // SAFETY: Session contains MLX arrays (Metal buffers) accessed sequentially.
@@ -371,6 +372,7 @@ pub unsafe extern "C" fn asr_session_create(
         _engine: arc,
         session,
         last_text: String::new(),
+        finished: false,
     }))
 }
 
@@ -427,6 +429,9 @@ fn feed_impl(
     }
 
     let session = unsafe { &mut *session };
+    if session.finished {
+        return AsrFeedResult::empty();
+    }
     let audio = unsafe { std::slice::from_raw_parts(samples, num_samples) };
 
     match session.session.feed(audio) {
@@ -504,6 +509,11 @@ pub unsafe extern "C" fn asr_session_finish(
     // Take ownership of the session to call finish() which consumes it.
     // We reconstruct a new dummy session in its place.
     let session = unsafe { &mut *session };
+
+    if session.finished {
+        return std::ptr::null_mut();
+    }
+    session.finished = true;
 
     // We can't consume session.session through a pointer, so we use a
     // temporary: swap in a fresh session, finish the real one.

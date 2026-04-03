@@ -35,8 +35,8 @@ final class AppState {
         static let chunkSizeSec = "transcription.chunkSizeSec"
         static let commitTokenCount = "transcription.commitTokenCount"
         static let rollbackTokenNum = "transcription.rollbackTokenNum"
-        static let maxNewTokensStreaming = "transcription.maxNewTokensStreaming"
-        static let maxNewTokensFinal = "transcription.maxNewTokensFinal"
+        static let animationMorphSpeed = "transcription.animationMorphSpeed"
+        static let animationAppendSpeed = "transcription.animationAppendSpeed"
     }
 
     private static let imeSubmitName = NSNotification.Name("fasterthanlime.bee.imeSubmit")
@@ -128,17 +128,17 @@ final class AppState {
     var chunkSizeSec: Float = 0.5 {
         didSet { UserDefaults.standard.set(chunkSizeSec, forKey: DefaultsKey.chunkSizeSec) }
     }
-    var commitTokenCount: UInt32 = 0 {  // 0 = Rust default (12)
+    var commitTokenCount: UInt32 = 12 {
         didSet { UserDefaults.standard.set(Int(commitTokenCount), forKey: DefaultsKey.commitTokenCount) }
     }
-    var rollbackTokenNum: UInt32 = 0 {  // 0 = Rust default (5)
+    var rollbackTokenNum: UInt32 = 5 {
         didSet { UserDefaults.standard.set(Int(rollbackTokenNum), forKey: DefaultsKey.rollbackTokenNum) }
     }
-    var maxNewTokensStreaming: UInt32 = 0 {  // 0 = Rust default (32)
-        didSet { UserDefaults.standard.set(Int(maxNewTokensStreaming), forKey: DefaultsKey.maxNewTokensStreaming) }
+    var animationMorphSpeed: Float = 1.0 {
+        didSet { UserDefaults.standard.set(animationMorphSpeed, forKey: DefaultsKey.animationMorphSpeed) }
     }
-    var maxNewTokensFinal: UInt32 = 0 {  // 0 = Rust default (512)
-        didSet { UserDefaults.standard.set(Int(maxNewTokensFinal), forKey: DefaultsKey.maxNewTokensFinal) }
+    var animationAppendSpeed: Float = 1.0 {
+        didSet { UserDefaults.standard.set(animationAppendSpeed, forKey: DefaultsKey.animationAppendSpeed) }
     }
 
     // Volume ducking
@@ -402,13 +402,13 @@ final class AppState {
         let savedChunk = defaults.float(forKey: DefaultsKey.chunkSizeSec)
         if savedChunk > 0 { self.chunkSizeSec = savedChunk }
         let savedCommit = defaults.integer(forKey: DefaultsKey.commitTokenCount)
-        self.commitTokenCount = UInt32(savedCommit)
+        if savedCommit > 0 { self.commitTokenCount = UInt32(savedCommit) }
         let savedRollback = defaults.integer(forKey: DefaultsKey.rollbackTokenNum)
-        self.rollbackTokenNum = UInt32(savedRollback)
-        let savedStreaming = defaults.integer(forKey: DefaultsKey.maxNewTokensStreaming)
-        self.maxNewTokensStreaming = UInt32(savedStreaming)
-        let savedFinal = defaults.integer(forKey: DefaultsKey.maxNewTokensFinal)
-        self.maxNewTokensFinal = UInt32(savedFinal)
+        if savedRollback > 0 { self.rollbackTokenNum = UInt32(savedRollback) }
+        let savedMorphSpeed = defaults.float(forKey: DefaultsKey.animationMorphSpeed)
+        if savedMorphSpeed > 0 { self.animationMorphSpeed = savedMorphSpeed }
+        let savedAppendSpeed = defaults.float(forKey: DefaultsKey.animationAppendSpeed)
+        if savedAppendSpeed > 0 { self.animationAppendSpeed = savedAppendSpeed }
         restoreAudioPreferences()
         installExternalObservers()
         installCaptureDeviceObservers()
@@ -472,12 +472,13 @@ final class AppState {
             duckVolume()
             startPendingTimer(session: session)
             startIMEAckTimeoutIfNeeded(session: session)
+            let tokenBudget = commitTokenCount + rollbackTokenNum
             let config = TranscriptionService.SessionConfig(
                 chunkSizeSec: chunkSizeSec,
                 commitTokenCount: commitTokenCount,
                 rollbackTokenNum: rollbackTokenNum,
-                maxNewTokensStreaming: maxNewTokensStreaming,
-                maxNewTokensFinal: maxNewTokensFinal
+                maxNewTokensStreaming: tokenBudget,
+                maxNewTokensFinal: tokenBudget
             )
             let language = detectLanguage()
             beeLog("APP: handleROptDown done, dispatching Tasks")
@@ -492,7 +493,7 @@ final class AppState {
             // Audio/ASR pipeline on Session actor — runs in parallel
             Task {
                 beeLog("APP: Session Task started")
-                await session.start(language: language, asrConfig: config)
+                await session.start(language: language, asrConfig: config, animationMorphSpeed: animationMorphSpeed, animationAppendSpeed: animationAppendSpeed)
             }
             return false  // not swallowed
 
