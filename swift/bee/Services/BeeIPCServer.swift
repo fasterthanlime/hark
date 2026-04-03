@@ -170,6 +170,8 @@ final class BeeIPCServer {
 
     // MARK: - Outbound to IME (called by BeeInputClient)
 
+    var isIMEConnected: Bool { imeClient != nil }
+
     func waitForIMEReady() async -> Bool {
         if imeClient != nil { return true }
         return await withCheckedContinuation { continuation in

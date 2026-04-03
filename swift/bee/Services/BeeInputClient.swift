@@ -20,6 +20,12 @@ final class BeeInputClient: Sendable {
             targetPid: Int32(targetPID ?? 0)
         )
 
+        if await !MainActor.run(body: { BeeIPCServer.shared.isIMEConnected }) {
+            let installedIME = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Input Methods/beeInput.app")
+            await Self.launchBeeInputIfNeeded(at: installedIME)
+        }
+
         beeLog("IME ACTIVATE: TIS SELECT start id=\(sessionID.uuidString.prefix(8))")
         let selected = await Self.selectBeeInputSource()
         guard selected else {
@@ -116,6 +122,7 @@ final class BeeInputClient: Sendable {
                 beeLog("IME REGISTER: source disabled, enabling")
                 TISEnableInputSource(source)
             }
+            await launchBeeInputIfNeeded(at: installedIME)
             return true
         }
 
@@ -129,9 +136,21 @@ final class BeeInputClient: Sendable {
         beeLog("IME REGISTER: after registration, found \(newSources.count) source(s)")
         if let source = newSources.first {
             TISEnableInputSource(source)
+            await launchBeeInputIfNeeded(at: installedIME)
             return true
         }
         return false
+    }
+
+    private static func launchBeeInputIfNeeded(at url: URL) async {
+        if await MainActor.run(body: { BeeIPCServer.shared.isIMEConnected }) {
+            beeLog("IME LAUNCH: already connected, skipping")
+            return
+        }
+        beeLog("IME LAUNCH: opening \(url.path)")
+        await MainActor.run {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     static func restoreInputSourceIfNeeded(
