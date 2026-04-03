@@ -3,7 +3,8 @@
 use std::ffi::{c_char, c_float, c_uint, CStr, CString};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Once};
+use std::sync::{Arc, Mutex, Once};
+use std::time::{Duration, Instant};
 
 use bee_transcribe::{Engine, EngineConfig, Language, Session, SessionOptions};
 
@@ -15,12 +16,105 @@ fn init_logger() {
     });
 }
 
+// ── Engine stats ────────────────────────────────────────────────────────
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AsrEngineStats {
+    pub cpu_percent: c_float,
+    pub gpu_percent: c_float,
+    pub vram_used_mb: c_float,
+}
+
+impl Default for AsrEngineStats {
+    fn default() -> Self {
+        Self { cpu_percent: 0.0, gpu_percent: 0.0, vram_used_mb: 0.0 }
+    }
+}
+
+struct StatsSampler {
+    latest: Arc<Mutex<AsrEngineStats>>,
+}
+
+impl StatsSampler {
+    fn new() -> Self {
+        let latest = Arc::new(Mutex::new(AsrEngineStats::default()));
+        let shared = Arc::clone(&latest);
+        std::thread::Builder::new()
+            .name("bee-stats".into())
+            .spawn(move || {
+                let mut last_cpu_us: u64 = 0;
+                let mut last_wall = Instant::now();
+                loop {
+                    std::thread::sleep(Duration::from_millis(900));
+                    let now = Instant::now();
+                    let wall_us = now.duration_since(last_wall).as_micros() as u64;
+                    last_wall = now;
+
+                    let cpu_us = process_cpu_us();
+                    let cpu_percent = if wall_us > 0 && last_cpu_us > 0 {
+                        let delta = cpu_us.saturating_sub(last_cpu_us);
+                        ((delta as f32 / wall_us as f32) * 100.0).min(100.0)
+                    } else {
+                        0.0
+                    };
+                    last_cpu_us = cpu_us;
+
+                    let (gpu_percent, vram_used_mb) = sample_gpu_ioreg().unwrap_or((0.0, 0.0));
+
+                    if let Ok(mut s) = shared.lock() {
+                        s.cpu_percent = cpu_percent;
+                        s.gpu_percent = gpu_percent;
+                        s.vram_used_mb = vram_used_mb;
+                    }
+                }
+            })
+            .expect("failed to spawn stats thread");
+        Self { latest }
+    }
+
+    fn get(&self) -> AsrEngineStats {
+        self.latest.lock().map(|s| *s).unwrap_or_default()
+    }
+}
+
+fn process_cpu_us() -> u64 {
+    unsafe {
+        let mut usage: libc::rusage = std::mem::zeroed();
+        libc::getrusage(libc::RUSAGE_SELF, &mut usage);
+        let user = usage.ru_utime.tv_sec as u64 * 1_000_000 + usage.ru_utime.tv_usec as u64;
+        let sys  = usage.ru_stime.tv_sec as u64 * 1_000_000 + usage.ru_stime.tv_usec as u64;
+        user + sys
+    }
+}
+
+fn sample_gpu_ioreg() -> Option<(f32, f32)> {
+    let out = std::process::Command::new("ioreg")
+        .args(["-r", "-d", "1", "-w", "0", "-c", "AGXAccelerator"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.lines().find(|l| l.contains("PerformanceStatistics"))?;
+    let gpu = parse_ioreg_u64(line, "Device Utilization %").unwrap_or(0) as f32;
+    let vram_bytes = parse_ioreg_u64(line, "In use system memory").unwrap_or(0);
+    Some((gpu, vram_bytes as f32 / (1024.0 * 1024.0)))
+}
+
+fn parse_ioreg_u64(s: &str, key: &str) -> Option<u64> {
+    let pat = format!("\"{}\"=", key);
+    let pos = s.find(&pat)?;
+    let rest = &s[pos + pat.len()..];
+    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
 // ── Engine ──────────────────────────────────────────────────────────────
 
 pub struct AsrEngine {
     inner: Arc<Engine>,
     /// Pre-loaded VAD tensors (loaded once, cloned per session).
     vad_tensors: Option<std::collections::HashMap<String, mlx_rs::Array>>,
+    stats: StatsSampler,
 }
 
 // SAFETY: Engine is immutable after construction. MLX arrays are heap-allocated
@@ -204,6 +298,7 @@ fn load_engine(model_dir: &Path) -> Result<AsrEngine, String> {
     Ok(AsrEngine {
         inner: Arc::new(engine),
         vad_tensors,
+        stats: StatsSampler::new(),
     })
 }
 
@@ -288,6 +383,16 @@ pub unsafe extern "C" fn asr_engine_free(engine: *mut AsrEngine) {
 }
 
 // ── Session API ─────────────────────────────────────────────────────────
+
+/// # Safety
+/// `engine` must be a valid engine pointer.
+#[no_mangle]
+pub unsafe extern "C" fn asr_engine_get_stats(engine: *const AsrEngine) -> AsrEngineStats {
+    if engine.is_null() {
+        return AsrEngineStats::default();
+    }
+    unsafe { &*engine }.stats.get()
+}
 
 /// # Safety
 /// `engine` must be a valid engine pointer.

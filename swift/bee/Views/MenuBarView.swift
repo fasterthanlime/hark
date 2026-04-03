@@ -649,40 +649,42 @@ private struct AudioSettingsDeviceRow: View {
 
 private struct TranscriptionSettingsView: View {
     @Bindable var appState: AppState
+    @State private var tryMeText = ""
+    @State private var pipelineExpanded = false
+    @State private var mockCPU: Double = 18
+    @State private var mockGPU: Double = 61
+    @State private var mockMemMB: Double = 387
 
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
-                SettingsCard("Pipeline") {
-                    HStack(spacing: 10) {
-                        Text("ASR")
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Circle()
-                            .fill(modelColor)
-                            .frame(width: 8, height: 8)
-                        if appState.modelStatus == .loaded {
-                            Link(destination: URL(string: "https://huggingface.co/\(AppState.defaultModel.repoID)")!) {
-                                HStack(spacing: 4) {
-                                    Text(AppState.defaultModel.displayName)
-                                        .underline()
-                                    Image(systemName: "arrow.up.right.square")
-                                        .font(.caption)
+                SettingsCard("Try it out") {
+                    HStack(alignment: .top, spacing: 12) {
+                        TextEditor(text: $tryMeText)
+                            .font(.body)
+                            .frame(minHeight: 100)
+                            .scrollContentBackground(.hidden)
+                            .overlay(alignment: .topLeading) {
+                                if tryMeText.isEmpty {
+                                    Text("Dictate here to try your settings…")
+                                        .foregroundStyle(.tertiary)
+                                        .allowsHitTesting(false)
+                                        .padding(.top, 2)
+                                        .padding(.leading, 4)
                                 }
                             }
-                        } else {
-                            Text(modelLabel)
-                                .fontWeight(.medium)
-                        }
-                    }
 
-                    if appState.modelStatus == .loaded {
-                        ForEach(AppState.pipelineComponents, id: \.name) { component in
-                            PipelineRow(
-                                label: component.role,
-                                value: component.name,
-                                url: component.url
-                            )
+                        VStack(spacing: 8) {
+                            MockStatRow(label: "CPU", value: mockCPU, max: 100, unit: "%", color: statColor(mockCPU, hi: 60, crit: 85))
+                            MockStatRow(label: "GPU", value: mockGPU, max: 100, unit: "%", color: statColor(mockGPU, hi: 60, crit: 85))
+                            MockStatRow(label: "VRAM", value: mockMemMB, max: 16384, unit: "MB", color: .blue)
+                        }
+                        .frame(width: 90)
+                        .onAppear {
+                            updateStats()
+                            Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+                                updateStats()
+                            }
                         }
                     }
                 }
@@ -743,10 +745,64 @@ private struct TranscriptionSettingsView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+
+                Divider()
+
+                DisclosureGroup("Pipeline", isExpanded: $pipelineExpanded) {
+                    VStack(spacing: 0) {
+                        HStack(spacing: 10) {
+                            Text("ASR")
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Circle()
+                                .fill(modelColor)
+                                .frame(width: 8, height: 8)
+                            if appState.modelStatus == .loaded {
+                                Link(destination: URL(string: "https://huggingface.co/\(AppState.defaultModel.repoID)")!) {
+                                    HStack(spacing: 4) {
+                                        Text(AppState.defaultModel.displayName)
+                                            .underline()
+                                        Image(systemName: "arrow.up.right.square")
+                                            .font(.caption)
+                                    }
+                                }
+                            } else {
+                                Text(modelLabel)
+                                    .fontWeight(.medium)
+                            }
+                        }
+                        .padding(.top, 8)
+
+                        if appState.modelStatus == .loaded {
+                            ForEach(AppState.pipelineComponents, id: \.name) { component in
+                                PipelineRow(
+                                    label: component.role,
+                                    value: component.name,
+                                    url: component.url
+                                )
+                            }
+                        }
+                    }
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
             }
             .frame(maxWidth: 600, alignment: .leading)
             .padding(24)
         }
+    }
+
+    private func updateStats() {
+        let s = appState.transcriptionService.getStats()
+        withAnimation(.easeInOut(duration: 0.4)) {
+            mockCPU = Double(s.cpu_percent)
+            mockGPU = Double(s.gpu_percent)
+            mockMemMB = Double(s.vram_used_mb)
+        }
+    }
+
+    private func statColor(_ val: Double, hi: Double, crit: Double) -> Color {
+        val >= crit ? .red : val >= hi ? .orange : .green
     }
 
     private var modelColor: Color {
@@ -913,6 +969,40 @@ private struct GeneralSettingsView: View {
         }
     }
 
+}
+
+private struct MockStatRow: View {
+    let label: String
+    let value: Double
+    let max: Double
+    let unit: String
+    let color: Color
+
+    var body: some View {
+        VStack(spacing: 3) {
+            HStack(spacing: 4) {
+                Text(label)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(Int(value))")
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
+                Text(unit)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.primary.opacity(0.08))
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(color.opacity(0.8))
+                        .frame(width: geo.size.width * min(1, value / max))
+                }
+            }
+            .frame(height: 4)
+        }
+    }
 }
 
 private struct ParamSlider: View {

@@ -142,6 +142,7 @@ dependencies = [
  "bee-vad",
  "dirs",
  "env_logger",
+ "libc",
  "log",
  "mlx-rs",
  "serde_json",

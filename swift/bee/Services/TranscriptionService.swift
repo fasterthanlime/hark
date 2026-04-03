@@ -48,6 +48,13 @@ final class TranscriptionService: @unchecked Sendable {
         Self.logger.info("Model loaded: \(model.displayName, privacy: .public)")
     }
 
+    func getStats() -> AsrEngineStats {
+        guard let e = lock.withLock({ engine }) else {
+            return AsrEngineStats(cpu_percent: 0, gpu_percent: 0, vram_used_mb: 0)
+        }
+        return asr_engine_get_stats(e)
+    }
+
     func unloadModel() {
         let e = lock.withLock { () -> OpaquePointer? in
             let e = engine

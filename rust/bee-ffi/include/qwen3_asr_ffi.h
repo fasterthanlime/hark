@@ -25,6 +25,13 @@ typedef struct {
     unsigned int max_new_tokens_final;     /* 0 = use default (512) */
 } AsrSessionOptions;
 
+/* Runtime engine statistics (CPU, GPU, VRAM). */
+typedef struct {
+    float cpu_percent;     /* CPU usage 0–100 */
+    float gpu_percent;     /* GPU device utilization 0–100 */
+    float vram_used_mb;    /* GPU memory in use (MB) */
+} AsrEngineStats;
+
 /* Result from a feed call. Check text != NULL for new transcript. */
 typedef struct {
     char *text;                /* Full transcript (committed + pending), or NULL if buffering */
@@ -75,6 +82,9 @@ char *asr_engine_transcribe_samples(const AsrEngine *engine,
 
 /* Free an engine handle. NULL-safe. */
 void asr_engine_free(AsrEngine *engine);
+
+/* Return latest sampled stats. Cheap — reads from a background-thread cache. */
+AsrEngineStats asr_engine_get_stats(const AsrEngine *engine);
 
 /*
  * Create a streaming session attached to an engine.
