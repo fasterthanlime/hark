@@ -650,6 +650,7 @@ private struct AudioSettingsDeviceRow: View {
 private struct TranscriptionSettingsView: View {
     @Bindable var appState: AppState
     @State private var tryMeText = ""
+    @FocusState private var editorFocused: Bool
     @State private var pipelineExpanded = false
     @State private var mockCPU: Double = 18
     @State private var mockGPU: Double = 61
@@ -666,8 +667,9 @@ private struct TranscriptionSettingsView: View {
                             .font(.body)
                             .frame(height: 52)
                             .scrollContentBackground(.hidden)
+                            .focused($editorFocused)
                             .overlay(alignment: .topLeading) {
-                                if tryMeText.isEmpty {
+                                if tryMeText.isEmpty && !editorFocused {
                                     Text("Dictate here to try your settings…")
                                         .foregroundStyle(.tertiary)
                                         .allowsHitTesting(false)
