@@ -187,11 +187,21 @@ final class BeeInputClient: Sendable {
             return true
         }
 
-        // Not registered at all — register from disk
-        let inputMethodsDir = FileManager.default.homeDirectoryForCurrentUser
+        // Not registered at all — register from bundle (preferred) or fallback to ~/Library/Input Methods/
+        let bundledIME = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Library/Input Methods/beeInput.app")
+        let fallbackIME = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Input Methods/beeInput.app")
-        guard FileManager.default.fileExists(atPath: inputMethodsDir.path) else {
-            beeLog("IME REGISTER: beeInput.app not found in ~/Library/Input Methods/")
+
+        let inputMethodsDir: URL
+        if FileManager.default.fileExists(atPath: bundledIME.path) {
+            beeLog("IME REGISTER: using bundled beeInput.app at \(bundledIME.path)")
+            inputMethodsDir = bundledIME
+        } else if FileManager.default.fileExists(atPath: fallbackIME.path) {
+            beeLog("IME REGISTER: using fallback beeInput.app at \(fallbackIME.path)")
+            inputMethodsDir = fallbackIME
+        } else {
+            beeLog("IME REGISTER: beeInput.app not found in bundle or ~/Library/Input Methods/")
             return false
         }
 

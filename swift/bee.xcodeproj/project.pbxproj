@@ -46,7 +46,18 @@
 		FCE25FA72869D4A5885A40D0 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F2645E6EBE2D4D3E1BFA17C /* AppState.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		D2627841E8CFC16F99971717 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = DA18FE9DB54A783047FBDEA6 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 891B7C31943E46D3967A432C;
+			remoteInfo = beeInput;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
+		0300BA95CC38B38C4330297E /* beeInput.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = beeInput.entitlements; sourceTree = "<group>"; };
 		0AA018C194359C6E4CE7BA63 /* BeeInputClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeeInputClient.swift; sourceTree = "<group>"; };
 		0F2645E6EBE2D4D3E1BFA17C /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
 		150E7F5961D4B0D13C2D78C8 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -132,6 +143,7 @@
 				DCCA3D090BBD0D5701645658 /* bee.tiff */,
 				1817A7171ACD274C7810326D /* BeeBrokerIMEClient.swift */,
 				42C5774A124F08F4B8474598 /* BeeIMEBridgeState.swift */,
+				0300BA95CC38B38C4330297E /* beeInput.entitlements */,
 				2F54E5F987731158C437D997 /* BeeInputAppDelegate.swift */,
 				BBB5FE976B1CF01CA031AF66 /* BeeInputController.swift */,
 				6AEB22F163C305E4983946FF /* beeTemplate.tiff */,
@@ -244,10 +256,12 @@
 			buildPhases = (
 				198A194B415B1DC8B9969EE0 /* Sources */,
 				32B125BC2E0C12F049D06B2E /* Resources */,
+				DE0CE43CE8DC5AF4D34746C5 /* Embed beeInput Input Method */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				15583BDFE0F797E1409CD212 /* PBXTargetDependency */,
 			);
 			name = bee;
 			packageProductDependencies = (
@@ -361,6 +375,28 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		DE0CE43CE8DC5AF4D34746C5 /* Embed beeInput Input Method */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Embed beeInput Input Method";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "DEST=\"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Library/Input Methods\"\nmkdir -p \"${DEST}\"\nrsync -a --delete \"${BUILT_PRODUCTS_DIR}/beeInput.app\" \"${DEST}/\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		198A194B415B1DC8B9969EE0 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -410,6 +446,14 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		15583BDFE0F797E1409CD212 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 891B7C31943E46D3967A432C /* beeInput */;
+			targetProxy = D2627841E8CFC16F99971717 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
 		22B7ADB9570659BC1759D0DC /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -419,6 +463,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/../rust/bee-ffi/include";
 				INFOPLIST_KEY_ATSApplicationFontsPath = Fonts;
@@ -543,6 +588,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/../rust/bee-ffi/include";
 				INFOPLIST_KEY_ATSApplicationFontsPath = Fonts;
@@ -581,8 +627,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "bee-input/beeInput.entitlements";
 				COMBINE_HIDPI_IMAGES = YES;
-				ENABLE_APP_SANDBOX = NO;
+				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "bee-input/Info.plist";
@@ -679,8 +726,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "bee-input/beeInput.entitlements";
 				COMBINE_HIDPI_IMAGES = YES;
-				ENABLE_APP_SANDBOX = NO;
+				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "bee-input/Info.plist";

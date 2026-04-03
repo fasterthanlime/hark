@@ -25,6 +25,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: fasterthanlime.bee
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_LSUIElement: YES
         INFOPLIST_KEY_ATSApplicationFontsPath: Fonts
@@ -52,10 +53,23 @@ targets:
           - "-framework"
           - SystemConfiguration
         CODE_SIGN_ENTITLEMENTS: bee/bee.entitlements
+    dependencies:
+      - target: beeInput
+        embed: false
+        link: false
+    postBuildScripts:
+      - name: "Embed beeInput Input Method"
+        basedOnDependencyAnalysis: false
+        script: |
+          DEST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Library/Input Methods"
+          mkdir -p "${DEST}"
+          rsync -a --delete "${BUILT_PRODUCTS_DIR}/beeInput.app" "${DEST}/"
     entitlements:
       path: bee/bee.entitlements
       properties:
         com.apple.security.device.audio-input: true
+        com.apple.security.application-groups:
+          - group.fasterthanlime.bee
 
   beeInput:
     type: application
@@ -73,8 +87,15 @@ targets:
         SWIFT_APPROACHABLE_CONCURRENCY: YES
         SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
         SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY: YES
-        ENABLE_APP_SANDBOX: NO
+        ENABLE_APP_SANDBOX: YES
         ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: bee-input/beeInput.entitlements
+    entitlements:
+      path: bee-input/beeInput.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.application-groups:
+          - group.fasterthanlime.bee
     dependencies:
       - sdk: InputMethodKit.framework
 
