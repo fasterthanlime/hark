@@ -41,7 +41,7 @@ targets:
         SWIFT_APPROACHABLE_CONCURRENCY: YES
         SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated
         SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY: YES
-        ENABLE_APP_SANDBOX: NO
+        ENABLE_APP_SANDBOX: YES
         ENABLE_HARDENED_RUNTIME: YES
         HEADER_SEARCH_PATHS: "$(PROJECT_DIR)/../rust/bee-ffi/include"
         LIBRARY_SEARCH_PATHS: "$(PROJECT_DIR)/../target/release"
@@ -59,6 +59,16 @@ targets:
           - "-framework"
           - SystemConfiguration
         CODE_SIGN_ENTITLEMENTS: bee/bee.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: Bee Development
+    entitlements:
+      path: bee/bee.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.device.audio-input: true
+        com.apple.security.application-groups:
+          - B2N6FSRTPV.group.fasterthanlime.bee
+        com.apple.security.temporary-exception.files.home-relative-path.read-write:
+          - /Library/Input Methods/beeInput.app/
     dependencies:
       - target: beeInput
         embed: false
@@ -72,12 +82,6 @@ targets:
           DEST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Library/Input Methods"
           mkdir -p "${DEST}"
           rsync -a --delete "${BUILT_PRODUCTS_DIR}/beeInput.app" "${DEST}/"
-    entitlements:
-      path: bee/bee.entitlements
-      properties:
-        com.apple.security.device.audio-input: true
-        com.apple.security.application-groups:
-          - group.fasterthanlime.bee
 
   beeInput:
     type: application
@@ -100,12 +104,13 @@ targets:
         ENABLE_APP_SANDBOX: YES
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_ENTITLEMENTS: bee-input/beeInput.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: Bee Input Method Development
     entitlements:
       path: bee-input/beeInput.entitlements
       properties:
         com.apple.security.app-sandbox: true
         com.apple.security.application-groups:
-          - group.fasterthanlime.bee
+          - B2N6FSRTPV.group.fasterthanlime.bee
     dependencies:
       - sdk: InputMethodKit.framework
       - package: vox

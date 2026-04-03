@@ -16,6 +16,23 @@ fn init_logger() {
     });
 }
 
+static FFI_LOG_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Set the path for FFI diagnostic logs. Call this before loading any engine.
+/// Pass NULL to disable file logging.
+#[unsafe(no_mangle)]
+pub extern "C" fn asr_set_log_path(path: *const c_char) {
+    let mut guard = FFI_LOG_PATH.lock().unwrap();
+    if path.is_null() {
+        *guard = None;
+    } else {
+        let s = unsafe { CStr::from_ptr(path) };
+        if let Ok(s) = s.to_str() {
+            *guard = Some(PathBuf::from(s));
+        }
+    }
+}
+
 // ── Engine stats ────────────────────────────────────────────────────────
 
 #[repr(C)]
@@ -273,6 +290,14 @@ pub struct AsrSession {
 // Swift calls are serialized by the caller.
 unsafe impl Send for AsrSession {}
 
+// ── Model paths (must match C header layout) ────────────────────────────
+
+#[repr(C)]
+pub struct AsrModelPaths {
+    /// Base cache directory containing all model subdirectories.
+    pub cache_dir: *const c_char,
+}
+
 // ── Options (must match C header layout) ────────────────────────────────
 
 #[repr(C)]
@@ -305,11 +330,12 @@ fn to_c_string(s: &str) -> *mut c_char {
 }
 
 fn ffi_log(msg: &str) {
-    let path = "/tmp/bee.log";
+    let path = FFI_LOG_PATH.lock().unwrap().clone();
+    let Some(path) = path else { return };
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)
+        .open(&path)
     {
         let _ = writeln!(
             f,
@@ -323,22 +349,18 @@ fn ffi_log(msg: &str) {
     }
 }
 
-fn find_vad_dir() -> Option<PathBuf> {
+fn find_vad_dir(cache_base: &Path) -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("BEE_VAD_DIR") {
         let p = PathBuf::from(dir);
         if p.exists() {
             return Some(p);
         }
     }
-    let dir = dirs::home_dir()?.join("Library/Caches/qwen3-asr/aitytech--Silero-VAD-v5-MLX");
-    if dir.exists() {
-        Some(dir)
-    } else {
-        None
-    }
+    let dir = cache_base.join("aitytech--Silero-VAD-v5-MLX");
+    if dir.exists() { Some(dir) } else { None }
 }
 
-fn resolve_engine_config(model_dir: &Path) -> Result<EngineConfig<'static>, String> {
+fn resolve_engine_config(model_dir: &Path, cache_base: &Path) -> Result<EngineConfig<'static>, String> {
     // Tokenizer: env var, then model_dir/tokenizer.json
     let tokenizer_path: PathBuf = if let Ok(p) = std::env::var("BEE_TOKENIZER_PATH") {
         PathBuf::from(p)
@@ -352,19 +374,17 @@ fn resolve_engine_config(model_dir: &Path) -> Result<EngineConfig<'static>, Stri
         ));
     }
 
-    // Aligner: env var, then well-known locations
+    // Aligner: env var, then well-known locations under cache_base
     let aligner_dir: PathBuf = if let Ok(p) = std::env::var("BEE_ALIGNER_DIR") {
         PathBuf::from(p)
     } else {
-        let home = dirs::home_dir().ok_or("no home dir")?;
-        let base = home.join("Library/Caches/qwen3-asr");
         let candidates = [
             "mlx-community--Qwen3-ForcedAligner-0.6B-4bit",
             "Qwen--Qwen3-ForcedAligner-0.6B",
         ];
         candidates
             .iter()
-            .map(|n| base.join(n))
+            .map(|n| cache_base.join(n))
             .find(|p| p.exists())
             .ok_or("forced aligner not found")?
     };
@@ -384,10 +404,11 @@ fn resolve_engine_config(model_dir: &Path) -> Result<EngineConfig<'static>, Stri
 // ── Engine API ──────────────────────────────────────────────────────────
 
 /// # Safety
-/// `model_dir` must be a valid, nul-terminated UTF-8 pointer.
+/// `model_dir` and `paths.cache_dir` must be valid, nul-terminated UTF-8 pointers.
 #[no_mangle]
 pub unsafe extern "C" fn asr_engine_load(
     model_dir: *const c_char,
+    paths: AsrModelPaths,
     out_err: *mut *mut c_char,
 ) -> *mut AsrEngine {
     init_logger();
@@ -399,8 +420,15 @@ pub unsafe extern "C" fn asr_engine_load(
             return std::ptr::null_mut();
         }
     };
+    let cache_base = match unsafe { CStr::from_ptr(paths.cache_dir) }.to_str() {
+        Ok(s) => PathBuf::from(s),
+        Err(e) => {
+            set_err(out_err, &format!("invalid paths.cache_dir: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
 
-    match load_engine(&model_dir) {
+    match load_engine(&model_dir, &cache_base) {
         Ok(engine) => Box::into_raw(Box::new(engine)),
         Err(e) => {
             set_err(out_err, &e);
@@ -409,14 +437,14 @@ pub unsafe extern "C" fn asr_engine_load(
     }
 }
 
-fn load_engine(model_dir: &Path) -> Result<AsrEngine, String> {
+fn load_engine(model_dir: &Path, cache_base: &Path) -> Result<AsrEngine, String> {
     // Cap MLX's Metal buffer cache at 2GB to prevent unbounded memory growth
     bee_transcribe::set_mlx_cache_limit(2 * 1024 * 1024 * 1024);
 
-    let config = resolve_engine_config(model_dir)?;
+    let config = resolve_engine_config(model_dir, cache_base)?;
     let engine = Engine::load(&config).map_err(|e| format!("load engine: {e}"))?;
 
-    let vad_tensors = find_vad_dir().and_then(|d| {
+    let vad_tensors = find_vad_dir(cache_base).and_then(|d| {
         let st_path = d.join("model.safetensors");
         match mlx_rs::Array::load_safetensors(&st_path) {
             Ok(tensors) => {
@@ -438,11 +466,11 @@ fn load_engine(model_dir: &Path) -> Result<AsrEngine, String> {
 }
 
 /// # Safety
-/// `model_id` and `cache_dir` must be valid, nul-terminated UTF-8 pointers.
+/// `model_id` and `paths.cache_dir` must be valid, nul-terminated UTF-8 pointers.
 #[no_mangle]
 pub unsafe extern "C" fn asr_engine_from_pretrained(
     model_id: *const c_char,
-    cache_dir: *const c_char,
+    paths: AsrModelPaths,
     out_err: *mut *mut c_char,
 ) -> *mut AsrEngine {
     init_logger();
@@ -454,16 +482,16 @@ pub unsafe extern "C" fn asr_engine_from_pretrained(
             return std::ptr::null_mut();
         }
     };
-    let cache_dir = match unsafe { CStr::from_ptr(cache_dir) }.to_str() {
-        Ok(s) => s,
+    let cache_base = match unsafe { CStr::from_ptr(paths.cache_dir) }.to_str() {
+        Ok(s) => PathBuf::from(s),
         Err(e) => {
-            set_err(out_err, &format!("invalid cache_dir: {e}"));
+            set_err(out_err, &format!("invalid paths.cache_dir: {e}"));
             return std::ptr::null_mut();
         }
     };
 
     let dir_name = model_id.replace('/', "--");
-    let model_dir = PathBuf::from(cache_dir).join(&dir_name);
+    let model_dir = cache_base.join(&dir_name);
 
     if !model_dir.exists() {
         set_err(
@@ -473,7 +501,7 @@ pub unsafe extern "C" fn asr_engine_from_pretrained(
         return std::ptr::null_mut();
     }
 
-    match load_engine(&model_dir) {
+    match load_engine(&model_dir, &cache_base) {
         Ok(engine) => Box::into_raw(Box::new(engine)),
         Err(e) => {
             set_err(out_err, &e);
@@ -487,7 +515,7 @@ pub extern "C" fn asr_engine_from_gguf(
     _base_repo_id: *const c_char,
     _gguf_repo_id: *const c_char,
     _gguf_filename: *const c_char,
-    _cache_dir: *const c_char,
+    _paths: AsrModelPaths,
     out_err: *mut *mut c_char,
 ) -> *mut AsrEngine {
     set_err(

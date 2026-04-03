@@ -140,7 +140,6 @@ version = "0.1.0"
 dependencies = [
  "bee-transcribe",
  "bee-vad",
- "dirs",
  "env_logger",
  "libc",
  "log",

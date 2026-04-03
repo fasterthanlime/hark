@@ -363,7 +363,7 @@ struct BeeApp: App {
             CTFontManagerRegisterFontsForURL(fontURL as CFURL, .process, nil)
         }
 
-        BeeInputClient.ensureIMERegistered()
+        Task { await BeeInputClient.ensureIMERegistered() }
         state.loadModelAtStartup()
         state.warmUpIME()
         if state.debugEnabled {

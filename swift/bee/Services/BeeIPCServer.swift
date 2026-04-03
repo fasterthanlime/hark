@@ -5,7 +5,7 @@ import VoxRuntime
 
 func beeVoxSocketPath() -> String? {
     FileManager.default.containerURL(
-        forSecurityApplicationGroupIdentifier: "group.fasterthanlime.bee"
+        forSecurityApplicationGroupIdentifier: "B2N6FSRTPV.group.fasterthanlime.bee"
     )?.appendingPathComponent("bee.sock").path
 }
 

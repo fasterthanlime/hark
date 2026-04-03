@@ -20,6 +20,12 @@ final class TranscriptionService: @unchecked Sendable {
     func loadModel(model: STTModelDefinition, cacheDir: String) async throws {
         unloadModel()
 
+        // Point the Rust FFI at our shared group-container log file.
+        let ffiLogPath = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: "B2N6FSRTPV.group.fasterthanlime.bee"
+        )?.appendingPathComponent("bee.log").path ?? "/tmp/bee.log"
+        ffiLogPath.withCString { asr_set_log_path($0) }
+
         let format = model.format
 
         let loadedEngine: OpaquePointer = try await withCheckedThrowingContinuation { continuation in
@@ -27,11 +33,14 @@ final class TranscriptionService: @unchecked Sendable {
                 var err: UnsafeMutablePointer<CChar>?
                 let ptr: OpaquePointer?
 
-                switch format {
-                case .safetensors:
-                    ptr = asr_engine_from_pretrained(model.repoID, cacheDir, &err)
-                case .gguf(let ggufRepoID, let ggufFilename, let baseRepoID):
-                    ptr = asr_engine_from_gguf(baseRepoID, ggufRepoID, ggufFilename, cacheDir, &err)
+                ptr = cacheDir.withCString { cacheDirPtr in
+                    let paths = AsrModelPaths(cache_dir: cacheDirPtr)
+                    switch format {
+                    case .safetensors:
+                        return asr_engine_from_pretrained(model.repoID, paths, &err)
+                    case .gguf(let ggufRepoID, let ggufFilename, let baseRepoID):
+                        return asr_engine_from_gguf(baseRepoID, ggufRepoID, ggufFilename, paths, &err)
+                    }
                 }
 
                 if let ptr {

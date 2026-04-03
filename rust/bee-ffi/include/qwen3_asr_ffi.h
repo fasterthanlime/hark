@@ -42,19 +42,30 @@ typedef struct {
 } AsrFeedResult;
 
 /*
+ * Paths the engine uses to locate model files.
+ * cache_dir: base directory containing all model subdirectories
+ *            (main model, VAD, aligner). Required; must not be NULL.
+ */
+typedef struct {
+    const char *cache_dir;
+} AsrModelPaths;
+
+/*
  * Load a model from disk. Returns NULL on error; if out_err is non-NULL,
  * *out_err is set to a message string (free with asr_string_free).
  */
-AsrEngine *asr_engine_load(const char *model_dir, char **out_err);
+AsrEngine *asr_engine_load(const char *model_dir,
+                            AsrModelPaths paths,
+                            char **out_err);
 
 /*
  * Download a model from HuggingFace (if not cached) and load it.
  * model_id: e.g. "Qwen/Qwen3-ASR-0.6B"
- * cache_dir: local directory for caching model files.
+ * paths.cache_dir: local directory for caching model files.
  * Returns NULL on error (check *out_err). Free with asr_engine_free.
  */
 AsrEngine *asr_engine_from_pretrained(const char *model_id,
-                                      const char *cache_dir,
+                                      AsrModelPaths paths,
                                       char **out_err);
 
 /*
@@ -62,13 +73,13 @@ AsrEngine *asr_engine_from_pretrained(const char *model_id,
  * base_repo_id: full-precision repo for config+tokenizer (e.g. "Qwen/Qwen3-ASR-1.7B")
  * gguf_repo_id: repo hosting GGUF files (e.g. "Alkd/qwen3-asr-gguf")
  * gguf_filename: specific file (e.g. "qwen3_asr_1.7b_q4_k.gguf")
- * cache_dir: local directory for caching model files.
+ * paths.cache_dir: local directory for caching model files.
  * Returns NULL on error (check *out_err). Free with asr_engine_free.
  */
 AsrEngine *asr_engine_from_gguf(const char *base_repo_id,
                                  const char *gguf_repo_id,
                                  const char *gguf_filename,
-                                 const char *cache_dir,
+                                 AsrModelPaths paths,
                                  char **out_err);
 
 /*
@@ -142,6 +153,12 @@ void asr_feed_result_free(AsrFeedResult result);
 
 /* Free a string returned by any asr_* function. NULL-safe. */
 void asr_string_free(char *s);
+
+/*
+ * Set the file path for FFI diagnostic logs. Call once before loading any engine.
+ * Pass NULL to disable file logging (the default).
+ */
+void asr_set_log_path(const char *path);
 
 #ifdef __cplusplus
 }

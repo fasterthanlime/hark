@@ -949,24 +949,31 @@ enum SessionResult: Sendable {
     case committed(id: UUID, text: String, submitted: Bool)
 }
 
+private func beeLogPath() -> String {
+    FileManager.default.containerURL(
+        forSecurityApplicationGroupIdentifier: "B2N6FSRTPV.group.fasterthanlime.bee"
+    )?.appendingPathComponent("bee.log").path ?? "/tmp/bee.log"
+}
+
 /// Log to the shared bee log file.
 func beeLog(_ msg: String) {
+    let path = beeLogPath()
     let ts = ProcessInfo.processInfo.systemUptime
     let line = String(format: "[%.3f] APP: %@\n", ts, msg)
     if let data = line.data(using: .utf8),
-        let fh = FileHandle(forWritingAtPath: "/tmp/bee.log")
+        let fh = FileHandle(forWritingAtPath: path)
     {
         fh.seekToEndOfFile()
         fh.write(data)
         fh.closeFile()
     } else if let data = line.data(using: .utf8) {
-        try? data.write(to: URL(fileURLWithPath: "/tmp/bee.log"))
+        try? data.write(to: URL(fileURLWithPath: path))
     }
 }
 
 /// Simple file logger for debugging IME text flow.
 private final class IMELog: Sendable {
-    private let path = "/tmp/bee.log"
+    private let path = beeLogPath()
 
     init() {
         // Don't truncate — shared log file

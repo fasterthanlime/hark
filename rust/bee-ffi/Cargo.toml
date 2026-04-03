@@ -10,7 +10,6 @@ crate-type = ["staticlib"]
 bee-transcribe = { path = "../bee-transcribe" }
 bee-vad = { path = "../bee-vad" }
 mlx-rs.workspace = true
-dirs = "6"
 log = "0.4"
 env_logger = "0.11"
 serde_json = "1"
