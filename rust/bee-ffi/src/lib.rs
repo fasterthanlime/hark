@@ -46,7 +46,12 @@ pub struct AsrEngineStats {
 
 impl Default for AsrEngineStats {
     fn default() -> Self {
-        Self { cpu_percent: 0.0, gpu_percent: 0.0, vram_used_mb: 0.0, ram_used_mb: 0.0 }
+        Self {
+            cpu_percent: 0.0,
+            gpu_percent: 0.0,
+            vram_used_mb: 0.0,
+            ram_used_mb: 0.0,
+        }
     }
 }
 
@@ -87,10 +92,10 @@ impl StatsSampler {
                     let (gpu_raw, vram_raw) = sample_gpu_iokit().unwrap_or((0.0, 0.0));
 
                     let a = Self::ALPHA;
-                    smooth.cpu_percent  = a * cpu_raw  + (1.0 - a) * smooth.cpu_percent;
-                    smooth.gpu_percent  = a * gpu_raw  + (1.0 - a) * smooth.gpu_percent;
+                    smooth.cpu_percent = a * cpu_raw + (1.0 - a) * smooth.cpu_percent;
+                    smooth.gpu_percent = a * gpu_raw + (1.0 - a) * smooth.gpu_percent;
                     smooth.vram_used_mb = a * vram_raw + (1.0 - a) * smooth.vram_used_mb;
-                    smooth.ram_used_mb  = a * ram_raw  + (1.0 - a) * smooth.ram_used_mb;
+                    smooth.ram_used_mb = a * ram_raw + (1.0 - a) * smooth.ram_used_mb;
 
                     if let Ok(mut s) = shared.lock() {
                         *s = smooth;
@@ -111,7 +116,7 @@ fn process_cpu_us() -> u64 {
         let mut usage: libc::rusage = std::mem::zeroed();
         libc::getrusage(libc::RUSAGE_SELF, &mut usage);
         let user = usage.ru_utime.tv_sec as u64 * 1_000_000 + usage.ru_utime.tv_usec as u64;
-        let sys  = usage.ru_stime.tv_sec as u64 * 1_000_000 + usage.ru_stime.tv_usec as u64;
+        let sys = usage.ru_stime.tv_sec as u64 * 1_000_000 + usage.ru_stime.tv_usec as u64;
         user + sys
     }
 }
@@ -158,7 +163,11 @@ fn process_ram_mb() -> f32 {
             &mut info as *mut _ as *mut std::ffi::c_void,
             std::mem::size_of::<ProcTaskinfo>() as i32,
         );
-        if ret > 0 { info.pti_resident_size as f32 / (1024.0 * 1024.0) } else { 0.0 }
+        if ret > 0 {
+            info.pti_resident_size as f32 / (1024.0 * 1024.0)
+        } else {
+            0.0
+        }
     }
 }
 
@@ -193,10 +202,7 @@ mod iokit {
             c_str: *const c_char,
             encoding: u32,
         ) -> *mut c_void;
-        pub fn CFDictionaryGetValue(
-            the_dict: *const c_void,
-            key: *const c_void,
-        ) -> *const c_void;
+        pub fn CFDictionaryGetValue(the_dict: *const c_void, key: *const c_void) -> *const c_void;
         pub fn CFNumberGetValue(
             number: *const c_void,
             the_type: i32,
@@ -215,13 +221,21 @@ fn cf_str(s: &str) -> *mut std::ffi::c_void {
 fn cf_dict_i64(dict: *const std::ffi::c_void, key: &str) -> Option<i64> {
     use iokit::*;
     let k = cf_str(key);
-    if k.is_null() { return None; }
+    if k.is_null() {
+        return None;
+    }
     let val = unsafe { CFDictionaryGetValue(dict, k) };
     unsafe { CFRelease(k) };
-    if val.is_null() { return None; }
+    if val.is_null() {
+        return None;
+    }
     let mut out: i64 = 0;
     unsafe {
-        CFNumberGetValue(val, K_CF_NUMBER_SINT64_TYPE, &mut out as *mut _ as *mut std::ffi::c_void);
+        CFNumberGetValue(
+            val,
+            K_CF_NUMBER_SINT64_TYPE,
+            &mut out as *mut _ as *mut std::ffi::c_void,
+        );
     }
     Some(out)
 }
@@ -231,8 +245,7 @@ fn sample_gpu_iokit() -> Option<(f32, f32)> {
     use std::ffi::CString;
     unsafe {
         let service_name = CString::new("AGXAccelerator").ok()?;
-        let service =
-            IOServiceGetMatchingService(0, IOServiceMatching(service_name.as_ptr()));
+        let service = IOServiceGetMatchingService(0, IOServiceMatching(service_name.as_ptr()));
         if service == IO_OBJECT_NULL {
             return None;
         }
@@ -357,10 +370,17 @@ fn find_vad_dir(cache_base: &Path) -> Option<PathBuf> {
         }
     }
     let dir = cache_base.join("aitytech--Silero-VAD-v5-MLX");
-    if dir.exists() { Some(dir) } else { None }
+    if dir.exists() {
+        Some(dir)
+    } else {
+        None
+    }
 }
 
-fn resolve_engine_config(model_dir: &Path, cache_base: &Path) -> Result<EngineConfig<'static>, String> {
+fn resolve_engine_config(
+    model_dir: &Path,
+    cache_base: &Path,
+) -> Result<EngineConfig<'static>, String> {
     // Tokenizer: env var, then model_dir/tokenizer.json
     let tokenizer_path: PathBuf = if let Ok(p) = std::env::var("BEE_TOKENIZER_PATH") {
         PathBuf::from(p)

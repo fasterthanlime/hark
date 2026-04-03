@@ -19,8 +19,7 @@ struct BeemlServiceInner {
 
 impl BeeMl for BeeMlService {
     async fn transcribe_wav(&self, wav_bytes: Vec<u8>) -> Result<TranscribeWavResult, String> {
-        let samples = bee_transcribe::decode_wav(&wav_bytes)
-            .map_err(|e| e.to_string())?;
+        let samples = bee_transcribe::decode_wav(&wav_bytes).map_err(|e| e.to_string())?;
 
         let mut session = self.inner.engine.session(SessionOptions::default());
 
@@ -83,7 +82,8 @@ async fn main() -> Result<()> {
         model_dir: &model_dir,
         tokenizer_path: &tokenizer_path,
         aligner_dir: &aligner_dir,
-    }).context("loading engine")?;
+    })
+    .context("loading engine")?;
 
     let handler = BeeMlService {
         inner: Arc::new(BeemlServiceInner { engine }),

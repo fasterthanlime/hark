@@ -58,6 +58,7 @@ mod tests {
     use super::*;
     use crate::phonetic_index::{build_index, query_index, RetrievalQuery};
     use crate::phonetic_lexicon::LexiconAlias;
+    use crate::word_split::count_sentence_words;
 
     fn alias(alias_id: u32, term: &str, alias_text: &str, ipa: &str) -> LexiconAlias {
         let ipa_tokens = crate::prototype::parse_reviewed_ipa(ipa);
@@ -68,7 +69,7 @@ mod tests {
             alias_source: AliasSource::Canonical,
             reduced_ipa_tokens: crate::phonetic_lexicon::reduce_ipa_tokens(&ipa_tokens),
             ipa_tokens: ipa_tokens.clone(),
-            token_count: alias_text.split_whitespace().count() as u8,
+            token_count: count_sentence_words(alias_text) as u8,
             phone_count: ipa_tokens.len() as u8,
             identifier_flags: Default::default(),
         }

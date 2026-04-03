@@ -17,14 +17,18 @@ extern "C" {
 /// Release unused MLX Metal buffers from the pool back to the system.
 /// Safe to call concurrently — only frees buffers with no live references.
 pub fn clear_mlx_cache() {
-    unsafe { mlx_clear_cache(); }
+    unsafe {
+        mlx_clear_cache();
+    }
 }
 
 /// Set the MLX Metal buffer cache limit. Buffers beyond this are returned
 /// to the system instead of being pooled for reuse.
 pub fn set_mlx_cache_limit(limit: usize) -> usize {
     let mut prev = 0usize;
-    unsafe { mlx_set_cache_limit(&mut prev, limit); }
+    unsafe {
+        mlx_set_cache_limit(&mut prev, limit);
+    }
     prev
 }
 
@@ -325,7 +329,9 @@ impl<'a> Session<'a> {
         }
 
         // Align any remaining uncommitted text
-        let remaining_text = self.engine.tokenizer
+        let remaining_text = self
+            .engine
+            .tokenizer
             .decode(&self.token_ids, true)
             .unwrap_or_default();
         if !remaining_text.is_empty() && !self.audio.is_empty() {
@@ -355,10 +361,10 @@ impl<'a> Session<'a> {
         let mel = Array::from_slice(&mel_data, &[n_mels as i32, n_frames as i32]);
 
         // Encode audio (incremental)
-        let audio_features =
-            self.engine
-                .model
-                .encode_incremental(&mel, &mut self.encoder_cache)?;
+        let audio_features = self
+            .engine
+            .model
+            .encode_incremental(&mel, &mut self.encoder_cache)?;
         let audio_features = mlx_rs::ops::expand_dims(&audio_features, 0)?;
         // Force evaluation so encoder intermediates can be freed
         audio_features.eval()?;
@@ -436,12 +442,17 @@ impl<'a> Session<'a> {
         }
 
         let commit_count = self.options.commit_token_count;
-        let commit_text = self.engine.tokenizer
+        let commit_text = self
+            .engine
+            .tokenizer
             .decode(&self.token_ids[..commit_count], true)
             .unwrap_or_default();
 
         // Run forced aligner to find precise audio boundary
-        let items = self.engine.aligner.align(&self.audio, &commit_text)
+        let items = self
+            .engine
+            .aligner
+            .align(&self.audio, &commit_text)
             .map_err(|e| Exception::custom(format!("aligner: {e}")))?;
 
         if items.is_empty() {
@@ -500,7 +511,11 @@ impl<'a> Session<'a> {
     /// within the same full decode.
     fn make_update(&self) -> Update {
         let all_ids = self.full_token_ids();
-        let text = self.engine.tokenizer.decode(&all_ids, true).unwrap_or_default();
+        let text = self
+            .engine
+            .tokenizer
+            .decode(&all_ids, true)
+            .unwrap_or_default();
 
         // Committed length = decode committed tokens in the same context
         let committed_len = if self.committed_tokens.is_empty() {
@@ -509,7 +524,9 @@ impl<'a> Session<'a> {
             // Decode committed portion to find its length in the full string.
             // Since the full decode has the same prefix, the committed part
             // is always the first N characters.
-            let committed_text = self.engine.tokenizer
+            let committed_text = self
+                .engine
+                .tokenizer
                 .decode(&self.committed_tokens, true)
                 .unwrap_or_default();
             committed_text.len()
@@ -551,9 +568,7 @@ fn find_word_boundary(
     while n > 0 {
         let text = tokenizer.decode(&token_ids[..n], true).unwrap_or_default();
         let trimmed = text.trim_end();
-        if trimmed.is_empty()
-            || matches!(trimmed.chars().last(), Some(c) if !c.is_alphanumeric())
-        {
+        if trimmed.is_empty() || matches!(trimmed.chars().last(), Some(c) if !c.is_alphanumeric()) {
             return Some((n, text));
         }
         n -= 1;
@@ -601,7 +616,8 @@ pub fn decode_wav(bytes: &[u8]) -> Result<Vec<f32>, mlx_rs::error::Exception> {
             let mut acc = 0.0f32;
             let mut idx = 0usize;
             for sample in reader.samples::<i32>() {
-                acc += sample.map_err(|e| mlx_rs::error::Exception::custom(format!("{e}")))? as f32 / scale;
+                acc += sample.map_err(|e| mlx_rs::error::Exception::custom(format!("{e}")))? as f32
+                    / scale;
                 idx += 1;
                 if idx == channels {
                     mono.push(acc / channels as f32);
@@ -618,4 +634,3 @@ pub fn decode_wav(bytes: &[u8]) -> Result<Vec<f32>, mlx_rs::error::Exception> {
 
     Ok(mono)
 }
-

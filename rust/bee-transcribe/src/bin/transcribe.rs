@@ -17,8 +17,8 @@ fn main() -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("BEE_ASR_MODEL_DIR not set"))?;
     let tokenizer_path = std::env::var("BEE_TOKENIZER_PATH")
         .map_err(|_| anyhow::anyhow!("BEE_TOKENIZER_PATH not set"))?;
-    let aligner_dir = std::env::var("BEE_ALIGNER_DIR")
-        .map_err(|_| anyhow::anyhow!("BEE_ALIGNER_DIR not set"))?;
+    let aligner_dir =
+        std::env::var("BEE_ALIGNER_DIR").map_err(|_| anyhow::anyhow!("BEE_ALIGNER_DIR not set"))?;
     let vad_dir = std::env::var("BEE_VAD_DIR").ok();
 
     // Load engine
@@ -43,12 +43,24 @@ fn main() -> anyhow::Result<()> {
 
     // Create session with env var overrides
     let mut options = SessionOptions::default();
-    if let Ok(v) = std::env::var("BEE_CHUNK_DURATION") { options.chunk_duration = v.parse().unwrap(); }
-    if let Ok(v) = std::env::var("BEE_VAD_THRESHOLD") { options.vad_threshold = v.parse().unwrap(); }
-    if let Ok(v) = std::env::var("BEE_ROLLBACK_TOKENS") { options.rollback_tokens = v.parse().unwrap(); }
-    if let Ok(v) = std::env::var("BEE_COMMIT_TOKENS") { options.commit_token_count = v.parse().unwrap(); }
-    if let Ok(v) = std::env::var("BEE_MAX_TOKENS_STREAMING") { options.max_tokens_streaming = v.parse().unwrap(); }
-    if let Ok(v) = std::env::var("BEE_MAX_TOKENS_FINAL") { options.max_tokens_final = v.parse().unwrap(); }
+    if let Ok(v) = std::env::var("BEE_CHUNK_DURATION") {
+        options.chunk_duration = v.parse().unwrap();
+    }
+    if let Ok(v) = std::env::var("BEE_VAD_THRESHOLD") {
+        options.vad_threshold = v.parse().unwrap();
+    }
+    if let Ok(v) = std::env::var("BEE_ROLLBACK_TOKENS") {
+        options.rollback_tokens = v.parse().unwrap();
+    }
+    if let Ok(v) = std::env::var("BEE_COMMIT_TOKENS") {
+        options.commit_token_count = v.parse().unwrap();
+    }
+    if let Ok(v) = std::env::var("BEE_MAX_TOKENS_STREAMING") {
+        options.max_tokens_streaming = v.parse().unwrap();
+    }
+    if let Ok(v) = std::env::var("BEE_MAX_TOKENS_FINAL") {
+        options.max_tokens_final = v.parse().unwrap();
+    }
     let chunk_samples = (options.chunk_duration * 16000.0) as usize;
     let mut session = engine.session(options);
 
@@ -63,7 +75,10 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    println!("\n--- Streaming (chunk={:.0}ms) ---\n", chunk_samples as f64 / 16.0);
+    println!(
+        "\n--- Streaming (chunk={:.0}ms) ---\n",
+        chunk_samples as f64 / 16.0
+    );
 
     let t_total = Instant::now();
     let mut chunk_idx = 0;
@@ -101,8 +116,14 @@ fn main() -> anyhow::Result<()> {
     let final_update = session.finish()?;
     let finish_ms = t0.elapsed().as_millis();
 
-    println!("\n--- Final ({finish_ms:.0}ms, total {:.0}ms) ---", t_total.elapsed().as_millis());
-    println!("  committed: {:?}", &final_update.text[..final_update.committed_len]);
+    println!(
+        "\n--- Final ({finish_ms:.0}ms, total {:.0}ms) ---",
+        t_total.elapsed().as_millis()
+    );
+    println!(
+        "  committed: {:?}",
+        &final_update.text[..final_update.committed_len]
+    );
     println!("  full:      {:?}", final_update.text);
 
     if !final_update.alignments.is_empty() {

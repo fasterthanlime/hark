@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::phonetic_lexicon::reduce_ipa_tokens;
+use crate::word_split::sentence_word_tokens;
+use crate::word_split::SentenceWordToken;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptAlignmentToken {
@@ -36,13 +38,6 @@ pub struct TranscriptSpan {
     pub reduced_ipa_tokens: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TranscriptToken {
-    char_start: usize,
-    char_end: usize,
-    text: String,
-}
-
 pub fn enumerate_transcript_spans_with<F, A>(
     transcript: &str,
     max_span_words: usize,
@@ -53,7 +48,7 @@ where
     F: FnMut(&str) -> Option<Vec<String>>,
     A: TranscriptAlignmentTiming,
 {
-    let tokens = tokenize_transcript(transcript);
+    let tokens = sentence_word_tokens(transcript);
     if tokens.is_empty() {
         return Vec::new();
     }
@@ -80,7 +75,7 @@ where
 
 fn span_from_tokens<F, A>(
     transcript: &str,
-    tokens: &[TranscriptToken],
+    tokens: &[SentenceWordToken],
     token_start: usize,
     token_end: usize,
     alignments: Option<&[A]>,
@@ -130,42 +125,10 @@ where
     })
 }
 
-fn tokenize_transcript(transcript: &str) -> Vec<TranscriptToken> {
-    let mut tokens = Vec::new();
-    let mut current_start = None;
-
-    for (idx, ch) in transcript.char_indices() {
-        if is_word_char(ch) {
-            current_start.get_or_insert(idx);
-            continue;
-        }
-        if let Some(start) = current_start.take() {
-            tokens.push(TranscriptToken {
-                char_start: start,
-                char_end: idx,
-                text: transcript[start..idx].to_string(),
-            });
-        }
-    }
-
-    if let Some(start) = current_start {
-        tokens.push(TranscriptToken {
-            char_start: start,
-            char_end: transcript.len(),
-            text: transcript[start..].to_string(),
-        });
-    }
-
-    tokens
-}
-
-fn is_word_char(ch: char) -> bool {
-    ch.is_alphanumeric() || matches!(ch, '_' | '\'' | '-')
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::word_split::split_sentence_words;
 
     #[test]
     fn enumerate_transcript_spans_tracks_char_ranges() {
@@ -173,7 +136,7 @@ mod tests {
             "for arc sixty four",
             4,
             None,
-            |text| Some(text.split_whitespace().map(|s| s.to_string()).collect()),
+            |text| Some(split_sentence_words(text)),
         );
         let whole = spans
             .iter()

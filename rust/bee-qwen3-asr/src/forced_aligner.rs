@@ -8,6 +8,7 @@
 
 use std::path::Path;
 
+use bee_phonetic::split_sentence_words;
 use facet::Facet;
 use mlx_rs::error::Exception;
 use mlx_rs::module::{Module, ModuleParametersExt};
@@ -91,12 +92,8 @@ impl ForcedAligner {
     }
 
     /// Run forced alignment: given audio samples and known text, produce word-level timestamps.
-    pub fn align(
-        &self,
-        samples: &[f32],
-        text: &str,
-    ) -> Result<Vec<ForcedAlignItem>, Exception> {
-        let words = split_words(text);
+    pub fn align(&self, samples: &[f32], text: &str) -> Result<Vec<ForcedAlignItem>, Exception> {
+        let words = split_sentence_words(text);
         if words.is_empty() {
             return Ok(vec![]);
         }
@@ -212,36 +209,6 @@ impl ForcedAligner {
 
         Ok((tokens, audio_start_pos))
     }
-}
-
-// ── Word splitting ──────────────────────────────────────────────────────
-
-fn is_cjk_char(ch: char) -> bool {
-    let code = ch as u32;
-    (0x4E00..=0x9FFF).contains(&code)
-        || (0x3400..=0x4DBF).contains(&code)
-        || (0x20000..=0x2A6DF).contains(&code)
-}
-
-fn split_words(text: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    for segment in text.split_whitespace() {
-        let mut buf = String::new();
-        for ch in segment.chars() {
-            if is_cjk_char(ch) {
-                if !buf.is_empty() {
-                    tokens.push(std::mem::take(&mut buf));
-                }
-                tokens.push(ch.to_string());
-            } else {
-                buf.push(ch);
-            }
-        }
-        if !buf.is_empty() {
-            tokens.push(buf);
-        }
-    }
-    tokens
 }
 
 // ── LIS-based timestamp smoothing ───────────────────────────────────────

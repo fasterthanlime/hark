@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{ReviewedConfusionSurfaceRow, VocabRow};
+use crate::word_split::count_sentence_words;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum AliasSource {
@@ -41,39 +42,40 @@ pub fn build_phonetic_lexicon(
     let mut next_alias_id = 0u32;
     let mut seen = std::collections::HashSet::new();
 
-    let mut add_alias = |term: &str, alias_text: &str, alias_source: AliasSource, ipa_text: &str| {
-        let alias_text = alias_text.trim();
-        if alias_text.is_empty() {
-            return;
-        }
-        let ipa_tokens = crate::prototype::parse_reviewed_ipa(ipa_text);
-        if ipa_tokens.is_empty() {
-            return;
-        }
-        let key = (
-            term.trim().to_ascii_lowercase(),
-            alias_text.to_ascii_lowercase(),
-            alias_source,
-            ipa_tokens.clone(),
-        );
-        if !seen.insert(key) {
-            return;
-        }
-        let token_count = alias_text.split_whitespace().count().min(u8::MAX as usize) as u8;
-        let phone_count = ipa_tokens.len().min(u8::MAX as usize) as u8;
-        out.push(LexiconAlias {
-            alias_id: next_alias_id,
-            term: term.trim().to_string(),
-            alias_text: alias_text.to_string(),
-            alias_source,
-            reduced_ipa_tokens: reduce_ipa_tokens(&ipa_tokens),
-            ipa_tokens,
-            token_count,
-            phone_count,
-            identifier_flags: derive_identifier_flags(alias_text),
-        });
-        next_alias_id += 1;
-    };
+    let mut add_alias =
+        |term: &str, alias_text: &str, alias_source: AliasSource, ipa_text: &str| {
+            let alias_text = alias_text.trim();
+            if alias_text.is_empty() {
+                return;
+            }
+            let ipa_tokens = crate::prototype::parse_reviewed_ipa(ipa_text);
+            if ipa_tokens.is_empty() {
+                return;
+            }
+            let key = (
+                term.trim().to_ascii_lowercase(),
+                alias_text.to_ascii_lowercase(),
+                alias_source,
+                ipa_tokens.clone(),
+            );
+            if !seen.insert(key) {
+                return;
+            }
+            let token_count = count_sentence_words(alias_text).min(u8::MAX as usize) as u8;
+            let phone_count = ipa_tokens.len().min(u8::MAX as usize) as u8;
+            out.push(LexiconAlias {
+                alias_id: next_alias_id,
+                term: term.trim().to_string(),
+                alias_text: alias_text.to_string(),
+                alias_source,
+                reduced_ipa_tokens: reduce_ipa_tokens(&ipa_tokens),
+                ipa_tokens,
+                token_count,
+                phone_count,
+                identifier_flags: derive_identifier_flags(alias_text),
+            });
+            next_alias_id += 1;
+        };
 
     for row in vocab {
         let Some(reviewed_ipa) = row.reviewed_ipa.as_deref() else {
@@ -86,7 +88,12 @@ pub fn build_phonetic_lexicon(
                 let Some(reviewed_ipa) = form.reviewed_ipa.as_deref() else {
                     continue;
                 };
-                add_alias(&row.term, &form.surface_form, AliasSource::Confusion, reviewed_ipa);
+                add_alias(
+                    &row.term,
+                    &form.surface_form,
+                    AliasSource::Confusion,
+                    reviewed_ipa,
+                );
             }
         }
     }
@@ -169,7 +176,11 @@ mod tests {
         }
     }
 
-    fn confusion(term: &str, surface_form: &str, reviewed_ipa: &str) -> ReviewedConfusionSurfaceRow {
+    fn confusion(
+        term: &str,
+        surface_form: &str,
+        reviewed_ipa: &str,
+    ) -> ReviewedConfusionSurfaceRow {
         ReviewedConfusionSurfaceRow {
             id: 1,
             term: term.to_string(),
@@ -191,14 +202,24 @@ mod tests {
         )];
         let confusion_forms = HashMap::from([(
             "AArch64".to_string(),
-            vec![confusion("AArch64", "ARC sixty four", "ɑːɹ s ɪ k s t i f ɔ ɹ")],
+            vec![confusion(
+                "AArch64",
+                "ARC sixty four",
+                "ɑːɹ s ɪ k s t i f ɔ ɹ",
+            )],
         )]);
 
         let aliases = build_phonetic_lexicon(&vocab, &confusion_forms);
         assert_eq!(aliases.len(), 3, "{aliases:#?}");
-        assert!(aliases.iter().any(|a| a.alias_source == AliasSource::Canonical));
-        assert!(aliases.iter().any(|a| a.alias_source == AliasSource::Spoken));
-        assert!(aliases.iter().any(|a| a.alias_source == AliasSource::Confusion));
+        assert!(aliases
+            .iter()
+            .any(|a| a.alias_source == AliasSource::Canonical));
+        assert!(aliases
+            .iter()
+            .any(|a| a.alias_source == AliasSource::Spoken));
+        assert!(aliases
+            .iter()
+            .any(|a| a.alias_source == AliasSource::Confusion));
     }
 
     #[test]

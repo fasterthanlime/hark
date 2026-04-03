@@ -4,6 +4,7 @@ pub mod phonetic_verify;
 pub mod prototype;
 pub mod region_proposal;
 pub mod types;
+pub mod word_split;
 
 pub use phonetic_index::{
     build_index, query_index, IndexView, PhoneticIndex, RetrievalCandidate, RetrievalQuery,
@@ -19,3 +20,6 @@ pub use region_proposal::{
     TranscriptSpan,
 };
 pub use types::{ReviewedConfusionSurfaceRow, VocabRow};
+pub use word_split::{
+    count_sentence_words, sentence_word_tokens, split_sentence_words, SentenceWordToken,
+};

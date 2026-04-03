@@ -160,6 +160,7 @@ name = "bee-qwen3-asr"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bee-phonetic",
  "bee-vad",
  "dirs",
  "env_logger",

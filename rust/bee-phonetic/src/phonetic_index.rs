@@ -79,10 +79,9 @@ pub fn build_index(aliases: Vec<LexiconAlias>) -> PhoneticIndex {
                 if !seen_grams.insert(gram.clone()) {
                     continue;
                 }
-                postings
-                    .entry((view, gram))
-                    .or_default()
-                    .push(Posting { alias_id: alias.alias_id });
+                postings.entry((view, gram)).or_default().push(Posting {
+                    alias_id: alias.alias_id,
+                });
             }
         }
     }
@@ -104,8 +103,16 @@ pub fn query_index(
     let mut accum: HashMap<u32, CandidateAccumulator> = HashMap::new();
 
     for (view, grams, alias_tokens) in [
-        (IndexView::RawIpa2, qgrams(&query.ipa_tokens, 2), &query.ipa_tokens),
-        (IndexView::RawIpa3, qgrams(&query.ipa_tokens, 3), &query.ipa_tokens),
+        (
+            IndexView::RawIpa2,
+            qgrams(&query.ipa_tokens, 2),
+            &query.ipa_tokens,
+        ),
+        (
+            IndexView::RawIpa3,
+            qgrams(&query.ipa_tokens, 3),
+            &query.ipa_tokens,
+        ),
         (
             IndexView::ReducedIpa2,
             qgrams(&query.reduced_ipa_tokens, 2),
@@ -156,7 +163,12 @@ pub fn query_index(
                 qgram_overlap: hit.overlap,
                 token_count_match: alias.token_count == query.token_count,
                 phone_count_delta: alias.phone_count as i16 - query_phone_count as i16,
-                coarse_score: coarse_score(hit.best_score, alias, query_phone_count, query.token_count),
+                coarse_score: coarse_score(
+                    hit.best_score,
+                    alias,
+                    query_phone_count,
+                    query.token_count,
+                ),
             })
         })
         .collect::<Vec<_>>();
@@ -187,10 +199,7 @@ pub fn qgrams(tokens: &[String], q: usize) -> Vec<String> {
     if bounded.len() < q {
         return vec![bounded.join(" ")];
     }
-    bounded
-        .windows(q)
-        .map(|window| window.join(" "))
-        .collect()
+    bounded.windows(q).map(|window| window.join(" ")).collect()
 }
 
 fn q_from_view(view: IndexView) -> usize {
@@ -233,8 +242,8 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::types::{ReviewedConfusionSurfaceRow, VocabRow};
     use crate::phonetic_lexicon::build_phonetic_lexicon;
+    use crate::types::{ReviewedConfusionSurfaceRow, VocabRow};
 
     fn row_with_reviewed_ipa(term: &str, spoken: &str, reviewed_ipa: &str) -> VocabRow {
         VocabRow {
@@ -248,7 +257,11 @@ mod tests {
         }
     }
 
-    fn confusion(term: &str, surface_form: &str, reviewed_ipa: &str) -> ReviewedConfusionSurfaceRow {
+    fn confusion(
+        term: &str,
+        surface_form: &str,
+        reviewed_ipa: &str,
+    ) -> ReviewedConfusionSurfaceRow {
         ReviewedConfusionSurfaceRow {
             id: 1,
             term: term.to_string(),
@@ -284,7 +297,11 @@ mod tests {
         ];
         let confusion_forms = HashMap::from([(
             "AArch64".to_string(),
-            vec![confusion("AArch64", "ARC sixty four", "ɑːɹ s ɪ k s t i f ɔ ɹ")],
+            vec![confusion(
+                "AArch64",
+                "ARC sixty four",
+                "ɑːɹ s ɪ k s t i f ɔ ɹ",
+            )],
         )]);
         let aliases = build_phonetic_lexicon(&vocab, &confusion_forms);
         let index = build_index(aliases);
