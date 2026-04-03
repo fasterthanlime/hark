@@ -100,36 +100,48 @@ fn process_cpu_us() -> u64 {
 }
 
 fn process_ram_mb() -> f32 {
-    // mach task_basic_info gives current resident set size without shelling out.
+    // proc_pidinfo(PROC_PIDTASKINFO) gives current resident set size.
     #[repr(C)]
-    struct TaskBasicInfo {
-        suspend_count: u32,
-        virtual_size: usize,
-        resident_size: usize,
-        user_time: [i32; 2],
-        system_time: [i32; 2],
-        policy: i32,
+    struct ProcTaskinfo {
+        pti_virtual_size: u64,
+        pti_resident_size: u64,
+        pti_total_user: u64,
+        pti_total_system: u64,
+        pti_threads_user: u64,
+        pti_threads_system: u64,
+        pti_policy: i32,
+        pti_faults: i32,
+        pti_pageins: i32,
+        pti_cow_faults: i32,
+        pti_messages_sent: i32,
+        pti_messages_received: i32,
+        pti_syscalls_mach: i32,
+        pti_syscalls_unix: i32,
+        pti_csw: i32,
+        pti_threadnum: i32,
+        pti_numrunning: i32,
+        pti_priority: i32,
     }
     extern "C" {
-        static mach_task_self_: u32;
-        fn task_info(
-            target_task: u32,
-            flavor: u32,
-            task_info_out: *mut std::ffi::c_void,
-            task_info_out_cnt: *mut u32,
+        fn proc_pidinfo(
+            pid: i32,
+            flavor: i32,
+            arg: u64,
+            buffer: *mut std::ffi::c_void,
+            buffersize: i32,
         ) -> i32;
     }
-    const TASK_BASIC_INFO: u32 = 5;
+    const PROC_PIDTASKINFO: i32 = 4;
     unsafe {
-        let mut info: TaskBasicInfo = std::mem::zeroed();
-        let mut count = (std::mem::size_of::<TaskBasicInfo>() / 4) as u32;
-        let kr = task_info(
-            mach_task_self_,
-            TASK_BASIC_INFO,
+        let mut info: ProcTaskinfo = std::mem::zeroed();
+        let ret = proc_pidinfo(
+            libc::getpid(),
+            PROC_PIDTASKINFO,
+            0,
             &mut info as *mut _ as *mut std::ffi::c_void,
-            &mut count,
+            std::mem::size_of::<ProcTaskinfo>() as i32,
         );
-        if kr == 0 { info.resident_size as f32 / (1024.0 * 1024.0) } else { 0.0 }
+        if ret > 0 { info.pti_resident_size as f32 / (1024.0 * 1024.0) } else { 0.0 }
     }
 }
 
