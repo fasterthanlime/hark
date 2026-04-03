@@ -6,6 +6,17 @@ import Foundation
 final class BeeInputClient: Sendable {
     private static let beeBundleID = "fasterthanlime.inputmethod.bee"
 
+    /// Returns the real ~/Library/Input Methods/beeInput.app URL.
+    /// In a sandboxed app, homeDirectoryForCurrentUser points to the container,
+    /// so we derive the real Library path from the group container URL instead.
+    static var installedIMEURL: URL? {
+        FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: "B2N6FSRTPV.group.fasterthanlime.bee")?
+            .deletingLastPathComponent()  // Group Containers/<id> → Group Containers
+            .deletingLastPathComponent()  // Group Containers → Library
+            .appendingPathComponent("Input Methods/beeInput.app")
+    }
+
     init() {
         Task { await BeeIPCServer.shared.start() }
     }
@@ -14,25 +25,23 @@ final class BeeInputClient: Sendable {
 
     @discardableResult
     func activate(sessionID: UUID, targetPID: pid_t?) async -> Bool {
+        beeLog("IME ACTIVATE: prepareSession start id=\(sessionID.uuidString.prefix(8))")
+        await BeeIPCServer.shared.prepareDictationSession(
+            sessionId: sessionID.uuidString,
+            targetPid: Int32(targetPID ?? 0)
+        )
+
         if await !MainActor.run(body: { BeeIPCServer.shared.isIMEConnected }) {
-            let installedIME = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Input Methods/beeInput.app")
+            guard let installedIME = Self.installedIMEURL else { return false }
             await Self.launchBeeInputIfNeeded(at: installedIME)
         }
 
-        // Select first so the OS sends activateServer to beeInput before prepareSession arrives.
         beeLog("IME ACTIVATE: TIS SELECT start id=\(sessionID.uuidString.prefix(8))")
         let selected = await Self.selectBeeInputSource()
         guard selected else {
             beeLog("IME ACTIVATE: TIS SELECT failed id=\(sessionID.uuidString.prefix(8))")
             return false
         }
-
-        beeLog("IME ACTIVATE: prepareSession start id=\(sessionID.uuidString.prefix(8))")
-        await BeeIPCServer.shared.prepareDictationSession(
-            sessionId: sessionID.uuidString,
-            targetPid: Int32(targetPID ?? 0)
-        )
 
         beeLog("IME ACTIVATE: done id=\(sessionID.uuidString.prefix(8)), waiting for imeAttach")
         return true
@@ -51,8 +60,10 @@ final class BeeInputClient: Sendable {
 
     func deactivate(caller: String = #function, file: String = #fileID, line: Int = #line) {
         beeLog("IME DEACTIVATE called from \(file):\(line) \(caller)")
-        // Don't deselect — keeping beeInput selected preserves its controller state
-        // so the next session can start immediately without waiting for re-activation.
+        if let source = Self.findBeeInputSource() {
+            let result = TISDeselectInputSource(source)
+            beeLog("TIS DESELECT: \(Self.inputSourceID(source)) result=\(result)")
+        }
     }
 
     static func waitForIMEReady() async -> Bool {
@@ -100,8 +111,10 @@ final class BeeInputClient: Sendable {
     static func ensureIMERegistered() async -> Bool {
         let allProps: [CFString: Any] = [kTISPropertyBundleID: beeBundleID as CFString]
 
-        let installedIME = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Input Methods/beeInput.app")
+        guard let installedIME = Self.installedIMEURL else {
+            beeLog("IME REGISTER: could not resolve group container URL")
+            return false
+        }
 
         guard FileManager.default.fileExists(atPath: installedIME.path) else {
             beeLog("IME REGISTER: beeInput.app not found at \(installedIME.path)")
@@ -121,10 +134,6 @@ final class BeeInputClient: Sendable {
                 beeLog("IME REGISTER: source disabled, enabling")
                 TISEnableInputSource(source)
             }
-            // Pre-select so activateServer fires on the next text-field focus,
-            // before the user ever presses the dictation hotkey.
-            let selectResult = TISSelectInputSource(source)
-            beeLog("IME REGISTER: pre-selected beeInput result=\(selectResult)")
             await launchBeeInputIfNeeded(at: installedIME)
             return true
         }
