@@ -91,82 +91,16 @@ final class BeeInputClient: Sendable {
 
     // MARK: - IME Registration
 
-    private static func bundleVersion(_ url: URL) -> String? {
-        guard let bundle = Bundle(url: url) else { return nil }
-        return bundle.infoDictionary?["CFBundleVersion"] as? String
-    }
-
-    private static func installViaAppleScriptTask(src: String, dst: String, parent: String) async -> Bool {
-        guard let scriptsDir = FileManager.default.urls(
-            for: .applicationScriptsDirectory, in: .userDomainMask).first
-        else {
-            beeLog("IME REGISTER: no application scripts directory")
-            return false
-        }
-        try? FileManager.default.createDirectory(at: scriptsDir, withIntermediateDirectories: true)
-        let scriptURL = scriptsDir.appendingPathComponent("install-beeInput.applescript")
-        let scriptSrc = "do shell script \"rm -rf '\(dst)' && cp -r '\(src)' '\(parent)/'\" with administrator privileges"
-        do {
-            try scriptSrc.write(to: scriptURL, atomically: true, encoding: .utf8)
-            let task = try NSUserAppleScriptTask(url: scriptURL)
-            return await withCheckedContinuation { continuation in
-                task.execute(withAppleEvent: nil, completionHandler: { _, error in
-                    if let error {
-                        beeLog("IME REGISTER: script task failed: \(error)")
-                        continuation.resume(returning: false)
-                    } else {
-                        beeLog("IME REGISTER: installed beeInput.app via NSUserAppleScriptTask")
-                        continuation.resume(returning: true)
-                    }
-                })
-            }
-        } catch {
-            beeLog("IME REGISTER: script setup failed: \(error)")
-            return false
-        }
-    }
-
     @discardableResult
     static func ensureIMERegistered() async -> Bool {
         let allProps: [CFString: Any] = [kTISPropertyBundleID: beeBundleID as CFString]
 
-        let bundledIME = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/Library/Input Methods/beeInput.app")
         let installedIME = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Input Methods/beeInput.app")
 
-        guard FileManager.default.fileExists(atPath: bundledIME.path) else {
-            beeLog("IME REGISTER: beeInput.app not found in bundle")
+        guard FileManager.default.fileExists(atPath: installedIME.path) else {
+            beeLog("IME REGISTER: beeInput.app not found at \(installedIME.path)")
             return false
-        }
-
-        let installedVersion = bundleVersion(installedIME)
-        let bundledVersion = bundleVersion(bundledIME)
-        let needsInstall = installedVersion != bundledVersion
-
-        beeLog("IME REGISTER: installed=\(installedVersion ?? "none") bundled=\(bundledVersion ?? "?") needsInstall=\(needsInstall)")
-
-        if needsInstall {
-            let confirmed = await MainActor.run {
-                let alert = NSAlert()
-                alert.messageText = "Install bee Input Method"
-                alert.informativeText =
-                    "bee needs to install its input method component to enable dictation. This only happens once per update."
-                alert.addButton(withTitle: "Install")
-                alert.addButton(withTitle: "Later")
-                return alert.runModal() == .alertFirstButtonReturn
-            }
-            guard confirmed else {
-                beeLog("IME REGISTER: user deferred install")
-                return false
-            }
-
-            let src = bundledIME.path
-            let dst = installedIME.path
-            let parent = installedIME.deletingLastPathComponent().path
-            guard await installViaAppleScriptTask(src: src, dst: dst, parent: parent) else {
-                return false
-            }
         }
 
         let allSources =
@@ -183,11 +117,6 @@ final class BeeInputClient: Sendable {
                 TISEnableInputSource(source)
             }
             return true
-        }
-
-        guard FileManager.default.fileExists(atPath: installedIME.path) else {
-            beeLog("IME REGISTER: beeInput.app not available for registration")
-            return false
         }
 
         let status = TISRegisterInputSource(installedIME as CFURL)

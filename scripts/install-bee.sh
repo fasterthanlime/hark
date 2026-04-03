@@ -98,8 +98,6 @@ printf '%s\n' "${GREEN}${BOLD}All Swift targets built${RESET}"
 
 run_step "Installing bee to /Applications/bee.app" "rsync -a --delete \"$BUILD_DIR/bee.app/\" /Applications/bee.app/"
 run_step "Copying mlx.metallib into app bundle" "cp \"$MLX_SYS_PREFIX/lib/mlx.metallib\" /Applications/bee.app/Contents/MacOS/mlx.metallib"
-# beeInput is now embedded in bee.app/Contents/Library/Input Methods/ and registered
-# by bee on first launch. Remove the old standalone installation if present.
 run_step "Installing beeInput to ~/Library/Input Methods" \
   "rm -rf \"$INPUT_METHOD_DIR/beeInput.app\" && cp -r \"$BUILD_DIR/beeInput.app\" \"$INPUT_METHOD_DIR/\""
 

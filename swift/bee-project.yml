@@ -75,13 +75,6 @@ targets:
         link: false
       - package: vox
         product: VoxRuntime
-    postBuildScripts:
-      - name: "Embed beeInput Input Method"
-        basedOnDependencyAnalysis: false
-        script: |
-          DEST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Library/Input Methods"
-          mkdir -p "${DEST}"
-          rsync -a --delete "${BUILT_PRODUCTS_DIR}/beeInput.app" "${DEST}/"
 
   beeInput:
     type: application
