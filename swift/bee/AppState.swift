@@ -43,8 +43,6 @@ final class AppState {
     private static let imeContextLostName = NSNotification.Name("fasterthanlime.bee.imeContextLost")
     private static let imeSessionStartedName = NSNotification.Name(
         "fasterthanlime.bee.imeSessionStarted")
-    private static let imeActivationRevokedName = NSNotification.Name(
-        "fasterthanlime.bee.imeActivationRevoked")
 
     private(set) var hotkeyState: HotkeyState = .idle {
         didSet { NotificationCenter.default.post(name: Self.stateChangedNotification, object: nil) }
@@ -943,16 +941,6 @@ final class AppState {
                 }
             }
         )
-        distributedObservers.append(
-            ncLocal.addObserver(
-                forName: Self.imeActivationRevokedName, object: nil, queue: .main
-            ) {
-                [weak self] _ in
-                Task { @MainActor in
-                    self?.handleIMEActivationRevoked()
-                }
-            }
-        )
         workspaceObservers.append(
             nc.addObserver(
                 forName: NSWorkspace.didActivateApplicationNotification,
@@ -1061,11 +1049,6 @@ final class AppState {
         case .idle:
             break
         }
-    }
-
-    private func handleIMEActivationRevoked() {
-        guard imeSessionState == .activating else { return }
-        beeLog("SESSION: IME activation revoked (palette mode — no focus cycle needed)")
     }
 
     private func handleIMESessionStarted(sessionID: UUID?) {

@@ -14,7 +14,6 @@ final class BeeIMESession {
     // State that used to live on the controller
     var currentMarkedText: String = ""
     var autoCommittedPrefix: String = ""
-    var pendingClaimToken: UUID?
 
     init(controller: BeeInputController, pid: pid_t?, clientID: String?) {
         self.controller = controller
@@ -22,18 +21,9 @@ final class BeeIMESession {
         self.clientID = clientID
     }
 
-    // MARK: - Deferred claim
+    // MARK: - Claim
 
-    func startDeferredClaim() {
-        beeInputLog("startDeferredClaim: claiming immediately")
-        performClaim()
-    }
-
-    func cancelPendingClaim() {
-        beeInputLog("cancelPendingClaim: nothing to cancel (immediate claim)")
-    }
-
-    private func performClaim() {
+    func performClaim() {
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
         let expectedPID = BeeBrokerIMEClient.shared.expectedTargetPID
 
@@ -204,7 +194,7 @@ final class BeeIMEBridgeState: NSObject {
         let session = BeeIMESession(controller: controller, pid: pid, clientID: clientID)
         state = .activated(session)
         beeInputLog("state → activated pid=\(pid.map(String.init) ?? "nil")")
-        session.startDeferredClaim()
+        session.performClaim()
     }
 
     func deactivate(_ controller: BeeInputController) {

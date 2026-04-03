@@ -33,9 +33,6 @@ class BeeInputController: IMKInputController {
         let isDictating = bridge.isDictating
         let sessionID = bridge.activeSessionID
 
-        // Cancel any pending claim — the activation was spurious
-        session?.cancelPendingClaim()
-
         let hadMarkedText = !(session?.currentMarkedText.isEmpty ?? true)
         beeInputLog(
             "deactivateServer: session=\(sessionID?.uuidString.prefix(8) ?? "none") hadMarkedText=\(hadMarkedText)"
