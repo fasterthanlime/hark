@@ -151,8 +151,18 @@ final class BeeInputClient: Sendable {
             return
         }
         beeLog("IME LAUNCH: opening \(url.path)")
-        await MainActor.run {
-            NSWorkspace.shared.open(url)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            NSWorkspace.shared.openApplication(
+                at: url,
+                configuration: NSWorkspace.OpenConfiguration()
+            ) { _, error in
+                if let error {
+                    beeLog("IME LAUNCH: failed: \(error)")
+                } else {
+                    beeLog("IME LAUNCH: launched ok")
+                }
+                continuation.resume()
+            }
         }
     }
 
