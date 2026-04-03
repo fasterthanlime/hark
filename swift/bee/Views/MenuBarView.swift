@@ -655,6 +655,7 @@ private struct TranscriptionSettingsView: View {
     @State private var mockGPU: Double = 61
     @State private var mockMemMB: Double = 387
     @State private var mockRamMB: Double = 512
+    @State private var statsTimer: Timer? = nil
 
     var body: some View {
         ScrollView {
@@ -676,16 +677,28 @@ private struct TranscriptionSettingsView: View {
                             }
 
                         HStack(spacing: 12) {
-                            MockStatRow(label: "CPU", value: mockCPU, max: 100, unit: "%", color: statColor(mockCPU, hi: 60, crit: 85))
-                            MockStatRow(label: "GPU", value: mockGPU, max: 100, unit: "%", color: statColor(mockGPU, hi: 60, crit: 85))
-                            MockStatRow(label: "VRAM", value: mockMemMB, max: 16384, unit: "MB", color: statColor(mockMemMB, hi: 8192, crit: 14336))
-                            MockStatRow(label: "RAM", value: mockRamMB, max: 16384, unit: "MB", color: statColor(mockRamMB, hi: 4096, crit: 10240))
+                            CombinedStatWidget(
+                                label1: "CPU", value1: mockCPU, max1: 100, unit1: "%",
+                                color1: statColor(mockCPU, hi: 60, crit: 85),
+                                label2: "RAM", value2: mockRamMB, max2: 16384, unit2: "MB",
+                                color2: statColor(mockRamMB, hi: 4096, crit: 10240)
+                            )
+                            CombinedStatWidget(
+                                label1: "GPU", value1: mockGPU, max1: 100, unit1: "%",
+                                color1: statColor(mockGPU, hi: 60, crit: 85),
+                                label2: "VRAM", value2: mockMemMB, max2: 16384, unit2: "MB",
+                                color2: statColor(mockMemMB, hi: 8192, crit: 14336)
+                            )
                         }
                         .onAppear {
                             updateStats()
-                            Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { _ in
+                            statsTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { _ in
                                 updateStats()
                             }
+                        }
+                        .onDisappear {
+                            statsTimer?.invalidate()
+                            statsTimer = nil
                         }
                     }
                 }
@@ -971,6 +984,23 @@ private struct GeneralSettingsView: View {
         }
     }
 
+}
+
+private struct CombinedStatWidget: View {
+    let label1: String; let value1: Double; let max1: Double; let unit1: String; let color1: Color
+    let label2: String; let value2: Double; let max2: Double; let unit2: String; let color2: Color
+
+    var body: some View {
+        VStack(spacing: 6) {
+            MockStatRow(label: label1, value: value1, max: max1, unit: unit1, color: color1)
+            MockStatRow(label: label2, value: value2, max: max2, unit: unit2, color: color2)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Color.primary.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .frame(maxWidth: .infinity)
+    }
 }
 
 private struct MockStatRow: View {
