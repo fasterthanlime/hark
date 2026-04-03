@@ -115,29 +115,39 @@ final class BeeInputClient: Sendable {
             beeLog("IME REGISTER: could not resolve group container URL")
             return false
         }
+        beeLog("IME REGISTER: installedIME=\(installedIME.path)")
 
-        guard FileManager.default.fileExists(atPath: installedIME.path) else {
-            beeLog("IME REGISTER: beeInput.app not found at \(installedIME.path)")
-            return false
-        }
+        let exists = FileManager.default.fileExists(atPath: installedIME.path)
+        beeLog("IME REGISTER: file exists=\(exists)")
+        guard exists else { return false }
 
         let allSources =
             (TISCreateInputSourceList(allProps as CFDictionary, true)?
                 .takeRetainedValue() as? [TISInputSource]) ?? []
         beeLog("IME REGISTER: found \(allSources.count) source(s) (includeAll=true)")
 
+        for (i, source) in allSources.enumerated() {
+            let sid = inputSourceID(source)
+            let enabled = TISGetInputSourceProperty(source, kTISPropertyInputSourceIsEnabled)
+                .map { Unmanaged<CFNumber>.fromOpaque($0).takeUnretainedValue() as! Bool } ?? false
+            let selected = TISGetInputSourceProperty(source, kTISPropertyInputSourceIsSelected)
+                .map { Unmanaged<CFNumber>.fromOpaque($0).takeUnretainedValue() as! Bool } ?? false
+            beeLog("IME REGISTER:   [\(i)] id=\(sid) enabled=\(enabled) selected=\(selected)")
+        }
+
         if let source = allSources.first {
-            let enabled =
-                TISGetInputSourceProperty(source, kTISPropertyInputSourceIsEnabled)
+            let enabled = TISGetInputSourceProperty(source, kTISPropertyInputSourceIsEnabled)
                 .map { Unmanaged<CFNumber>.fromOpaque($0).takeUnretainedValue() as! Bool } ?? false
             if !enabled {
-                beeLog("IME REGISTER: source disabled, enabling")
-                TISEnableInputSource(source)
+                beeLog("IME REGISTER: enabling source")
+                let r = TISEnableInputSource(source)
+                beeLog("IME REGISTER: TISEnableInputSource result=\(r)")
             }
             await launchBeeInputIfNeeded(at: installedIME)
             return true
         }
 
+        beeLog("IME REGISTER: no sources found, calling TISRegisterInputSource url=\(installedIME.path)")
         let status = TISRegisterInputSource(installedIME as CFURL)
         beeLog("IME REGISTER: TISRegisterInputSource result=\(status)")
         guard status == noErr else { return false }
@@ -147,10 +157,12 @@ final class BeeInputClient: Sendable {
                 .takeRetainedValue() as? [TISInputSource]) ?? []
         beeLog("IME REGISTER: after registration, found \(newSources.count) source(s)")
         if let source = newSources.first {
-            TISEnableInputSource(source)
+            let r = TISEnableInputSource(source)
+            beeLog("IME REGISTER: TISEnableInputSource result=\(r)")
             await launchBeeInputIfNeeded(at: installedIME)
             return true
         }
+        beeLog("IME REGISTER: FAILED — no sources even after TISRegisterInputSource")
         return false
     }
 
