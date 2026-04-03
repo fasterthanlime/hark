@@ -27,9 +27,11 @@ final class BeeIMESession {
     func startDeferredClaim() {
         let token = UUID()
         pendingClaimToken = token
+        beeInputLog("startDeferredClaim: scheduling 20ms defer")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
             guard let self, self.pendingClaimToken == token else { return }
             self.pendingClaimToken = nil
+            beeInputLog("startDeferredClaim: firing (after defer)")
             self.performClaim()
         }
     }
@@ -52,7 +54,9 @@ final class BeeIMESession {
             return
         }
 
+        beeInputLog("performClaim: claimPreparedSessionSync start")
         let claim = BeeBrokerIMEClient.shared.claimPreparedSessionSync()
+        beeInputLog("performClaim: claimPreparedSessionSync done")
         guard let sessionID = claim.sessionID else {
             beeInputLog("activateServer: no session (palette mode, staying active)")
             return
@@ -63,7 +67,9 @@ final class BeeIMESession {
         let bridge = BeeIMEBridgeState.shared
         bridge.attachSession(sessionID: sessionID)
         bridge.flushPending()
+        beeInputLog("performClaim: imeAttach start session=\(sessionID.uuidString.prefix(8))")
         BeeBrokerIMEClient.shared.imeAttach(sessionID: sessionID)
+        beeInputLog("performClaim: imeAttach dispatched session=\(sessionID.uuidString.prefix(8))")
     }
 
     // MARK: - Text handling

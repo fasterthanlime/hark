@@ -1209,9 +1209,11 @@ final class AppState {
 
     private func duckVolume() {
         guard lowerVolumeDuringDictation else { return }
-        if let current = Self.getSystemVolume() {
+        let level = dictationVolumeLevel
+        Task {
+            guard let current = Self.getSystemVolume() else { return }
             savedVolume = current
-            fadeVolume(to: current * dictationVolumeLevel)
+            fadeVolume(to: current * level)
         }
     }
 

@@ -85,6 +85,7 @@ final class BeeInputClient: Sendable {
     @discardableResult
     func activate(sessionID: UUID, targetPID: pid_t?) async -> Bool {
         let activationID = UUID().uuidString
+        beeLog("IME ACTIVATE: prepareSessionXPC start id=\(sessionID.uuidString.prefix(8))")
         let prepared = await Self.prepareSessionXPC(
             sessionID: sessionID,
             activationID: activationID,
@@ -95,9 +96,11 @@ final class BeeInputClient: Sendable {
                 "IME ACTIVATE: prepareSession failed for session=\(sessionID.uuidString.prefix(8))")
             return false
         }
+        beeLog("IME ACTIVATE: prepareSessionXPC done id=\(sessionID.uuidString.prefix(8))")
 
         // Select the bee input source (on cold start this also launches the
         // IME process), then wait for the IME to be connected to the broker.
+        beeLog("IME ACTIVATE: TIS SELECT start id=\(sessionID.uuidString.prefix(8))")
         let selected = await Self.selectBeeInputSource()
         guard selected else {
             await Self.clearSessionXPC(sessionID: sessionID)

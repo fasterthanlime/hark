@@ -30,6 +30,7 @@ final class SoundEffects {
     private var commitSound: NSSound?
     private var commitSubmitSound: NSSound?
     private var cancelSound: NSSound?
+    private var keepAliveSound: NSSound?
     private var didWarmUp = false
 
     private init() {
@@ -63,23 +64,21 @@ final class SoundEffects {
         }
     }
 
-    /// Play a silent sound to warm up the audio playback path.
-    /// Avoids latency on the first real sound.
+    /// Keep the CoreAudio IO thread alive by looping a silent sound.
+    /// Avoids the cold-start blocking wait on the main thread when the first
+    /// real sound plays after an idle period.
     func warmUp() {
         guard !didWarmUp else { return }
         didWarmUp = true
 
         preload()
-        guard let sound = recordingStartedSound else { return }
-        let originalVolume = sound.volume
-        sound.stop()
-        sound.currentTime = 0
+        guard let url = Bundle.main.url(forResource: "bee-recording-started", withExtension: "wav", subdirectory: "Sounds")
+                ?? Bundle.main.url(forResource: "bee-recording-started", withExtension: "wav"),
+              let sound = NSSound(contentsOf: url, byReference: false) else { return }
         sound.volume = 0
+        sound.loops = true
         sound.play()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            sound.stop()
-            sound.volume = originalVolume
-        }
+        keepAliveSound = sound
     }
 
     func playRecordingStarted() {
