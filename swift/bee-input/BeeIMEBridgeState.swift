@@ -25,22 +25,12 @@ final class BeeIMESession {
     // MARK: - Deferred claim
 
     func startDeferredClaim() {
-        let token = UUID()
-        pendingClaimToken = token
-        beeInputLog("startDeferredClaim: scheduling 20ms defer")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
-            guard let self, self.pendingClaimToken == token else { return }
-            self.pendingClaimToken = nil
-            beeInputLog("startDeferredClaim: firing (after defer)")
-            self.performClaim()
-        }
+        beeInputLog("startDeferredClaim: claiming immediately")
+        performClaim()
     }
 
     func cancelPendingClaim() {
-        guard pendingClaimToken != nil else { return }
-        pendingClaimToken = nil
-        beeInputLog("deactivateServer: cancelled pending claim, notifying app")
-        BeeBrokerIMEClient.shared.imeActivationRevoked()
+        beeInputLog("cancelPendingClaim: nothing to cancel (immediate claim)")
     }
 
     private func performClaim() {

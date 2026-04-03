@@ -14,7 +14,7 @@ class BeeInputController: IMKInputController {
         let bridge = BeeIMEBridgeState.shared
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let clientIdentity = currentClientIdentity()
-        // Creates a BeeIMESession and starts the 60ms deferred claim
+        // Creates a BeeIMESession and queues the claim for next run loop turn
         bridge.activate(self, pid: frontmostPID, clientID: clientIdentity)
     }
 
