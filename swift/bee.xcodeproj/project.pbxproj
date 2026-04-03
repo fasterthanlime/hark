@@ -287,7 +287,6 @@
 				198A194B415B1DC8B9969EE0 /* Sources */,
 				32B125BC2E0C12F049D06B2E /* Resources */,
 				8064876F46E169AA46B16AC0 /* Frameworks */,
-				DE0CE43CE8DC5AF4D34746C5 /* Embed beeInput Input Method */,
 			);
 			buildRules = (
 			);
@@ -410,28 +409,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
-
-/* Begin PBXShellScriptBuildPhase section */
-		DE0CE43CE8DC5AF4D34746C5 /* Embed beeInput Input Method */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "Embed beeInput Input Method";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "DEST=\"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Library/Input Methods\"\nmkdir -p \"${DEST}\"\nrsync -a --delete \"${BUILT_PRODUCTS_DIR}/beeInput.app\" \"${DEST}/\"\n";
-		};
-/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		198A194B415B1DC8B9969EE0 /* Sources */ = {
