@@ -1442,11 +1442,14 @@ impl BeeMl for BeeMlService {
                 });
             }
 
-            let _ = progress.send(RetrievalPrototypeEvalProgress {
+            if let Err(e) = progress.send(RetrievalPrototypeEvalProgress {
                 evaluated: recording_id as u32 + 1,
                 total,
                 judge_correct,
-            }).await;
+            }).await {
+                warn!("eval progress send failed: {e}");
+                break;
+            }
         }
 
         let mut per_term = per_term.into_values().collect::<Vec<_>>();

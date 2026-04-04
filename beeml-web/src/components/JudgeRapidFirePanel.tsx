@@ -1,22 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
-import { channel } from "@bearcove/vox-core";
 import { connectBeeMl } from "../beeml.generated";
 import type {
   RapidFireChoice,
   RapidFireEdit,
-  RetrievalPrototypeEvalProgress,
-  RetrievalPrototypeEvalResult,
   RetrievalPrototypeProbeResult,
   RetrievalPrototypeTeachingCase,
-  SpanDebugTrace,
 } from "../beeml.generated";
 import { makeApproximateWords } from "./retrievalPrototypeUtils";
+import { EvalScoreDisplay } from "./EvalScoreDisplay";
+import { DebugSearchPanel } from "./DebugSearchPanel";
 
-/** Render a sentence with inline diffs for each edit. */
 function SentenceWithEdits({ sentence, edits }: { sentence: string; edits: RapidFireEdit[] }) {
   if (edits.length === 0) return <>{sentence}</>;
 
-  // Find each replacement_text in the sentence, left to right
   const parts: React.ReactNode[] = [];
   let cursor = 0;
 
@@ -24,7 +20,6 @@ function SentenceWithEdits({ sentence, edits }: { sentence: string; edits: Rapid
     const idx = sentence.indexOf(edit.replacement_text, cursor);
     if (idx === -1) continue;
 
-    // Text before this edit
     if (idx > cursor) {
       parts.push(sentence.slice(cursor, idx));
     }
@@ -43,14 +38,12 @@ function SentenceWithEdits({ sentence, edits }: { sentence: string; edits: Rapid
     cursor = idx + edit.replacement_text.length;
   }
 
-  // Remaining text after last edit
   if (cursor < sentence.length) {
     parts.push(sentence.slice(cursor));
   }
 
   return <>{parts.length > 0 ? parts : sentence}</>;
 }
-
 
 export function JudgeRapidFirePanel({
   wsUrl,
@@ -65,47 +58,10 @@ export function JudgeRapidFirePanel({
   const [caseIndex, setCaseIndex] = useState(0);
   const [probeResult, setProbeResult] = useState<RetrievalPrototypeProbeResult | null>(null);
   const [teachingKey, setTeachingKey] = useState<string | null>(null);
-  const [evalResult, setEvalResult] = useState<RetrievalPrototypeEvalResult | null>(null);
-  const [prevEvalResult, setPrevEvalResult] = useState<RetrievalPrototypeEvalResult | null>(null);
-  const [evalRunning, setEvalRunning] = useState(false);
-  const [evalProgress, setEvalProgress] = useState<RetrievalPrototypeEvalProgress | null>(null);
   const [teachCount, setTeachCount] = useState(0);
+  const [evalTrigger, setEvalTrigger] = useState(0);
 
   const currentCase = cases[caseIndex] ?? null;
-
-  const runEval = useCallback(async () => {
-    try {
-      setEvalRunning(true);
-      setEvalProgress(null);
-      const client = await connectBeeMl(wsUrl);
-      const [progressTx, progressRx] = channel<RetrievalPrototypeEvalProgress>();
-
-      // Receive progress updates in background
-      const progressLoop = (async () => {
-        while (true) {
-          const val = await progressRx.recv();
-          if (val === null) break;
-          setEvalProgress(val);
-        }
-      })();
-
-      const response = await client.runRetrievalPrototypeEval({
-        limit: 500,
-        max_span_words: maxSpanWords,
-        shortlist_limit: 50,
-        verify_limit: 50,
-      }, progressTx);
-      await progressLoop;
-      if (!response.ok) return;
-      setEvalResult((prev) => {
-        setPrevEvalResult(prev);
-        return response.value;
-      });
-    } finally {
-      setEvalRunning(false);
-      setEvalProgress(null);
-    }
-  }, [wsUrl, maxSpanWords]);
 
   const loadDeck = useCallback(async () => {
     try {
@@ -120,16 +76,14 @@ export function JudgeRapidFirePanel({
       setCases(result.value.cases);
       setCaseIndex(0);
       setProbeResult(null);
-      setEvalResult(null);
-      setPrevEvalResult(null);
       setTeachCount(0);
       setStatus(null);
-      void runEval();
+      setEvalTrigger((n) => n + 1);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setStatus(null);
     }
-  }, [deckLimit, wsUrl, runEval]);
+  }, [deckLimit, wsUrl]);
 
   const probeCurrentCase = useCallback(async () => {
     if (!currentCase) return;
@@ -199,7 +153,7 @@ export function JudgeRapidFirePanel({
         setCaseIndex((index) => Math.min(index + 1, Math.max(cases.length - 1, 0)));
         setTeachCount((n) => n + 1);
         setStatus(null);
-        void runEval();
+        setEvalTrigger((n) => n + 1);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         setStatus(null);
@@ -207,7 +161,7 @@ export function JudgeRapidFirePanel({
         setTeachingKey(null);
       }
     },
-    [cases.length, currentCase, maxSpanWords, wsUrl, runEval],
+    [cases.length, currentCase, maxSpanWords, wsUrl],
   );
 
   const skipCase = useCallback(() => {
@@ -260,36 +214,7 @@ export function JudgeRapidFirePanel({
             {currentCase && <span className="mini-badge">id {currentCase.case_id}</span>}
             {currentCase && <span className="mini-badge">term {currentCase.target_term}</span>}
             {teachCount > 0 && <span className="mini-badge">{teachCount} taught</span>}
-            {evalResult && (() => {
-              const pct = Math.round((evalResult.judge_correct / evalResult.evaluated_cases) * 100);
-              const delta = prevEvalResult
-                ? evalResult.judge_correct - prevEvalResult.judge_correct
-                : null;
-              return (
-                <span style={{ fontVariantNumeric: "tabular-nums", fontSize: "1.1rem", fontWeight: 700, letterSpacing: "-0.01em" }}>
-                  {evalRunning && evalProgress ? (
-                    <span style={{ opacity: 0.7 }}>
-                      {evalProgress.judge_correct}/{evalProgress.evaluated} <span style={{ opacity: 0.4, fontSize: "0.85rem" }}>({evalProgress.total})</span>
-                    </span>
-                  ) : evalRunning ? (
-                    <span style={{ opacity: 0.5 }}>eval...</span>
-                  ) : (<>
-                    {evalResult.judge_correct}/{evalResult.evaluated_cases} ({pct}%)
-                    {delta !== null && delta !== 0 && (
-                      <span style={{ color: delta > 0 ? "var(--green, #22c55e)" : "var(--red, #ef4444)", marginLeft: "0.25rem" }}>
-                        {delta > 0 ? `+${delta}` : delta}
-                      </span>
-                    )}
-                  </>)}
-                </span>
-              );
-            })()}
-            {evalRunning && !evalResult && evalProgress && (
-              <span style={{ fontVariantNumeric: "tabular-nums", fontSize: "1.1rem", fontWeight: 700, opacity: 0.7 }}>
-                {evalProgress.judge_correct}/{evalProgress.evaluated} <span style={{ opacity: 0.4, fontSize: "0.85rem" }}>({evalProgress.total})</span>
-              </span>
-            )}
-            {evalRunning && !evalResult && !evalProgress && <span className="status-pill">eval...</span>}
+            <EvalScoreDisplay wsUrl={wsUrl} maxSpanWords={maxSpanWords} triggerCount={evalTrigger} />
             {status && <span className="status-pill">{status}</span>}
             {error && <span className="error-pill">{error}</span>}
           </div>
@@ -319,7 +244,7 @@ export function JudgeRapidFirePanel({
 
           {rapidFire ? (
             <>
-              {/* Composed sentence choices — keep_original first, then edits */}
+              {/* Choices — keep_original first, then edits */}
               {[...rapidFire.choices].sort((a, b) => {
                 if (a.choose_keep_original !== b.choose_keep_original) return a.choose_keep_original ? -1 : 1;
                 return 0;
@@ -356,9 +281,8 @@ export function JudgeRapidFirePanel({
                 );
               })}
 
-              {/* Skip — no useful choice available */}
-              <button className="choice-button choice-button-keep"
-                onClick={skipCase}>
+              {/* Skip */}
+              <button className="choice-button choice-button-keep" onClick={skipCase}>
                 <div className="choice-row-main">
                   <div className="sentence-preview-line" style={{ color: "var(--text-muted)" }}>Skip this case</div>
                 </div>
@@ -367,114 +291,14 @@ export function JudgeRapidFirePanel({
                 </div>
               </button>
 
-              {/* Debug: span-level retrieval diagnostics */}
-              {probeResult && (() => {
-                const targetTerm = currentCase?.target_term?.toLowerCase() ?? "";
-                const interestingSpans = probeResult.spans
-                  .filter((s: SpanDebugTrace) => s.candidates.length > 0)
-                  .sort((a: SpanDebugTrace, b: SpanDebugTrace) => {
-                    const aHasTarget = a.candidates.some(c => c.term.toLowerCase() === targetTerm) ? 1 : 0;
-                    const bHasTarget = b.candidates.some(c => c.term.toLowerCase() === targetTerm) ? 1 : 0;
-                    if (aHasTarget !== bHasTarget) return bHasTarget - aHasTarget;
-                    const aMax = Math.max(...a.candidates.map(c => c.features.acceptance_score));
-                    const bMax = Math.max(...b.candidates.map(c => c.features.acceptance_score));
-                    return bMax - aMax;
-                  })
-                  .slice(0, 16);
-                return (
-                  <details className="debug-search-expander">
-                    <summary>
-                      Debug search
-                      {rapidFire.no_exact_match && <span className="debug-warn" style={{ marginLeft: "0.5rem" }}>no exact match</span>}
-                      <span style={{ marginLeft: "0.5rem", opacity: 0.5 }}>
-                        {rapidFire.search_mode} · {probeResult.spans.length} spans · {interestingSpans.length} with candidates
-                      </span>
-                    </summary>
-                    <div className="debug-search-content" style={{ fontSize: "0.95rem" }}>
-                      {/* Component composition: how edits got grouped and combined */}
-                      {rapidFire.components.length > 0 && (
-                        <div style={{ marginBottom: "0.75rem", borderBottom: "1px solid var(--border, #333)", paddingBottom: "0.5rem" }}>
-                          <div style={{ fontWeight: 600, marginBottom: "0.25rem", fontSize: "0.85rem" }}>
-                            Components ({rapidFire.components.length}) · {rapidFire.total_combinations} combinations · {rapidFire.search_mode}
-                          </div>
-                          {rapidFire.components.map((comp) => {
-                            const spanRange = comp.spans.map(s => `${s.token_start}:${s.token_end}`).join(", ");
-                            return (
-                              <div key={comp.component_id} style={{ marginBottom: "0.5rem", borderLeft: "2px solid var(--border, #555)", paddingLeft: "0.5rem" }}>
-                                <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>
-                                  component {comp.component_id} · tokens {spanRange}
-                                </div>
-                                {comp.hypotheses.map((hyp, hi) => (
-                                  <div key={hi} style={{ fontSize: "0.8rem", marginLeft: "0.5rem", display: "flex", justifyContent: "space-between", gap: "1rem" }}>
-                                    {hyp.choose_keep_original ? (
-                                      <span style={{ opacity: 0.5 }}>keep original</span>
-                                    ) : (
-                                      <span>
-                                        <span style={{ textDecoration: "line-through", opacity: 0.5 }}>{hyp.replaced_text}</span>
-                                        {" → "}
-                                        <span style={{ color: "var(--green, #22c55e)" }}>{hyp.replacement_text}</span>
-                                      </span>
-                                    )}
-                                    <span style={{ opacity: 0.6, fontVariantNumeric: "tabular-nums" }}>{hyp.probability.toFixed(3)}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-
-                      {interestingSpans.map((s: SpanDebugTrace, si: number) => {
-                        const hasTarget = s.candidates.some(c => c.term.toLowerCase() === targetTerm);
-                        return (
-                          <div key={si} style={{ marginBottom: "0.75rem", borderLeft: hasTarget ? "2px solid var(--green, #22c55e)" : "2px solid var(--border, #333)", paddingLeft: "0.5rem" }}>
-                            <div style={{ fontWeight: 600, marginBottom: "0.15rem" }}>
-                              "{s.span.text}" <span style={{ opacity: 0.5, fontWeight: 400 }}>tokens {s.span.token_start}:{s.span.token_end}</span>
-                            </div>
-                            <div style={{ fontSize: "0.8rem", opacity: 0.6, marginBottom: "0.25rem", fontFamily: "'Manuale IPA', serif" }}>
-                              ipa: {s.span.ipa_tokens.join(" ")}
-                            </div>
-                            {s.candidates.slice(0, 4).map((c, ci) => {
-                              const isTarget = c.term.toLowerCase() === targetTerm;
-                              const failedFilters = c.filter_decisions.filter(f => !f.passed);
-                              return (
-                                <div key={ci} style={{
-                                  fontSize: "0.8rem", marginLeft: "0.5rem", marginBottom: "0.15rem",
-                                  color: isTarget ? "var(--green, #22c55e)" : undefined,
-                                  opacity: c.accepted ? 1 : 0.6,
-                                }}>
-                                  <span style={{ fontWeight: isTarget ? 700 : 400 }}>{c.term}</span>
-                                  <span style={{ opacity: 0.5 }}> ({c.alias_source.tag})</span>
-                                  {" "}accept={c.features.acceptance_score.toFixed(2)}
-                                  {" "}phonetic={c.features.phonetic_score.toFixed(2)}
-                                  {" "}coarse={c.features.coarse_score.toFixed(2)}
-                                  {c.accepted ? " \u2713" : ""}
-                                  {failedFilters.length > 0 && (
-                                    <span style={{ color: "var(--red, #ef4444)" }}>
-                                      {" "}{failedFilters.map(f => `${f.name}: ${f.detail}`).join("; ")}
-                                    </span>
-                                  )}
-                                  <div style={{ fontFamily: "'Manuale IPA', serif", opacity: 0.5, marginLeft: "1rem" }}>
-                                    ipa: {c.alias_ipa_tokens.join(" ")}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                            {s.candidates.length > 4 && (
-                              <div style={{ fontSize: "0.75rem", opacity: 0.4, marginLeft: "0.5rem" }}>
-                                +{s.candidates.length - 4} more candidates
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                      {interestingSpans.length === 0 && (
-                        <div style={{ opacity: 0.5 }}>No spans produced any candidates.</div>
-                      )}
-                    </div>
-                  </details>
-                );
-              })()}
+              {/* Debug panel — content only rendered when expanded */}
+              {probeResult && (
+                <DebugSearchPanel
+                  probeResult={probeResult}
+                  rapidFire={rapidFire}
+                  targetTerm={currentCase?.target_term?.toLowerCase() ?? ""}
+                />
+              )}
             </>
           ) : (
             <div className="choice-row choice-row-context">
