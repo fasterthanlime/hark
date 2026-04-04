@@ -517,7 +517,6 @@ const RAPID_FIRE_SENTENCE_CHOICES: usize = 12;
 const RAPID_FIRE_EXACT_THRESHOLD: usize = 64;
 const RAPID_FIRE_BEAM_WIDTH: usize = 16;
 const RAPID_FIRE_MAX_EDITS_PER_SPAN: usize = 4;
-const RAPID_FIRE_MAX_COMPONENT_COMBO_EDITS: usize = 2;
 
 #[derive(Clone)]
 struct EditCandidate {
@@ -834,31 +833,30 @@ fn dedupe_edit_candidates(edits: Vec<EditCandidate>) -> Vec<EditCandidate> {
     edits
 }
 
+/// Group edits by replacement term. Each term gets its own component with
+/// different span hypotheses. This avoids transitive overlap chains where
+/// "MacO"(6:7) and "must be"(12:14) get merged through intermediate spans.
 fn build_conflict_components(edits: &[EditCandidate]) -> Vec<Vec<EditCandidate>> {
-    let mut groups: Vec<Vec<EditCandidate>> = Vec::new();
+    let mut by_term: HashMap<String, Vec<EditCandidate>> = HashMap::new();
     for edit in edits {
-        let mut overlapping = Vec::new();
-        for (index, group) in groups.iter().enumerate() {
-            if group.iter().any(|candidate| edits_overlap(candidate, edit)) {
-                overlapping.push(index);
-            }
-        }
-        if overlapping.is_empty() {
-            groups.push(vec![edit.clone()]);
-            continue;
-        }
-        let mut merged = vec![edit.clone()];
-        for index in overlapping.into_iter().rev() {
-            merged.extend(groups.swap_remove(index));
-        }
-        merged.sort_by(|lhs, rhs| {
-            lhs.span_token_start
-                .cmp(&rhs.span_token_start)
-                .then_with(|| lhs.span_token_end.cmp(&rhs.span_token_end))
-                .then_with(|| rhs.probability.total_cmp(&lhs.probability))
-        });
-        groups.push(merged);
+        by_term
+            .entry(edit.replacement_text.clone())
+            .or_default()
+            .push(edit.clone());
     }
+    let mut groups: Vec<Vec<EditCandidate>> = by_term.into_values().collect();
+    for group in &mut groups {
+        group.sort_by(|lhs, rhs| {
+            rhs.acceptance_score
+                .total_cmp(&lhs.acceptance_score)
+                .then_with(|| lhs.span_token_start.cmp(&rhs.span_token_start))
+        });
+    }
+    groups.sort_by(|a, b| {
+        let a_best = a.first().map(|e| e.acceptance_score).unwrap_or(0.0);
+        let b_best = b.first().map(|e| e.acceptance_score).unwrap_or(0.0);
+        b_best.total_cmp(&a_best)
+    });
     groups
 }
 
@@ -884,20 +882,26 @@ fn build_component(
         score: keep_probability,
         probability: keep_probability,
     };
-    let mut edit_hypotheses = Vec::new();
-    enumerate_component_hypotheses(
-        component_id,
-        &component_spans,
-        &atomic_edits,
-        0,
-        Vec::new(),
-        &mut edit_hypotheses,
-    );
-    dedupe_component_hypotheses(&mut edit_hypotheses);
+    // Each edit is a separate hypothesis (different span for the same term).
+    let mut edit_hypotheses: Vec<ComponentHypothesis> = atomic_edits
+        .iter()
+        .map(|edit| ComponentHypothesis {
+            component_id,
+            component_spans: component_spans.clone(),
+            choose_keep_original: false,
+            edits: vec![edit.clone()],
+            score: edit.acceptance_score,
+            probability: edit.acceptance_score,
+        })
+        .collect();
     edit_hypotheses.sort_by(|lhs, rhs| {
         rhs.probability
             .total_cmp(&lhs.probability)
             .then_with(|| rhs.score.total_cmp(&lhs.score))
+    });
+    edit_hypotheses.dedup_by(|a, b| {
+        a.edits.first().map(|e| e.span_token_start) == b.edits.first().map(|e| e.span_token_start)
+            && a.edits.first().map(|e| e.span_token_end) == b.edits.first().map(|e| e.span_token_end)
     });
     // Reserve one slot for keep_original so it never gets truncated out.
     edit_hypotheses.truncate(RAPID_FIRE_COMPONENT_HYPOTHESES - 1);
@@ -918,82 +922,6 @@ struct Component {
     hypotheses: Vec<ComponentHypothesis>,
 }
 
-fn enumerate_component_hypotheses(
-    component_id: u32,
-    component_spans: &[RejectedGroupSpan],
-    atomic_edits: &[EditCandidate],
-    start_index: usize,
-    current: Vec<EditCandidate>,
-    out: &mut Vec<ComponentHypothesis>,
-) {
-    for index in start_index..atomic_edits.len() {
-        let candidate = atomic_edits[index].clone();
-        if current.len() >= RAPID_FIRE_MAX_COMPONENT_COMBO_EDITS {
-            continue;
-        }
-        if current.iter().any(|existing| edits_overlap(existing, &candidate)) {
-            continue;
-        }
-        let mut next = current.clone();
-        next.push(candidate);
-        out.push(score_component_hypothesis(
-            component_id,
-            component_spans.to_vec(),
-            next.clone(),
-        ));
-        enumerate_component_hypotheses(
-            component_id,
-            component_spans,
-            atomic_edits,
-            index + 1,
-            next,
-            out,
-        );
-    }
-}
-
-fn score_component_hypothesis(
-    component_id: u32,
-    component_spans: Vec<RejectedGroupSpan>,
-    edits: Vec<EditCandidate>,
-) -> ComponentHypothesis {
-    let score = average_or_zero(&edits.iter().map(|edit| edit.score).collect::<Vec<_>>());
-    let probability = average_or_zero(&edits.iter().map(|edit| edit.probability).collect::<Vec<_>>());
-    ComponentHypothesis {
-        component_id,
-        component_spans,
-        choose_keep_original: edits.is_empty(),
-        edits,
-        score,
-        probability,
-    }
-}
-
-fn dedupe_component_hypotheses(hypotheses: &mut Vec<ComponentHypothesis>) {
-    let mut best = HashMap::<String, ComponentHypothesis>::new();
-    for hypothesis in hypotheses.drain(..) {
-        let key = if hypothesis.edits.is_empty() {
-            "keep".to_string()
-        } else {
-            hypothesis
-                .edits
-                .iter()
-                .map(|edit| format!("{}:{}:{}", edit.span_token_start, edit.span_token_end, edit.alias_id))
-                .collect::<Vec<_>>()
-                .join("|")
-        };
-        match best.get(&key) {
-            Some(existing)
-                if existing.probability > hypothesis.probability
-                    || (existing.probability == hypothesis.probability
-                        && existing.score >= hypothesis.score) => {}
-            _ => {
-                best.insert(key, hypothesis);
-            }
-        }
-    }
-    hypotheses.extend(best.into_values());
-}
 
 fn compose_sentence_hypotheses(
     transcript: &str,
@@ -1027,7 +955,9 @@ fn enumerate_sentence_hypotheses(transcript: &str, components: &[Component]) -> 
         out: &mut Vec<SentenceHypothesis>,
     ) {
         if index == components.len() {
-            out.push(build_sentence_hypothesis(transcript, chosen.clone()));
+            if let Some(hypothesis) = build_sentence_hypothesis(transcript, chosen.clone()) {
+                out.push(hypothesis);
+            }
             return;
         }
         for hypothesis in &components[index].hypotheses {
@@ -1054,7 +984,9 @@ fn beam_sentence_hypotheses(transcript: &str, components: &[Component]) -> Vec<S
             for hypothesis in &component.hypotheses {
                 let mut combined = partial.components.clone();
                 combined.push(hypothesis.clone());
-                next.push(build_sentence_hypothesis(transcript, combined));
+                if let Some(hypothesis) = build_sentence_hypothesis(transcript, combined) {
+                    next.push(hypothesis);
+                }
             }
         }
         next.sort_by(|lhs, rhs| {
@@ -1071,11 +1003,19 @@ fn beam_sentence_hypotheses(transcript: &str, components: &[Component]) -> Vec<S
 fn build_sentence_hypothesis(
     transcript: &str,
     components: Vec<ComponentHypothesis>,
-) -> SentenceHypothesis {
+) -> Option<SentenceHypothesis> {
     let edits = components
         .iter()
         .flat_map(|component| component.edits.iter().cloned())
         .collect::<Vec<_>>();
+    // Check for overlapping edits across components — skip invalid combinations.
+    for (i, a) in edits.iter().enumerate() {
+        for b in edits.iter().skip(i + 1) {
+            if edits_overlap(a, b) {
+                return None;
+            }
+        }
+    }
     let sentence = apply_atomic_edits(transcript, &edits);
     // Score by the weakest component (min, not average). This way a sentence
     // with two good edits (0.59, 0.55) scores 0.55 — which beats a sentence
@@ -1093,12 +1033,12 @@ fn build_sentence_hypothesis(
             .map(|c| c.probability)
             .fold(f32::INFINITY, f32::min)
     };
-    SentenceHypothesis {
+    Some(SentenceHypothesis {
         components,
         sentence,
         score: probability,
         probability,
-    }
+    })
 }
 
 fn apply_atomic_edits(transcript: &str, edits: &[EditCandidate]) -> String {
