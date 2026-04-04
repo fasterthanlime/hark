@@ -2,16 +2,15 @@
 
 ## Purpose
 
-This document is the system-level description for the correction product that
-`beeml` and `beeml-web` are supposed to become.
+This document is the canonical roadmap for the correction product that `beeml`
+and `beeml-web` are supposed to become.
 
-It sits above:
+Related supporting docs:
 
-- [phonetic-retrieval-roadmap.md](/Users/amos/bearcove/bee/docs/phonetic-retrieval-roadmap.md)
 - [phonetic-retrieval-implementation-checklist.md](/Users/amos/bearcove/bee/docs/phonetic-retrieval-implementation-checklist.md)
 - [eval-frontend-handoff.md](/Users/amos/bearcove/bee/docs/eval-frontend-handoff.md)
 
-Those documents cover pieces of the system. This one defines the whole shape:
+Those documents cover narrower slices. This one defines the whole shape:
 
 - what is being trained
 - what runs in production
@@ -44,7 +43,7 @@ That means the product is not "transcription". The product is:
 
 - transcript correction for technical vocabulary
 - phonetic retrieval and verification
-- contextual local reranking
+- contextual final judging
 - interactive inspection and evaluation
 
 ## Final Objective
@@ -59,8 +58,8 @@ The end state should be:
 
 The system should accept an already-good transcript plus timings, retrieve a
 small set of plausible span-local corrections, verify them phonetically, choose
-among them with a contextual reranker, and return both the corrected text and
-the reasoning trace.
+among them with a contextual final judge, and return both the corrected text
+and the reasoning trace.
 
 ## System Split
 
@@ -80,7 +79,7 @@ It should answer:
 
 - which aliases and pronunciations belong in the lexicon
 - which retrieval views actually recover the target term
-- whether the reranker can choose correctly when the target is present
+- whether the final judge can choose correctly when the target is present
 - which artifact bundle should be promoted into production
 
 ### Training Inputs
@@ -97,6 +96,29 @@ Primary sources today:
 Confusion surfaces should not be part of the default canonical seed until they
 prove useful enough to justify the noise.
 
+### Data Split and Leakage Policy
+
+Evaluation hygiene must be explicit.
+
+At minimum, experiments should avoid leakage across:
+
+- the same canonical term
+- alias families of the same term
+- near-duplicate sentence contexts
+- the same recording speaker or session
+- user-personalized data versus base-bundle training data
+
+For online-learning evaluation, random holdout alone is not enough.
+
+The default comparison regime should include:
+
+- term-family-isolated evaluation
+- speaker or session isolation where applicable
+- time-aware evaluation that simulates user history when judging online updates
+
+Random splits are acceptable as smoke tests. They should not be the only
+headline number.
+
 ### Training Products
 
 Training should produce explicit, versioned artifacts, not opaque database
@@ -108,8 +130,9 @@ Expected artifact families:
 - derived alias snapshot
 - phonetic retrieval indexes
 - retrieval evaluation fixtures and metrics
-- reranker training examples
-- reranker weights or adapters
+- final-judge training examples
+- tiny judge weights
+- optional neural fallback weights
 - bundle metadata and thresholds
 
 ### Training Stages
@@ -127,16 +150,16 @@ This is where we measure:
 - which retrieval view produced the candidate
 - where short queries or technical terms fail
 
-If the target never enters the shortlist, the reranker is not at fault.
+If the target never enters the shortlist, the final judge is not at fault.
 
-#### 2. Reranking
+#### 2. Final Judging
 
 Given a small local candidate set that already contains the target, can the
 model choose the right edit while accounting for sentence context?
 
 This is a selection problem, not a free-form generation problem.
 
-The reranker training examples should look like:
+The final-judge training examples should look like:
 
 - left context
 - original span
@@ -148,35 +171,139 @@ The reranker training examples should look like:
 
 That is the regime where a small model is plausible.
 
-### Model Scope
+### Judge Scope
 
-The learned part of the system should be constrained.
+The learned part of the system should stay constrained, but it should not be
+assumed to be "one reranker model".
 
-Do not treat the reranker as a general sentence rewrite model.
+The default design should be a three-level judge:
 
-The intended model behavior is:
+1. deterministic scorer over phonetic and structural features
+2. tiny learned scorer over candidate features
+3. optional frozen neural fallback for ambiguous cases only
+
+This is the right fit for a product where:
+
+- users should be able to add vocabulary without retraining
+- user corrections should update behavior immediately
+- vocabulary belongs in lexicon and memory, not in model weights
+
+Do not treat the main learned layer as a general sentence rewrite model.
+
+The intended learned behavior is:
 
 - compare a small number of local alternatives
-- use sentence context to choose
+- consume structured phonetic and context features
 - preserve the original when no candidate is better
+- improve incrementally from user corrections
 
-That means the central ML question is:
+That means the central ML question is not only:
 
-- can a small reranker, around the 0.5B to 0.6B range, reliably choose among
-  local correction alternatives?
+- can a 0.5B to 0.6B reranker choose among local alternatives?
 
-This is tractable if:
+It is first:
 
-- the target appears in the candidate set
-- negatives are hard rather than random
-- "keep original" is always represented
-- context windows are local and consistent
+- can a tiny feature-based judge, updated online, resolve most final decisions
+  before a neural fallback is even needed?
 
 ## Production Inference
 
 Production inference should load a fixed bundle and serve correction RPCs.
 
 It should not depend on query-heavy database logic.
+
+### Production State Model
+
+Production state should not be treated as one opaque blob.
+
+It should be split into:
+
+1. base bundle
+2. user overlay
+3. session or project overlay
+
+#### Base Bundle
+
+The base bundle is:
+
+- versioned
+- read-only at runtime
+- shipped as the canonical product artifact
+
+It should contain:
+
+- reviewed lexicon and aliases
+- normalized phonetic views
+- retrieval indexes
+- deterministic thresholds
+- tiny judge weights
+- optional neural fallback weights
+
+#### User Overlay
+
+The user overlay is local and mutable.
+
+It should contain:
+
+- user-added vocabulary
+- user-added aliases or pronunciation hints
+- user-local term priors
+- user-local confusion memory
+- optional user-local online weights
+
+This is the main personalization surface.
+
+#### Session or Project Overlay
+
+The session or project overlay is ephemeral and cheap to reset.
+
+It should contain:
+
+- recent vocabulary
+- repetition priors
+- project-local term boosts
+- temporary correction context
+
+For retrieval, this implies:
+
+- global retrieval indexes from the base bundle
+- small incremental overlay indexes for user and session additions
+- merged candidate views at query time
+
+That architecture is better than treating production state as one mutable
+artifact.
+
+#### Overlay Precedence and Merge Rules
+
+Overlay behavior should be explicit.
+
+Default precedence should be:
+
+1. session or project overlay
+2. user overlay
+3. base bundle
+
+This means:
+
+- session or project context may temporarily override user-level priors
+- user personalization overrides shipped defaults
+- base bundle remains the fallback
+
+At query time, retrieval merge semantics should be explicit too:
+
+- candidates should be deduped by canonical term, not by raw alias row alone
+- alias-level evidence should be retained as provenance under the deduped term
+- competing priors should merge by precedence first, then by additive evidence
+  where that is meaningful
+- duplicate alias entries across layers must not double-count overlap or boost
+  priors accidentally
+
+Rebuild and replay behavior should also be explicit:
+
+- base bundle is loaded as-is
+- overlays are replayed on top
+- event log replay must be sufficient to rebuild user and session state from
+  scratch
 
 ### Production Inputs
 
@@ -198,17 +325,59 @@ The correction path should be:
 3. derive searchable phonetic views for each span
 4. retrieve candidates through indexed lanes
 5. verify only the small shortlist with a stronger phonetic scorer
-6. rerank local alternatives with sentence context
+6. judge local alternatives with sentence context and user priors
 7. assemble the corrected sentence
 8. return both result and trace
 
+### Latency Budgets
+
+The pipeline is interactive, so each stage needs an explicit budget.
+
+The exact numbers can evolve, but the system should measure at least:
+
+- span proposal budget
+- retrieval budget
+- verifier budget
+- final-judge budget
+- neural fallback budget
+- end-to-end CPU budget
+
+The important rule is:
+
+- optional neural fallback must remain optional in both logic and latency
+- each stage should be measured separately so regressions are attributable
+
+### Span and Region Policy
+
+Span proposal and region assembly need to be explicit, not implicit.
+
+This is a real failure surface and should not be blurred into retrieval or
+judge behavior.
+
+The system needs a written policy for:
+
+- maximum span length
+- punctuation and identifier-boundary handling
+- whether adjacent edits may both apply
+- whether overlapping candidates compete globally or greedily
+- how keep-original interacts with overlapping proposals
+- whether final judging is independent per region or subject to a non-overlap
+  constraint
+
+At minimum, eval should distinguish:
+
+- span missed
+- target not shortlisted given span
+- target shortlisted but judged incorrectly
+- conflict-resolution or region-assembly failure
+
 ### Retrieval Stage
 
-The intended first serious retrieval prototype is:
+The intended first production-capable retrieval stack is:
 
 - boundary-aware IPA 2-gram postings
 - boundary-aware IPA 3-gram postings
-- articulatory-feature n-gram postings
+- reduced IPA views
 - length and token-count filters
 - a short-query fallback lane for very short phonetic strings
 
@@ -221,6 +390,13 @@ The current low-recall baseline is useful because it confirms the failure mode:
 
 That means the shortlist generator needs more structure, not just a different
 final verifier.
+
+The next retrieval upgrade after the raw/reduced baseline is:
+
+- articulatory-feature n-gram postings
+
+That should be treated as the next major retrieval enhancement, not as already
+assumed v1 behavior.
 
 ### Lexicon and Alias Policy
 
@@ -254,13 +430,16 @@ Its job is:
 
 - reject cheap retrieval noise
 - score phonetic plausibility more faithfully
-- preserve enough structured evidence for the reranker and UI
+- preserve enough structured evidence for the final judge and UI
 
 The verifier should move toward feature-aware or learned weighted alignment.
 
-### Reranking Stage
+It should not be expected to resolve every near-neighbor case that is really a
+context or memory problem.
 
-The reranker should operate region-by-region.
+### Final Judge Stage
+
+The final judge should operate region-by-region.
 
 Its choice set should contain:
 
@@ -271,12 +450,71 @@ Its choice set should contain:
 
 It should not score arbitrary full-sentence rewrites independently.
 
-The reranker output should include:
+The default sequence should be:
+
+1. deterministic acceptance or rejection for obvious cases
+2. tiny learned scoring over candidate features
+3. optional frozen neural reranker only for close margins
+
+The judge output should include:
 
 - chosen candidate index
 - chosen text
-- candidate-level scores or probabilities
+- deterministic acceptance score
+- tiny learned score
+- neural fallback score when used
 - confidence or margin
+
+### Decision Policy and Abstention
+
+The architecture also needs an explicit decision policy.
+
+At minimum, it should define:
+
+- when deterministic acceptance is enough
+- when the tiny learned judge must be consulted
+- when neural fallback is allowed
+- when the system should abstain and keep the original
+- how confidence or margin is interpreted
+
+The intended default should be:
+
+1. deterministic layer accepts or rejects obvious cases
+2. tiny learned judge resolves normal ambiguous cases
+3. neural fallback runs only when margins remain close
+4. if no layer is sufficiently confident, the system abstains and keeps the
+   original
+
+Bad corrections will often be abstention failures rather than simple ranking
+failures, so this policy must be explicit.
+
+Confidence and margin values should not be treated as trustworthy by default.
+They need calibration and should be evaluated as calibrated decision signals,
+not just as ranking byproducts.
+
+The multi-edit coordination question belongs to span and region assembly, not
+to the judge in isolation. The decision policy should therefore reference the
+non-overlap and conflict rules defined in `Span and Region Policy`.
+
+### Shadow and Suggestion Modes
+
+Before aggressive auto-application, the product should support a shadow or
+suggestion mode.
+
+In that mode, the system should:
+
+- run the full correction pipeline
+- log traces and candidate decisions
+- surface suggested edits and abstentions
+- avoid silently replacing text unless confidence is already high enough
+
+This helps with:
+
+- safe rollout
+- trust
+- bundle comparison
+- abstention policy tuning
+- data collection before stronger automatic application
 
 ## Canonical Assets
 
@@ -304,8 +542,101 @@ These should be rebuilt, not hand-edited:
 - articulatory feature views
 - phonetic indexes
 - retrieval eval fixtures
-- reranker training examples
-- reranker weights
+- candidate feature exports
+- tiny judge training examples
+- tiny judge weights
+- optional neural fallback weights
+- user-local memory state
+- user-local online weight state
+
+### Bundle Manifest
+
+Every promoted base bundle should include an explicit manifest.
+
+At minimum it should record:
+
+- bundle id and version
+- feature schema version
+- retrieval index version
+- threshold policy version
+- tiny judge weight version
+- optional neural fallback descriptor
+- compatibility requirements for overlays and traces
+- event-log schema version
+- training-data provenance or source snapshot ids
+- evaluation summary used for promotion
+
+This prevents silent incompatibilities like loading one weight set against a
+different feature schema.
+
+### Promotion Policy
+
+Bundle promotion should be explicit, not implied by "an evaluation summary
+exists".
+
+Promotion should require, at minimum:
+
+- retrieval recall does not regress on protected term classes
+- end-to-end correction accuracy improves on held-out evaluation
+- abstention error rate does not worsen beyond threshold
+- latency stays within budget
+- no regression on a fixed critical-vocabulary suite
+- compatibility checks pass for bundle manifest, feature schema, and event-log
+  schema
+
+### Event Log
+
+User correction behavior should also be captured as a first-class artifact
+family.
+
+Every correction should become a typed event.
+
+The event log itself should be versioned.
+
+Examples:
+
+- user accepted a suggestion
+- user rejected a suggestion
+- user replaced a span with candidate X
+- user inserted a brand new term
+- user supplied an alias or pronunciation hint
+- user reverted a prior correction
+
+These events should be the source of truth for:
+
+- user memory
+- online updates
+- later offline training examples
+- debugging why behavior changed
+
+The system should prefer:
+
+- explicit correction events
+
+over:
+
+- opaque local state mutation
+
+At minimum, the event log should carry:
+
+- event schema version
+- event type
+- timestamp
+- enough payload to replay state deterministically
+
+### Forgetting and Rollback
+
+The event-log design should support explicit rollback behavior.
+
+That includes:
+
+- forgetting a user-added term
+- undoing a bad pronunciation hint
+- rolling back online weight changes to a checkpoint
+- clearing only the session or project overlay
+- replaying the event log from scratch to rebuild state
+
+This is important for product trust and for debugging state drift.
 
 ## `beeml` Backend Role
 
@@ -316,7 +647,9 @@ It should own:
 - artifact loading
 - retrieval
 - verification
-- reranking
+- deterministic judging
+- tiny learned judging
+- optional neural fallback
 - correction assembly
 - debug trace production
 - evaluation-oriented RPCs
@@ -352,6 +685,8 @@ The exact method names can change, but `beeml` should grow toward families like:
 - `debug_correction(...)`
 - `inspect_term(...)`
 - `explain_candidate(...)`
+- `explain_judge(...)`
+- `apply_user_correction(...)`
 
 #### Evaluation
 
@@ -378,7 +713,7 @@ No stage should require reading backend logs to understand:
 
 - why a target was missed
 - why a candidate survived
-- why the reranker chose or rejected an edit
+- why the final judge chose or rejected an edit
 
 ### Required Debug Surface
 
@@ -418,7 +753,7 @@ Show:
 - source metadata
 - why the candidate stayed or fell out
 
-#### 4. Reranking View
+#### 4. Final Judge View
 
 Show:
 
@@ -426,7 +761,9 @@ Show:
 - keep-original option
 - sentence alternatives side by side
 - chosen candidate
-- scores or probabilities
+- deterministic acceptance score
+- tiny learned score
+- neural fallback score when used
 - confidence or margin
 
 #### 5. Eval and Batch Analysis
@@ -442,8 +779,8 @@ Show:
 This should support questions like:
 
 - show all misses for `AArch64`
-- show all cases where retrieval succeeded but reranking failed
-- compare retrieval-only versus retrieval-plus-reranker
+- show all cases where retrieval succeeded but final judging failed
+- compare retrieval-only versus retrieval-plus-final-judge
 
 ## Debug Data Requirements
 
@@ -456,7 +793,7 @@ For each returned candidate, the trace should be able to answer:
 - which index lanes matched it
 - which filters it survived
 - what verification score it received
-- whether it reached the reranker
+- whether it reached the final judge
 - whether it was accepted
 
 Without this, tuning becomes guesswork.
@@ -468,15 +805,23 @@ The exact Rust types can evolve, but the logical structure should be:
 - request metadata
 - transcript and timings
 - span list
+- considered regions
 - retrieval per span
 - verification per span
-- reranker candidates per chosen region
+- final-judge candidates per chosen region
+- rejected candidate sets
+- abstained regions and reasons
 - accepted edits
 - final corrected text
 - timing breakdown
 
 That trace should be serializable and stable enough for `beeml-web` to render
 without backend-specific ad hoc transformations.
+
+Failure analysis should always be able to answer:
+
+- what was the first failing stage?
+- did any downstream stage ever have a chance to recover?
 
 ## Non-Goals
 
@@ -487,34 +832,786 @@ For this system definition, do not optimize for:
 - hiding uncertainty behind one opaque confidence number
 - a frontend that only renders final text
 
-## Implementation Order
+## Roadmap
 
-The practical order still looks like this:
+The roadmap should be reviewed as one continuous sequence, not as "retrieval"
+and "modeling" plans that drift apart.
 
-1. canonical file-first datasets
-2. normalized lexicon and alias build path
-3. stronger indexed retrieval:
-   - IPA 2-gram and 3-gram lanes
-   - articulatory feature lanes
-   - identifier verbalization aliases
-4. short-query fallback lane
-5. stronger verification
-6. constrained contextual reranker
-7. debug-first `beeml` RPCs
-8. `beeml-web` inspector and eval flows built directly on those RPCs
+### Phase 0: Finish the Phonetic Baseline
+
+Goal:
+
+- make the phonetic stack reliable enough that later judge work is built on
+  truthful candidate sets and truthful features
+
+Done or mostly done:
+
+- raw and reduced IPA q-gram retrieval
+- feature-aware verifier
+- short-query fallback
+- case-debug tooling
+- counterexample eval split
+
+Still worth doing here:
+
+- tighten retrieval provenance in `beeml-web`
+- expose the same deep verifier trace in the frontend that the CLI debugger has
+- continue targeted cleanup of miss buckets and counterexample false positives
+
+Exit criteria:
+
+- candidate traces are inspectable in the frontend
+- retrieval and verification metrics are stable enough to use as training
+  features
+- span proposal recall is measured explicitly, not hidden inside later failure
+  buckets
+- all four oracle evaluation layers are wired and reported together for at
+  least one stable benchmark suite
+
+### Phase 0.5: Define Span and Trace Contracts
+
+Before candidate features harden, the system needs one explicit contract for:
+
+- span proposal
+- region conflict resolution
+- candidate trace shape
+
+Deliverables:
+
+- one region-policy section in the docs
+- one typed trace schema for span, retrieval, verification, and judge outputs
+- one eval attribution path that can blame:
+  - span proposal
+  - retrieval
+  - final judging
+  - region assembly
+
+Exit criteria:
+
+- end-to-end failures are not mislabeled as judge failures when the real fault
+  is span or region policy
+
+### Phase 1: Stabilize and Version the Candidate Feature Schema
+
+Goal:
+
+- define the exact feature vector that later learned layers consume
+
+This is critical. If the feature schema keeps drifting without versioning, the
+tiny learned judge cannot stabilize.
+
+Candidate feature groups:
+
+- retrieval:
+  - matched lane
+  - q-gram overlap counts per view
+  - shortlist rank
+  - cross-view support
+- verification:
+  - token score
+  - feature score
+  - weighted distances
+  - boundary penalties
+  - alignment op summaries
+- structure:
+  - alias source
+  - identifier-part count
+  - acronym-like
+  - has digits
+  - snake/camel/symbol-derived
+  - span shape match
+- context:
+  - left context tokens
+  - right context tokens
+  - surrounding function-word indicators
+- memory:
+  - user prior for term
+  - user prior for alias
+  - confusion prior for observed span -> chosen term
+  - session/project prior
+  - recency / repetition counters
+
+Deliverables:
+
+- one typed Rust struct for candidate judge features
+- one schema version field
+- one stable JSON/debug rendering of those features
+- one frontend inspector panel for them
+- explicit migration rules when features change
+
+Exit criteria:
+
+- every verified candidate can be rendered as a stable feature record
+- eval can export feature rows for offline and online learning
+- the feature record supports oracle attribution across:
+  - span proposal
+  - retrieval shortlist
+  - final-judge selection
+  - end-to-end outcome
+
+### Phase 2: Add User Memory Before Adding More Models
+
+Goal:
+
+- make the system improve immediately from user edits even before any learned
+  model update happens
+
+This is the first personalization layer.
+
+Memory updates from a user correction should include:
+
+1. if the user adds a new term:
+   - insert lexicon entry
+   - derive aliases and structure metadata
+   - rebuild or incrementally update retrieval state
+2. if the user chooses an existing term:
+   - increment user-local term prior
+   - increment alias prior if a specific spoken form matched
+   - increment confusion stats for observed span -> chosen term
+3. update session/project context:
+   - recent vocabulary
+   - local repetition priors
+
+Required backend work:
+
+- user-local memory store
+- base bundle + overlay loading model
+- overlay precedence and merge policy
+- typed update events from accepted corrections
+- memory-aware candidate feature generation
+- replay and rebuild support from the event log
+
+Required frontend work:
+
+- show whether a score is being helped by user memory
+- show recent/session/project prior contributions in the inspector
+
+Exit criteria:
+
+- user corrections visibly alter future rankings without retraining
+- new vocabulary works immediately after insertion
+
+### Phase 3: Train the Tiny Learned Judge
+
+Goal:
+
+- make feature-based ranking the default learned decision layer
+
+Recommended first formulation:
+
+- pointwise binary classifier: "is this candidate the right correction?"
+
+Baselines to benchmark:
+
+- linear online-friendly model
+- small tree model as the strongest offline tabular baseline
+
+Training examples should capture:
+
+- query span
+- context window
+- candidate features
+- chosen correction
+- keep-original cases
+- hard negatives from the same shortlist
+
+Why pointwise first:
+
+- operationally simpler
+- easy to drive from existing eval traces
+- easy to update online later
+
+What to measure:
+
+- top-1 correction accuracy after deterministic filtering
+- delta versus deterministic-only acceptance
+- calibration of confidence and acceptance margin
+- sensitivity to user priors
+- comparison under time-aware and term-family-isolated splits
+
+Deliverables:
+
+- offline trainer for feature rows
+- artifact format for tiny learned weights
+- inference path inside `beeml`
+- per-candidate contribution breakdown where feasible
+
+Exit criteria:
+
+- the tiny learned judge beats deterministic-only selection on held-out cases
+- user priors measurably improve decisions
+- latency remains cheap on CPU
+
+### Phase 4: Add Online User Updates
+
+Goal:
+
+- let the tiny learned judge improve incrementally from real user corrections
+
+Online update flow:
+
+1. user accepts or overrides a correction
+2. log the candidate set and chosen outcome
+3. update memory immediately
+4. perform a tiny online weight update:
+   - one positive
+   - a few hard negatives
+
+Constraints:
+
+- bounded artifact size
+- local execution
+- deterministic rollback or reset path
+- per-user isolation
+
+Safety rules:
+
+- memory updates should be the default immediate effect
+- weight updates should be conservative and reversible
+- repeated evidence should be preferred over one-off updates
+
+Deliverables:
+
+- online update API in `beeml`
+- user-local weight store
+- debug view for why a user-specific score changed
+
+Exit criteria:
+
+- repeated user choices shift rankings locally
+- no offline retraining is required for normal personalization
+
+### Evaluation Layers
+
+Evaluation should be decomposed into explicit oracle layers, not collapsed into
+one number.
+
+The core layers are:
+
+1. span proposal recall
+   - did we even propose the right region?
+2. shortlist recall at k given span
+   - did retrieval surface the right term?
+3. oracle judge accuracy given shortlist
+   - if the right answer is present, what is the best possible selection
+     accuracy?
+4. end-to-end correction accuracy
+   - what happened in the full pipeline?
+
+This decomposition prevents retrieval, judging, and region-assembly failures
+from being mixed together.
+
+These four layers should be operational together by the time Phase 3 starts,
+since Phase 3 is the first phase where learned judge comparisons become
+decision-relevant.
+
+### Protected Evaluation Slices
+
+Promotion and regression analysis should always include protected slices for:
+
+- acronyms
+- mixed alphanumeric identifiers
+- snake_case and camelCase forms
+- person-name-like near neighbors
+- common-English-word versus technical-term collisions
+- very short spans
+
+These slices matter enough that aggregate metrics alone are not sufficient.
+
+### Phase 5: Benchmark Frozen Neural Fallbacks
+
+Goal:
+
+- use a neural reranker only where it materially helps
+
+Rules:
+
+- benchmark frozen models
+- use them only on top ambiguous cases
+- do not make them the default path until they prove worth the latency and
+  complexity
+
+Good benchmark regime:
+
+- run only on top 2 to 5 candidates
+- compare against deterministic + tiny learned judge
+- test instruction-aware formatting if the model expects it
+
+What to measure:
+
+- ambiguous-case accuracy
+- overall accuracy delta
+- latency delta
+- whether it reduces specific near-neighbor errors:
+  - `Quinn/qwen`
+  - `Marco/MachO`
+  - `request/reqwest`
+
+Exit criteria:
+
+- frozen neural fallback only ships if it improves ambiguous cases enough to
+  justify its cost
+
+### Phase 6: Productize the Judge in `beeml` and `beeml-web`
+
+Goal:
+
+- make the three-level judge a first-class debuggable product feature
+
+`beeml` should expose:
+
+- deterministic judge trace
+- tiny learned judge trace
+- optional neural fallback trace
+- user-memory contributions
+- correction-feedback update APIs
+
+`beeml-web` should expose:
+
+- per-candidate feature table
+- deterministic acceptance explanation
+- tiny learned score and feature contributions
+- neural fallback result when used
+- memory and prior contributions
+- one-click correction capture path
+
+Exit criteria:
+
+- a bad correction can be explained without reading logs
+- a user correction can be traced through memory and model updates
+
+### What We Should Not Do By Default
+
+Do not make these the main plan:
+
+- per-user LoRA or adapter fine-tuning
+- storing new vocabulary in model weights
+- generic prompted LLM judging as the default final decision maker
+
+Those can remain experiments. They should not be the core architecture.
+
+### Resolved Strategic Calls
+
+The following design questions are considered settled unless new evidence
+forces a change:
+
+- vocabulary should live in bundles and overlays, not in model weights
+- user corrections should first update memory and overlays, not trigger default
+  retraining
+- once shortlist quality is good enough, the next leverage moves to the tiny
+  feature-based final judge rather than endless phonetic threshold tuning
+- near-neighbor cases like `Quinn/qwen`, `Marco/MachO`, and
+  `request/reqwest` should be treated as memory/context/final-judge problems
+  once the phonetic layer is already surfacing truthful candidates
 
 ## Acceptance Criteria
 
 This system is in the right shape when all of the following are true:
 
 - the production correction path runs entirely from versioned artifacts
-- retrieval and reranking are measurable separately
+- retrieval and final judging are measurable separately
 - a bad correction can be explained end-to-end in `beeml-web`
 - a missed correction can be localized to:
   - alias coverage
   - retrieval
   - verification
-  - reranking
+  - final judging
 - `beeml-web` is useful as both a product surface and a development debugger
 
 That is the target to build toward.
+
+## Appendix A: Phonetic Retrieval Roadmap
+
+This appendix is the retrieval-specific technical roadmap that supports the
+main system plan above.
+
+The phase numbering in this appendix is local to retrieval work. It is not the
+same as the main roadmap phase numbering above.
+
+This appendix is subordinate to the main roadmap above. If the two ever appear
+to disagree, the main roadmap wins.
+
+### Goal
+
+Replace the current brute-force span proposal path with an indexed phonetic
+retrieval pipeline that:
+
+- starts from a strong ASR transcript (`Qwen/MLX`)
+- uses forced-aligner timings for locality
+- uses `eSpeak` IPA as the main searchable representation
+- retrieves plausible correction candidates quickly enough for interactive use
+- defers context-dependent choice to the later final-judge stage
+
+This appendix is specifically for the non-ZIPA path.
+
+### Current Takeaway
+
+What appears to be true now:
+
+- `Qwen/MLX` transcript quality is already strong enough to be the main text
+  source
+- forced aligner timings are already available and good enough for region
+  locality
+- `eSpeak` IPA has produced the best candidate pairs so far
+- the real unsolved problem is efficient candidate retrieval over phonetic
+  forms
+- the current expensive step is effectively `many transcript spans x many
+  lexicon entries`
+
+### Problem Statement
+
+Given:
+
+- a transcript with word timings
+- optional confidence per token or word later
+- `eSpeak` IPA for transcript words and spans
+- a lexicon containing canonical terms, spoken variants, and confusion pairs
+
+we need:
+
+- a fast way to retrieve plausible correction candidates for contiguous
+  transcript spans
+- without brute-forcing every span against every lexicon entry
+- while preserving enough provenance to debug retrieval failures and tune
+  ranking
+
+We also need retrieval evaluation to distinguish:
+
+- span proposal failures
+- shortlist failures given a correct span
+- later judge failures on a good shortlist
+
+### Non-Goals
+
+For this appendix, do not optimize for:
+
+- audio-based retrieval
+- ZIPA-first alignment
+- end-to-end neural spoken term detection
+- whole-sentence correction as the primary retrieval mechanism
+
+ZIPA can be reevaluated later as an auxiliary signal. It is not the center of
+this design.
+
+### Target Architecture
+
+The pipeline should become:
+
+1. `Qwen/MLX` transcript
+2. forced-aligner word timings
+3. `eSpeak` IPA projection for words and spans
+4. phonetic retrieval index
+5. shortlist verification with feature-aware phonetic distance
+6. candidate feature export for the final judge
+7. context-dependent judging over a small number of local candidates
+
+The key separation is:
+
+- **retrieval** decides which spans and term candidates are plausible
+- **final judging** decides which candidate fits the sentence context, using
+  deterministic scores, tiny learned scoring, and optional neural fallback
+
+### Phase 1: Lexicon Expansion
+
+Build a normalized lexicon representation for retrieval.
+
+Each lexicon entry should include:
+
+- `term`
+- `alias_text`
+- `alias_source`
+  - `canonical`
+  - `spoken`
+  - `confusion`
+- `ipa`
+- `ipa_reduced`
+- `token_count`
+- `phone_count`
+- `identifier_flags`
+  - acronym-like
+  - contains digits
+  - snake/camel/symbol-derived
+
+Do not add G2P N-best yet.
+
+Reason:
+
+- human-entered spoken variants and confusion pairs are already high-signal
+- G2P expansions are likely to increase candidate noise early
+
+### Phase 2: Primary Retrieval Index
+
+Build one main index first:
+
+- boundary-aware IPA 2-gram postings
+- boundary-aware IPA 3-gram postings
+- length bucket
+- token-count bucket
+
+This should be implemented as an inverted index, not brute-force scan.
+
+Suggested stored retrieval features per alias:
+
+- raw IPA q-grams
+- reduced IPA q-grams
+- start/end boundary grams
+- token-count bucket
+- phone-length bucket
+
+The index should return a shortlist with provenance, not just term ids.
+
+Each retrieved hit should retain:
+
+- `term`
+- `alias_source`
+- `matched_alias`
+- `which_index_view_matched`
+- `qgram_overlap_count`
+- `length_bucket_match`
+- `token_count_match`
+
+### Phase 3: Span Enumeration
+
+We still need a span proposal strategy, but it should be cheap and explicit.
+
+Initial version:
+
+- enumerate contiguous spans up to 4 or 5 words
+- derive span IPA from `eSpeak`
+- query the phonetic index for each span
+
+Keep span metadata:
+
+- token range
+- char range
+- time range from forced aligner
+- original text
+- IPA
+- word count
+
+This is still potentially expensive, so it must be paired with retrieval
+filters:
+
+- length bucket match
+- token-count compatibility
+- q-gram overlap threshold
+
+Span policy should be versioned and explicit.
+
+At minimum, the retrieval layer must define:
+
+- maximum span length
+- punctuation and identifier-boundary handling
+- how overlapping spans are retained for later region assembly
+- what provenance is preserved so end-to-end failures can be attributed to span
+  policy rather than retrieval
+
+### Phase 4: Verification
+
+Only verify the top shortlist per span.
+
+Recommended verifier:
+
+- feature-aware phonetic distance
+- use `rspanphon` as the current base
+
+Verifier output should include:
+
+- normalized phonetic similarity
+- raw feature distance
+- candidate/source metadata
+- exact/compact/prefix indicators if useful
+- reusable candidate feature fields for later judging
+
+This verifier should be authoritative for shortlist refinement, but not used as
+the full search algorithm.
+
+### Phase 5: Candidate Feature Export
+
+Before a learned final judge is stable, the retrieval and verifier layers must
+emit one stable and versioned candidate feature record.
+
+This should include:
+
+- retrieval features
+- verification features
+- structure features
+- source priors
+- context window features
+
+This becomes the interface between phonetic retrieval and the later final
+judge.
+
+It should include enough provenance for oracle metrics:
+
+- span-proposal identity
+- retrieval rank
+- shortlist membership
+- verification survival
+
+### Phase 6: Contextual Final Judge
+
+The final judge should be local and comparative.
+
+It should not score random full-sentence mutations independently.
+
+For each proposed region:
+
+- original sentence
+- left context
+- right context
+- original span
+- candidate replacements
+- keep-original option
+
+Ask the judge to choose among local alternatives for that region.
+
+This stage should consume a small, already filtered set of candidates.
+
+The default learned path should be:
+
+- tiny feature-based scorer first
+- frozen neural reranker only for ambiguous cases
+
+### Phase 7: Short-Query Lane
+
+Short phonetic strings behave differently and will likely need special
+handling.
+
+Do this only after the primary index works.
+
+Options:
+
+- stricter thresholds for very short IPA queries
+- explicit acronym and identifier rules
+- later: trie/TST + Levenshtein automaton or deletion index for `k=1`-style
+  short queries
+
+Do not build the full short-query sidecar before the main q-gram path is
+stable.
+
+### Debuggability Requirements
+
+Every retrieval result must preserve provenance.
+
+This is mandatory.
+
+For each shortlisted candidate, we need to know:
+
+- which span generated it
+- which alias source produced it
+- which index view retrieved it
+- why it survived filtering
+- verifier score
+- whether the final judge accepted it
+
+Without this, tuning will be guesswork.
+
+This is also what makes oracle evaluation possible.
+
+### Recommended Module Boundaries
+
+Add new backend modules roughly along these lines:
+
+- `phonetic_lexicon.rs`
+  - lexicon expansion
+  - alias normalization
+  - IPA storage
+
+- `phonetic_index.rs`
+  - q-gram postings
+  - retrieval query path
+  - shortlist generation
+
+- `phonetic_verify.rs`
+  - feature-aware verification
+  - score explanation/debug output
+
+- `region_proposal.rs`
+  - span enumeration
+  - early filters
+  - non-overlapping proposal selection later
+
+Existing sentence-choice logic can initially stay where it is, but it should
+consume the new retrieval outputs.
+
+### Evaluation Plan
+
+We need two retrieval-adjacent evaluation loops here.
+
+#### 1. Retrieval Benchmark
+
+Measure retrieval independent of final judging.
+
+For a fixed set of human examples:
+
+- was the target term retrieved at all?
+- was it in top 1 / top 3 / top 10?
+- how many spans were queried?
+- how many candidates were verified?
+- retrieval latency
+
+#### 2. End-to-End Correction Eval
+
+Measure:
+
+- exact sentence recovery
+- target term recovery
+- target proposed
+- target accepted
+- latency breakdown
+
+Failure buckets should remain explicit:
+
+- no proposal
+- target proposed but not selected
+- wrong proposal selected
+- target-only partial fix
+
+### Implementation Order
+
+Recommended execution order:
+
+1. lexicon normalization for phonetic retrieval
+2. q-gram inverted index over IPA
+3. span query -> shortlist path
+4. feature-aware verifier on shortlist
+5. retrieval benchmark
+6. candidate feature export
+7. tiny learned judge on top of the shortlist
+8. short-query special handling
+9. optional later work:
+   - feature q-gram view
+   - G2P expansions
+   - automaton/trie short-query sidecar
+   - WFST-based alias/verbalization path
+
+### Success Criteria
+
+The first prototype is successful if:
+
+- it eliminates brute-force span-vs-lexicon search
+- target retrieval recall is materially better than current brute-force
+  heuristics
+- it is fast enough for interactive correction
+- it is diagnosable when it fails
+
+The first prototype does **not** need:
+
+- perfect context handling
+- G2P expansions
+- every possible phonetic view
+- ZIPA integration
+
+It needs to produce a trustworthy, inspectable shortlist.
+
+### Open Questions
+
+- how aggressively should spans be enumerated before retrieval cost dominates?
+- should reduced IPA be in the first index or added only after baseline
+  results?
+- when should articulatory-feature retrieval lanes be promoted from retrieval
+  upgrade to baseline requirement?
+- what is the best verifier threshold policy for acronym-like terms?
+- can `Qwen/MLX` token confidence be surfaced soon enough to guide span
+  proposal early?

@@ -8,7 +8,8 @@ This document turns the roadmap into concrete backend work for this repo.
 
 Primary reference:
 
-- [phonetic-retrieval-roadmap.md](/Users/amos/bearcove/hark/asr-synth/docs/phonetic-retrieval-roadmap.md)
+- [beeml-correction-system.md](/Users/amos/bearcove/bee/docs/beeml-correction-system.md)
+  Appendix A: `Phonetic Retrieval Roadmap`
 
 ## Current Status
 
