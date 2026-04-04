@@ -30,6 +30,9 @@ rayon = "1.10.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"], optional = true }
+tracing = "0.1.41"
+tracing-appender = "0.2.3"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt"] }
 vox = { path = "../../../vox/rust/vox", default-features = false, features = ["runtime"] }
 vox-core = { path = "../../../vox/rust/vox-core", optional = true }
 vox-websocket = { path = "../../../vox/rust/vox-websocket", optional = true }

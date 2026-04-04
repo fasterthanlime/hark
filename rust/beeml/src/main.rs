@@ -29,6 +29,10 @@ use beeml::rpc::{
 };
 use serde::Deserialize;
 use tokio::net::TcpListener;
+use tracing::{debug, error, info, warn};
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::fmt::writer::MakeWriterExt;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use vox::{NoopClient, Rx, Tx};
 
 #[derive(Clone)]
@@ -66,6 +70,38 @@ struct EvalCase {
     take: Option<i64>,
     audio_path: Option<String>,
     surface_form: Option<String>,
+}
+
+fn init_tracing() -> Result<WorkerGuard> {
+    let log_dir = env::var("BML_LOG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../logs/beeml"));
+    std::fs::create_dir_all(&log_dir)
+        .with_context(|| format!("creating log directory {}", log_dir.display()))?;
+
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "beeml.log");
+    let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
+    let stderr_writer = std::io::stderr.with_max_level(tracing::Level::INFO);
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,beeml=debug"));
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(stderr_writer)
+                .with_ansi(true),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(file_writer)
+                .with_ansi(false),
+        )
+        .try_init()
+        .context("initializing tracing subscriber")?;
+
+    info!(log_dir = %log_dir.display(), "tracing initialized");
+    Ok(guard)
 }
 
 impl BeeMlService {
@@ -555,6 +591,16 @@ fn build_rapid_fire_decision_set(
         .iter()
         .map(|component| component.hypotheses.len())
         .product::<usize>();
+    debug!(
+        transcript,
+        expected_source_text,
+        is_counterexample,
+        spans = spans.len(),
+        admitted_edits = admitted_edits.len(),
+        components = components.len(),
+        total_combinations,
+        "building rapid fire decision set"
+    );
     let (search_mode, mut sentence_hypotheses) =
         compose_sentence_hypotheses(transcript, &components, total_combinations);
 
@@ -657,6 +703,22 @@ fn build_rapid_fire_decision_set(
         first.is_judge_pick = true;
     }
 
+    info!(
+        transcript,
+        expected_source_text,
+        is_counterexample,
+        search_mode,
+        spans = spans.len(),
+        admitted_edits = admitted_edits.len(),
+        components = components.len(),
+        total_combinations,
+        visible_choices = choices.len(),
+        no_exact_match = !choices.iter().any(|choice| choice.is_gold),
+        top_choice_sentence = choices.first().map(|choice| choice.sentence.as_str()).unwrap_or(""),
+        top_choice_keep = choices.first().map(|choice| choice.choose_keep_original).unwrap_or(true),
+        "rapid fire decision set built"
+    );
+
     RapidFireDecisionSet {
         no_exact_match: !choices.iter().any(|choice| choice.is_gold),
         rejected_group_spans: Vec::new(),
@@ -735,6 +797,15 @@ fn collect_admitted_edits(spans: &[SpanDebugTrace], is_counterexample: bool) -> 
                 .then_with(|| rhs.score.total_cmp(&lhs.score))
         });
         admitted_for_span.truncate(RAPID_FIRE_MAX_EDITS_PER_SPAN);
+        debug!(
+            span = %span.span.text,
+            token_start = span.span.token_start,
+            token_end = span.span.token_end,
+            keep_probability,
+            admitted = admitted_for_span.len(),
+            is_counterexample,
+            "collected admitted edits for span"
+        );
         edits.extend(admitted_for_span);
     }
     dedupe_edit_candidates(edits)
@@ -1463,6 +1534,7 @@ fn randomish_case_key(case: &EvalCase, seed: u64) -> u64 {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
+    let _tracing_guard = init_tracing()?;
     let listen_addr = env::var("BML_WS_ADDR").unwrap_or_else(|_| "127.0.0.1:9944".to_string());
     let model_dir = env::var("BEE_ASR_MODEL_DIR")
         .map(PathBuf::from)
@@ -1474,7 +1546,7 @@ async fn main() -> Result<()> {
         .map(PathBuf::from)
         .context("BEE_ALIGNER_DIR must be set")?;
 
-    eprintln!("loading ASR engine from {}", model_dir.display());
+    info!(model_dir = %model_dir.display(), "loading ASR engine");
     let engine = Engine::load(&EngineConfig {
         model_dir: &model_dir,
         tokenizer_path: &tokenizer_path,
@@ -1506,7 +1578,7 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("binding websocket listener on {listen_addr}"))?;
 
-    eprintln!("beeml vox websocket server listening on ws://{listen_addr}");
+    info!(listen_addr, "beeml vox websocket server listening");
 
     loop {
         let (stream, peer_addr) = listener
@@ -1519,7 +1591,7 @@ async fn main() -> Result<()> {
             let link = match vox_websocket::WsLink::server(stream).await {
                 Ok(link) => link,
                 Err(error) => {
-                    eprintln!("websocket handshake failed for {peer_addr}: {error}");
+                    warn!(%peer_addr, error = %error, "websocket handshake failed");
                     return;
                 }
             };
@@ -1531,12 +1603,12 @@ async fn main() -> Result<()> {
 
             match establish {
                 Ok(client) => {
-                    eprintln!("client connected: {peer_addr}");
+                    info!(%peer_addr, "client connected");
                     client.caller.closed().await;
-                    eprintln!("client disconnected: {peer_addr}");
+                    info!(%peer_addr, "client disconnected");
                 }
                 Err(error) => {
-                    eprintln!("vox session establish failed for {peer_addr}: {error}");
+                    error!(%peer_addr, error = %error, "vox session establish failed");
                 }
             }
         });

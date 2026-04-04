@@ -29,6 +29,7 @@ hark-*.zip
 bee-*.zip
 default.profraw
 target/
+logs/
 models/
 output*.wav
 target/
