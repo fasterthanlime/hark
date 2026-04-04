@@ -57,8 +57,6 @@ export function JudgeRapidFirePanel({
 }) {
   const [deckLimit, setDeckLimit] = useState(80);
   const [maxSpanWords, setMaxSpanWords] = useState(4);
-  const [shortlistLimit, setShortlistLimit] = useState(8);
-  const [verifyLimit, setVerifyLimit] = useState(5);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cases, setCases] = useState<RetrievalPrototypeTeachingCase[]>([]);
@@ -79,8 +77,8 @@ export function JudgeRapidFirePanel({
       const response = await client.runRetrievalPrototypeEval({
         limit: 500,
         max_span_words: maxSpanWords,
-        shortlist_limit: shortlistLimit,
-        verify_limit: verifyLimit,
+        shortlist_limit: 50,
+        verify_limit: 50,
       });
       if (!response.ok) return;
       setEvalResult((prev) => {
@@ -90,7 +88,7 @@ export function JudgeRapidFirePanel({
     } finally {
       setEvalRunning(false);
     }
-  }, [wsUrl, maxSpanWords, shortlistLimit, verifyLimit]);
+  }, [wsUrl, maxSpanWords]);
 
   const loadDeck = useCallback(async () => {
     try {
@@ -126,8 +124,8 @@ export function JudgeRapidFirePanel({
         transcript: currentCase.transcript,
         words: makeApproximateWords(currentCase.transcript),
         max_span_words: maxSpanWords,
-        shortlist_limit: shortlistLimit,
-        verify_limit: verifyLimit,
+        shortlist_limit: 50,
+        verify_limit: 50,
         expected_source_text: currentCase.source_text,
       });
       if (!result.ok) throw new Error(result.error);
@@ -137,7 +135,7 @@ export function JudgeRapidFirePanel({
       setError(e instanceof Error ? e.message : String(e));
       setStatus(null);
     }
-  }, [currentCase, maxSpanWords, shortlistLimit, verifyLimit, wsUrl]);
+  }, [currentCase, maxSpanWords, wsUrl]);
 
   useEffect(() => {
     if (cases.length === 0) return;
@@ -160,8 +158,8 @@ export function JudgeRapidFirePanel({
             transcript: currentCase.transcript,
             words: makeApproximateWords(currentCase.transcript),
             max_span_words: maxSpanWords,
-            shortlist_limit: shortlistLimit,
-            verify_limit: verifyLimit,
+            shortlist_limit: 50,
+            verify_limit: 50,
             expected_source_text: currentCase.source_text,
           },
           span_token_start: choice.span_token_start,
@@ -192,7 +190,7 @@ export function JudgeRapidFirePanel({
         setTeachingKey(null);
       }
     },
-    [cases.length, currentCase, maxSpanWords, shortlistLimit, verifyLimit, wsUrl, runEval],
+    [cases.length, currentCase, maxSpanWords, wsUrl, runEval],
   );
 
   const skipCase = useCallback(() => {
@@ -219,16 +217,6 @@ export function JudgeRapidFirePanel({
                 <span>max span words</span>
                 <input type="number" min={1} max={8} value={maxSpanWords}
                   onChange={(e) => setMaxSpanWords(Number(e.target.value) || 1)} />
-              </label>
-              <label>
-                <span>shortlist</span>
-                <input type="number" min={1} max={20} value={shortlistLimit}
-                  onChange={(e) => setShortlistLimit(Number(e.target.value) || 1)} />
-              </label>
-              <label>
-                <span>verify</span>
-                <input type="number" min={1} max={20} value={verifyLimit}
-                  onChange={(e) => setVerifyLimit(Number(e.target.value) || 1)} />
               </label>
             </div>
             <button className="primary" aria-label="Load Deck" onClick={() => void loadDeck()}>Load Deck</button>
