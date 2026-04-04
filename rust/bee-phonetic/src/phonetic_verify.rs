@@ -35,10 +35,17 @@ pub fn verify_shortlist(
             let alias = index.aliases.get(candidate.alias_id as usize)?;
             let token_score =
                 crate::prototype::phoneme_similarity(&span.ipa_tokens, &alias.ipa_tokens)?;
-            let feature_score =
+            let should_apply_feature_bonus = token_score >= 0.45
+                && candidate.coarse_score >= 0.45
+                && candidate.phone_count_delta.abs() <= 2;
+            let feature_score = if should_apply_feature_bonus {
                 crate::feature_view::feature_similarity(&span.ipa_tokens, &alias.ipa_tokens)
-                    .unwrap_or(token_score);
-            let phonetic_score = ((token_score * 0.45) + (feature_score * 0.55)).clamp(0.0, 1.0);
+                    .unwrap_or(token_score)
+            } else {
+                token_score
+            };
+            let feature_bonus = (feature_score - token_score).max(0.0) * 0.25;
+            let phonetic_score = (token_score + feature_bonus).clamp(0.0, 1.0);
             Some(VerifiedCandidate {
                 alias_id: candidate.alias_id,
                 term: candidate.term.clone(),
