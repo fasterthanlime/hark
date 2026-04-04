@@ -259,42 +259,36 @@ fn feature_boundary_penalty(
     }
 }
 
+// Panphon feature salience weights (Mortensen et al. 2016).
+// Order matches ipa_all.csv columns: syl, son, cons, cont, delrel, lat, nas,
+// strid, voi, sg, cg, ant, cor, distr, lab, hi, lo, back, round, velaric, tense, long, hitone, hireg
+const FEATURE_WEIGHTS: &[f32] = &[
+    1.0, 1.0, 1.0, 0.5, 0.25, 0.25, 0.25, 0.125, 0.125, 0.125, 0.125, 0.25,
+    0.25, 0.125, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.125, 0.0, 0.0,
+];
+const FEATURE_WEIGHT_SUM: f32 = 7.25; // sum of weights (hitone/hireg are 0.0)
+
 fn substitution_cost(a: &[f32], b: &[f32]) -> f32 {
     if a == b {
         return 0.0;
     }
 
-    let diff_sum = a
+    let weighted_diff: f32 = a
         .iter()
         .zip(b)
-        .map(|(lhs, rhs)| (lhs - rhs).abs() / 2.0)
-        .sum::<f32>();
-    (diff_sum / a.len().max(1) as f32).clamp(0.0, 1.0)
+        .enumerate()
+        .map(|(i, (lhs, rhs))| {
+            let w = FEATURE_WEIGHTS.get(i).copied().unwrap_or(0.125);
+            (lhs - rhs).abs() * w
+        })
+        .sum();
+    (weighted_diff / FEATURE_WEIGHT_SUM).clamp(0.0, 1.0)
 }
 
-fn insertion_deletion_cost(vec: &[f32]) -> f32 {
-    let table = FEATURE_TABLE.get_or_init(FeatureTable::new);
-    let syllabic = feature_flag(table, vec, "syl");
-    let continuant = feature_flag(table, vec, "cont");
-    let sonorant = feature_flag(table, vec, "son");
-    let glottal = feature_flag(table, vec, "cg") || feature_flag(table, vec, "sg");
-
-    if glottal {
-        0.55
-    } else if syllabic || sonorant {
-        0.72
-    } else if continuant {
-        0.82
-    } else {
-        0.9
-    }
-}
-
-fn feature_flag(table: &FeatureTable, vec: &[f32], name: &str) -> bool {
-    let Some(idx) = table.fnames.iter().position(|feature| feature == name) else {
-        return false;
-    };
-    vec.get(idx).copied().unwrap_or(0.0) > 0.0
+fn insertion_deletion_cost(_vec: &[f32]) -> f32 {
+    // Panphon: inserting or deleting any segment costs sum(weights) / sum(weights) = 1.0.
+    // This makes deletion expensive — you can't cheaply delete your way to a match.
+    1.0
 }
 
 pub fn feature_vector_for_token(token: &str) -> Option<Vec<f32>> {

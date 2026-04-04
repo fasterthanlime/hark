@@ -250,7 +250,6 @@ pub fn query_index(
                     token_bonus,
                     phone_bonus,
                     extra_length_penalty,
-                    structure_bonus,
                 ),
             })
         })
@@ -373,15 +372,9 @@ fn coarse_score(
     token_bonus: f32,
     phone_bonus: f32,
     extra_length_penalty: f32,
-    structure_bonus: f32,
 ) -> f32 {
     let support_bonus = 0.05 * cross_view_support.saturating_sub(1) as f32;
-    best_view_score
-        + support_bonus
-        + token_bonus
-        + phone_bonus
-        + extra_length_penalty
-        + structure_bonus
+    best_view_score + support_bonus + token_bonus + phone_bonus + extra_length_penalty
 }
 
 fn structure_bonus(
@@ -436,13 +429,10 @@ fn structure_bonus(
 
 fn view_weight(view: &IndexView) -> f32 {
     match view {
-        IndexView::RawIpa2
-        | IndexView::RawIpa3
-        | IndexView::ReducedIpa2
-        | IndexView::ReducedIpa3 => 1.0,
-        // Feature views are support lanes, not primary retrieval lanes.
-        IndexView::Feature2 => 0.10,
-        IndexView::Feature3 => 0.15,
+        IndexView::Feature2 => 0.90,
+        IndexView::Feature3 => 1.0,
+        IndexView::RawIpa2 | IndexView::ReducedIpa2 => 0.70,
+        IndexView::RawIpa3 | IndexView::ReducedIpa3 => 0.80,
         IndexView::ShortQueryFallback => 0.9,
     }
 }

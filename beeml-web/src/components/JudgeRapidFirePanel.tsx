@@ -3,8 +3,10 @@ import { connectBeeMl } from "../beeml.generated";
 import type {
   RapidFireChoice,
   RapidFireEdit,
+  RetrievalPrototypeEvalResult,
   RetrievalPrototypeProbeResult,
   RetrievalPrototypeTeachingCase,
+  SpanDebugTrace,
 } from "../beeml.generated";
 import { makeApproximateWords } from "./retrievalPrototypeUtils";
 
@@ -26,10 +28,13 @@ function SentenceWithEdits({ sentence, edits }: { sentence: string; edits: Rapid
     }
 
     parts.push(
-      <span key={`edit-${idx}`}>
-        <span className="edit-from">{edit.replaced_text}</span>
-        <span className="edit-arrow">{" → "}</span>
-        <span className="edit-to">{edit.replacement_text}</span>
+      <span key={`edit-${idx}`} style={{ position: "relative", display: "inline" }}>
+        <span style={{ color: "var(--green, #22c55e)", fontWeight: 600 }}>{edit.replacement_text}</span>
+        <span style={{
+          position: "absolute", left: 0, top: "100%",
+          fontSize: "0.7rem", opacity: 0.5, whiteSpace: "nowrap",
+          textDecoration: "line-through", pointerEvents: "none",
+        }}>{edit.replaced_text}</span>
       </span>
     );
 
@@ -60,8 +65,32 @@ export function JudgeRapidFirePanel({
   const [caseIndex, setCaseIndex] = useState(0);
   const [probeResult, setProbeResult] = useState<RetrievalPrototypeProbeResult | null>(null);
   const [teachingKey, setTeachingKey] = useState<string | null>(null);
+  const [evalResult, setEvalResult] = useState<RetrievalPrototypeEvalResult | null>(null);
+  const [prevEvalResult, setPrevEvalResult] = useState<RetrievalPrototypeEvalResult | null>(null);
+  const [evalRunning, setEvalRunning] = useState(false);
+  const [teachCount, setTeachCount] = useState(0);
 
   const currentCase = cases[caseIndex] ?? null;
+
+  const runEval = useCallback(async () => {
+    try {
+      setEvalRunning(true);
+      const client = await connectBeeMl(wsUrl);
+      const response = await client.runRetrievalPrototypeEval({
+        limit: 500,
+        max_span_words: maxSpanWords,
+        shortlist_limit: shortlistLimit,
+        verify_limit: verifyLimit,
+      });
+      if (!response.ok) return;
+      setEvalResult((prev) => {
+        setPrevEvalResult(prev);
+        return response.value;
+      });
+    } finally {
+      setEvalRunning(false);
+    }
+  }, [wsUrl, maxSpanWords, shortlistLimit, verifyLimit]);
 
   const loadDeck = useCallback(async () => {
     try {
@@ -76,12 +105,16 @@ export function JudgeRapidFirePanel({
       setCases(result.value.cases);
       setCaseIndex(0);
       setProbeResult(null);
+      setEvalResult(null);
+      setPrevEvalResult(null);
+      setTeachCount(0);
       setStatus(null);
+      void runEval();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setStatus(null);
     }
-  }, [deckLimit, wsUrl]);
+  }, [deckLimit, wsUrl, runEval]);
 
   const probeCurrentCase = useCallback(async () => {
     if (!currentCase) return;
@@ -149,7 +182,9 @@ export function JudgeRapidFirePanel({
         if (!result.ok) throw new Error(result.error);
         setProbeResult(result.value);
         setCaseIndex((index) => Math.min(index + 1, Math.max(cases.length - 1, 0)));
+        setTeachCount((n) => n + 1);
         setStatus(null);
+        void runEval();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         setStatus(null);
@@ -157,7 +192,7 @@ export function JudgeRapidFirePanel({
         setTeachingKey(null);
       }
     },
-    [cases.length, currentCase, maxSpanWords, shortlistLimit, verifyLimit, wsUrl],
+    [cases.length, currentCase, maxSpanWords, shortlistLimit, verifyLimit, wsUrl, runEval],
   );
 
   const skipCase = useCallback(() => {
@@ -217,6 +252,28 @@ export function JudgeRapidFirePanel({
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <strong>Rapid Fire</strong>
             <span className="mini-badge">{caseIndex + 1} / {cases.length}</span>
+            {currentCase && <span className="mini-badge">id {currentCase.case_id}</span>}
+            {currentCase && <span className="mini-badge">term {currentCase.target_term}</span>}
+            {teachCount > 0 && <span className="mini-badge">{teachCount} taught</span>}
+            {evalResult && (() => {
+              const pct = Math.round((evalResult.judge_correct / evalResult.evaluated_cases) * 100);
+              const delta = prevEvalResult
+                ? evalResult.judge_correct - prevEvalResult.judge_correct
+                : null;
+              return (
+                <span style={{ fontVariantNumeric: "tabular-nums", fontSize: "1.1rem", fontWeight: 700, letterSpacing: "-0.01em" }}>
+                  {evalRunning ? <span style={{ opacity: 0.5 }}>eval...</span> : <>
+                    {evalResult.judge_correct}/{evalResult.evaluated_cases} ({pct}%)
+                    {delta !== null && delta !== 0 && (
+                      <span style={{ color: delta > 0 ? "var(--green, #22c55e)" : "var(--red, #ef4444)", marginLeft: "0.25rem" }}>
+                        {delta > 0 ? `+${delta}` : delta}
+                      </span>
+                    )}
+                  </>}
+                </span>
+              );
+            })()}
+            {evalRunning && !evalResult && <span className="status-pill">eval...</span>}
             {status && <span className="status-pill">{status}</span>}
             {error && <span className="error-pill">{error}</span>}
           </div>
@@ -244,20 +301,13 @@ export function JudgeRapidFirePanel({
             </div>
           </div>
 
-          {/* Transcript */}
-          <div className="choice-row choice-row-context">
-            <div className="choice-row-main">
-              <div className="sentence-preview-line">{currentCase.transcript}</div>
-            </div>
-            <div className="choice-row-meta">
-              <span className="choice-flags">transcript</span>
-            </div>
-          </div>
-
           {rapidFire ? (
             <>
-              {/* Composed sentence choices — the primary labeling surface */}
-              {rapidFire.choices.map((choice) => {
+              {/* Composed sentence choices — keep_original first, then edits */}
+              {[...rapidFire.choices].sort((a, b) => {
+                if (a.choose_keep_original !== b.choose_keep_original) return a.choose_keep_original ? -1 : 1;
+                return 0;
+              }).map((choice) => {
                 const key = `${currentCase.case_id}:${choice.option_id}`;
                 const classes = ["choice-button"];
                 if (choice.choose_keep_original) classes.push("choice-button-keep");
@@ -278,6 +328,8 @@ export function JudgeRapidFirePanel({
                     </div>
                     <div className="choice-row-meta">
                       <span className="choice-flags">
+                        {choice.choose_keep_original ? "keep transcript" : ""}
+                        {choice.choose_keep_original && (choice.is_judge_pick || choice.is_gold) ? " · " : ""}
                         {choice.is_judge_pick ? "judge" : ""}
                         {choice.is_judge_pick && choice.is_gold ? " · " : ""}
                         {choice.is_gold ? "gold" : ""}
@@ -288,61 +340,125 @@ export function JudgeRapidFirePanel({
                 );
               })}
 
-              {/* Skip: advance without teaching */}
+              {/* Skip — no useful choice available */}
               <button className="choice-button choice-button-keep"
-                aria-label="Skip case"
                 onClick={skipCase}>
                 <div className="choice-row-main">
-                  <div className="sentence-preview-line" style={{ color: "var(--text-muted)" }}>
-                    skip
-                  </div>
+                  <div className="sentence-preview-line" style={{ color: "var(--text-muted)" }}>Skip this case</div>
                 </div>
                 <div className="choice-row-meta">
                   <span className="choice-flags">no teach</span>
                 </div>
               </button>
 
-              {/* Debug: components, hypotheses, search metadata */}
-              {(rapidFire.components.length > 0 || rapidFire.search_mode || rapidFire.total_combinations > 0) && (
-                <details className="debug-search-expander">
-                  <summary>Debug search</summary>
-                  <div className="debug-search-content">
-                    <div className="debug-search-meta">
-                      {rapidFire.search_mode && <span>mode: {rapidFire.search_mode}</span>}
-                      {rapidFire.total_combinations > 0 && <span>combinations: {rapidFire.total_combinations}</span>}
-                      {rapidFire.no_exact_match && <span className="debug-warn">no exact match</span>}
-                    </div>
-                    {rapidFire.components.map((comp) => {
-                      const spanRange = comp.spans.length > 0
-                        ? `${comp.spans[0].token_start}\u2013${comp.spans[comp.spans.length - 1].token_end}`
-                        : "?";
-                      return (
-                        <div key={comp.component_id} className="component-group">
-                          <div className="component-header">
-                            component {comp.component_id} \u00b7 tokens {spanRange}
+              {/* Debug: span-level retrieval diagnostics */}
+              {probeResult && (() => {
+                const targetTerm = currentCase?.target_term?.toLowerCase() ?? "";
+                const interestingSpans = probeResult.spans
+                  .filter((s: SpanDebugTrace) => s.candidates.length > 0)
+                  .sort((a: SpanDebugTrace, b: SpanDebugTrace) => {
+                    const aHasTarget = a.candidates.some(c => c.term.toLowerCase() === targetTerm) ? 1 : 0;
+                    const bHasTarget = b.candidates.some(c => c.term.toLowerCase() === targetTerm) ? 1 : 0;
+                    if (aHasTarget !== bHasTarget) return bHasTarget - aHasTarget;
+                    const aMax = Math.max(...a.candidates.map(c => c.features.acceptance_score));
+                    const bMax = Math.max(...b.candidates.map(c => c.features.acceptance_score));
+                    return bMax - aMax;
+                  })
+                  .slice(0, 16);
+                return (
+                  <details className="debug-search-expander">
+                    <summary>
+                      Debug search
+                      {rapidFire.no_exact_match && <span className="debug-warn" style={{ marginLeft: "0.5rem" }}>no exact match</span>}
+                      <span style={{ marginLeft: "0.5rem", opacity: 0.5 }}>
+                        {rapidFire.search_mode} · {probeResult.spans.length} spans · {interestingSpans.length} with candidates
+                      </span>
+                    </summary>
+                    <div className="debug-search-content" style={{ fontSize: "0.95rem" }}>
+                      {/* Component composition: how edits got grouped and combined */}
+                      {rapidFire.components.length > 0 && (
+                        <div style={{ marginBottom: "0.75rem", borderBottom: "1px solid var(--border, #333)", paddingBottom: "0.5rem" }}>
+                          <div style={{ fontWeight: 600, marginBottom: "0.25rem", fontSize: "0.85rem" }}>
+                            Components ({rapidFire.components.length}) · {rapidFire.total_combinations} combinations · {rapidFire.search_mode}
                           </div>
-                          {comp.hypotheses.map((hyp, hi) => (
-                            <div key={hi} className="hypothesis-row">
-                              <div className="hypothesis-diff">
-                                {hyp.choose_keep_original ? (
-                                  <span className="hypothesis-keep">keep</span>
-                                ) : (
-                                  <>
-                                    <span className="edit-from">{hyp.replaced_text}</span>
-                                    <span className="edit-arrow">{" \u2192 "}</span>
-                                    <span className="edit-to">{hyp.replacement_text}</span>
-                                  </>
-                                )}
+                          {rapidFire.components.map((comp) => {
+                            const spanRange = comp.spans.map(s => `${s.token_start}:${s.token_end}`).join(", ");
+                            return (
+                              <div key={comp.component_id} style={{ marginBottom: "0.5rem", borderLeft: "2px solid var(--border, #555)", paddingLeft: "0.5rem" }}>
+                                <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>
+                                  component {comp.component_id} · tokens {spanRange}
+                                </div>
+                                {comp.hypotheses.map((hyp, hi) => (
+                                  <div key={hi} style={{ fontSize: "0.8rem", marginLeft: "0.5rem", display: "flex", justifyContent: "space-between", gap: "1rem" }}>
+                                    {hyp.choose_keep_original ? (
+                                      <span style={{ opacity: 0.5 }}>keep original</span>
+                                    ) : (
+                                      <span>
+                                        <span style={{ textDecoration: "line-through", opacity: 0.5 }}>{hyp.replaced_text}</span>
+                                        {" → "}
+                                        <span style={{ color: "var(--green, #22c55e)" }}>{hyp.replacement_text}</span>
+                                      </span>
+                                    )}
+                                    <span style={{ opacity: 0.6, fontVariantNumeric: "tabular-nums" }}>{hyp.probability.toFixed(3)}</span>
+                                  </div>
+                                ))}
                               </div>
-                              <span className="hypothesis-prob">{hyp.probability.toFixed(3)}</span>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
-                      );
-                    })}
-                  </div>
-                </details>
-              )}
+                      )}
+
+                      {interestingSpans.map((s: SpanDebugTrace, si: number) => {
+                        const hasTarget = s.candidates.some(c => c.term.toLowerCase() === targetTerm);
+                        return (
+                          <div key={si} style={{ marginBottom: "0.75rem", borderLeft: hasTarget ? "2px solid var(--green, #22c55e)" : "2px solid var(--border, #333)", paddingLeft: "0.5rem" }}>
+                            <div style={{ fontWeight: 600, marginBottom: "0.15rem" }}>
+                              "{s.span.text}" <span style={{ opacity: 0.5, fontWeight: 400 }}>tokens {s.span.token_start}:{s.span.token_end}</span>
+                            </div>
+                            <div style={{ fontSize: "0.8rem", opacity: 0.6, marginBottom: "0.25rem", fontFamily: "'Manuale IPA', serif" }}>
+                              ipa: {s.span.ipa_tokens.join(" ")}
+                            </div>
+                            {s.candidates.slice(0, 4).map((c, ci) => {
+                              const isTarget = c.term.toLowerCase() === targetTerm;
+                              const failedFilters = c.filter_decisions.filter(f => !f.passed);
+                              return (
+                                <div key={ci} style={{
+                                  fontSize: "0.8rem", marginLeft: "0.5rem", marginBottom: "0.15rem",
+                                  color: isTarget ? "var(--green, #22c55e)" : undefined,
+                                  opacity: c.accepted ? 1 : 0.6,
+                                }}>
+                                  <span style={{ fontWeight: isTarget ? 700 : 400 }}>{c.term}</span>
+                                  <span style={{ opacity: 0.5 }}> ({c.alias_source.tag})</span>
+                                  {" "}accept={c.features.acceptance_score.toFixed(2)}
+                                  {" "}phonetic={c.features.phonetic_score.toFixed(2)}
+                                  {" "}coarse={c.features.coarse_score.toFixed(2)}
+                                  {c.accepted ? " \u2713" : ""}
+                                  {failedFilters.length > 0 && (
+                                    <span style={{ color: "var(--red, #ef4444)" }}>
+                                      {" "}{failedFilters.map(f => `${f.name}: ${f.detail}`).join("; ")}
+                                    </span>
+                                  )}
+                                  <div style={{ fontFamily: "'Manuale IPA', serif", opacity: 0.5, marginLeft: "1rem" }}>
+                                    ipa: {c.alias_ipa_tokens.join(" ")}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            {s.candidates.length > 4 && (
+                              <div style={{ fontSize: "0.75rem", opacity: 0.4, marginLeft: "0.5rem" }}>
+                                +{s.candidates.length - 4} more candidates
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                      {interestingSpans.length === 0 && (
+                        <div style={{ opacity: 0.5 }}>No spans produced any candidates.</div>
+                      )}
+                    </div>
+                  </details>
+                );
+              })()}
             </>
           ) : (
             <div className="choice-row choice-row-context">

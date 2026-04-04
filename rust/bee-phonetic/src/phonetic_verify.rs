@@ -102,41 +102,33 @@ fn score_candidate(
     let alias = index.aliases.get(candidate.alias_id as usize)?;
     let token_details =
         crate::prototype::phoneme_similarity_details(&span.ipa_tokens, &alias.ipa_tokens)?;
+    let feature_details = crate::feature_view::feature_similarity_details_with_labels(
+        &span.ipa_tokens,
+        span_feature_vectors,
+        &alias.ipa_tokens,
+        index
+            .alias_feature_vectors
+            .get(candidate.alias_id as usize)?,
+        span.ipa_tokens.len().max(alias.ipa_tokens.len()),
+    )
+    .unwrap_or(crate::feature_view::FeatureSimilarityDetails {
+        distance: token_details.distance as f32,
+        weighted_distance: token_details.weighted_distance,
+        boundary_penalty: token_details.boundary_penalty,
+        max_len: token_details.max_len,
+        similarity: token_details.similarity,
+        ops: Vec::new(),
+    });
+    // Feature gate flags are kept for the judge's feature vector but no longer
+    // control whether feature similarity is computed — it's always computed.
     let feature_gate_token_ok = token_details.similarity >= 0.45;
     let feature_gate_coarse_ok = candidate.coarse_score >= 0.45;
     let feature_gate_phone_ok = candidate.phone_count_delta.abs() <= 2;
-    let should_apply_feature_bonus =
-        feature_gate_token_ok && feature_gate_coarse_ok && feature_gate_phone_ok;
-    let feature_details = if should_apply_feature_bonus {
-        crate::feature_view::feature_similarity_details_with_labels(
-            &span.ipa_tokens,
-            span_feature_vectors,
-            &alias.ipa_tokens,
-            index
-                .alias_feature_vectors
-                .get(candidate.alias_id as usize)?,
-            span.ipa_tokens.len().max(alias.ipa_tokens.len()),
-        )
-        .unwrap_or(crate::feature_view::FeatureSimilarityDetails {
-            distance: token_details.distance as f32,
-            weighted_distance: token_details.weighted_distance,
-            boundary_penalty: token_details.boundary_penalty,
-            max_len: token_details.max_len,
-            similarity: token_details.similarity,
-            ops: Vec::new(),
-        })
-    } else {
-        crate::feature_view::FeatureSimilarityDetails {
-            distance: token_details.distance as f32,
-            weighted_distance: token_details.weighted_distance,
-            boundary_penalty: token_details.boundary_penalty,
-            max_len: token_details.max_len,
-            similarity: token_details.similarity,
-            ops: Vec::new(),
-        }
-    };
-    let feature_bonus = (feature_details.similarity - token_details.similarity).max(0.0) * 0.25;
-    let phonetic_score = (token_details.similarity + feature_bonus).clamp(0.0, 1.0);
+    // Phonetic score combines both signals: feature similarity (articulatory) is
+    // more nuanced but can be too permissive alone; token similarity (IPA Levenshtein)
+    // is cruder but a good sanity check. We average them so both must be reasonable.
+    let feature_bonus = (feature_details.similarity - token_details.similarity).max(0.0);
+    let phonetic_score = (token_details.similarity + feature_details.similarity) * 0.5;
     let short_guard_applied = (span.token_end - span.token_start) == 1
         && span.ipa_tokens.len() <= 4
         && alias.token_count == 1
@@ -153,8 +145,9 @@ fn score_candidate(
     let low_content_guard_passed = !low_content_guard_applied
         || token_details.similarity >= 0.75
         || feature_details.similarity >= 0.85;
-    let acceptance_score = phonetic_score + candidate.structure_bonus;
+    let acceptance_score = phonetic_score;
     let acceptance_floor_passed = acceptance_score >= 0.35
+        && phonetic_score >= 0.50
         && !(candidate.coarse_score < 0.20 && phonetic_score < 0.50)
         && !(token_details.similarity < 0.25 && feature_details.similarity < 0.45);
     let verified = low_content_guard_passed && short_guard_passed && acceptance_floor_passed;
@@ -198,7 +191,7 @@ fn score_candidate(
         low_content_guard_applied,
         low_content_guard_passed,
         acceptance_floor_passed,
-        used_feature_bonus: should_apply_feature_bonus && feature_bonus > 0.0,
+        used_feature_bonus: feature_bonus > 0.0,
         phonetic_score,
         acceptance_score,
         verified,
@@ -342,6 +335,55 @@ mod tests {
         assert!(
             scored.iter().all(|candidate| !candidate.verified),
             "{scored:#?}"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_low_phonetic_score_despite_structure_bonus() {
+        // "with U8" (w ɪ ð j uː eɪ t) vs SQLite (s iː k w l aɪ t):
+        // phonetic similarity ~0.28 is garbage. The candidate should not be
+        // verified even if structure_bonus inflates acceptance_score above the floor.
+        // We bypass index query and feed the candidate directly to score_shortlist.
+        let index = build_index(vec![
+            alias(0, "SQLite", "SQLite", "s i k w l aɪ t"),
+        ]);
+        let span = TranscriptSpan {
+            token_start: 0,
+            token_end: 2,
+            char_start: 0,
+            char_end: 7,
+            start_sec: None,
+            end_sec: None,
+            text: "with U8".to_string(),
+            ipa_tokens: crate::prototype::parse_reviewed_ipa("w ɪ ð j uː eɪ t"),
+            reduced_ipa_tokens: crate::phonetic_lexicon::reduce_ipa_tokens(
+                &crate::prototype::parse_reviewed_ipa("w ɪ ð j uː eɪ t"),
+            ),
+        };
+        // Simulate a candidate that made the shortlist with a high coarse score
+        let fake_shortlist = vec![crate::phonetic_index::RetrievalCandidate {
+            alias_id: 0,
+            term: "SQLite".to_string(),
+            alias_text: "SQLite".to_string(),
+            alias_source: AliasSource::Canonical,
+            matched_view: crate::phonetic_index::IndexView::RawIpa2,
+            qgram_overlap: 4,
+            total_qgram_overlap: 6,
+            best_view_score: 0.5,
+            cross_view_support: 2,
+            token_count_match: true,
+            phone_count_delta: 0,
+            token_bonus: 0.15,
+            phone_bonus: 0.15,
+            extra_length_penalty: 0.0,
+            structure_bonus: 0.10,
+            coarse_score: 0.63,
+        }];
+        let scored = score_shortlist(&span, &fake_shortlist, &index);
+        assert!(
+            scored.iter().all(|c| !c.verified),
+            "SQLite with phonetic={:.2} should not verify for 'with U8': {scored:#?}",
+            scored.first().map(|c| c.phonetic_score).unwrap_or(0.0)
         );
     }
 }

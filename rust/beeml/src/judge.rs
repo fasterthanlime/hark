@@ -12,6 +12,8 @@ const LOW_CONTENT: &[&str] = &[
     "there", "here",
 ];
 
+// Each candidate is scored independently: "should this replacement happen?"
+// All candidates share the same feature space so learning transfers across cases.
 const FEATURE_NAMES: &[&str] = &[
     "bias",
     "acceptance_score",
@@ -40,18 +42,45 @@ const FEATURE_NAMES: &[&str] = &[
     "verified",
     "span_token_count",
     "span_phone_count",
-    "keep_original_bias",
-    "keep_original_span_low_content",
-    "keep_original_best_acceptance",
-    "keep_original_best_phonetic",
-    "keep_original_candidate_count",
+    "span_low_content",
 ];
 
+const NUM_FEATURES: usize = 28;
+
 const BASE_WEIGHTS: &[f64] = &[
-    0.0, 1.8, 1.2, 0.8, 0.6, 0.5, 0.3, 0.3, 0.15, 0.12, 0.05, 0.15, 0.25, 0.08,
-    0.06, -0.04, 0.04, 0.04, 0.02, 0.02, 0.02, 0.10, 0.10, 0.20, 0.30, 0.02, 0.02,
-    0.55, 0.40, -0.90, -0.65, 0.05,
+    0.0,   // bias
+    1.8,   // acceptance_score
+    1.2,   // phonetic_score
+    0.8,   // coarse_score
+    0.6,   // token_score
+    0.5,   // feature_score
+    0.3,   // feature_bonus
+    0.3,   // best_view_score
+    0.15,  // cross_view_support
+    0.12,  // qgram_overlap
+    0.05,  // total_qgram_overlap
+    0.15,  // token_count_match
+    0.25,  // phone_closeness
+    0.08,  // alias_source_spoken
+    0.06,  // alias_source_identifier
+    -0.04, // alias_source_confusion
+    0.04,  // identifier_acronym
+    0.04,  // identifier_digits
+    0.02,  // identifier_snake
+    0.02,  // identifier_camel
+    0.02,  // identifier_symbol
+    0.10,  // short_guard_passed
+    0.10,  // low_content_guard_passed
+    0.20,  // acceptance_floor_passed
+    0.30,  // verified
+    0.02,  // span_token_count
+    0.02,  // span_phone_count
+    -0.30, // span_low_content (penalty: low-content spans rarely need replacement)
 ];
+
+/// Threshold for the judge to accept a candidate replacement.
+/// If no candidate's probability exceeds this, keep original.
+const ACCEPT_THRESHOLD: f32 = 0.5;
 
 #[derive(Clone, Debug)]
 pub struct OnlineJudge {
@@ -71,16 +100,15 @@ pub struct JudgeOption {
 
 #[derive(Clone, Debug)]
 struct JudgeExample {
-    alias_id: Option<u32>,
+    alias_id: u32,
     term: String,
-    is_keep_original: bool,
     features: Vec<f64>,
 }
 
 impl Default for OnlineJudge {
     fn default() -> Self {
         Self {
-            model: seed_model(),
+            model: None,
             update_count: 0,
         }
     }
@@ -109,7 +137,7 @@ impl OnlineJudge {
         candidates: &[(CandidateFeatureRow, IdentifierFlags)],
     ) -> Vec<JudgeOption> {
         let examples = build_examples(span, candidates);
-        score_examples(self.model.as_ref(), examples)
+        score_examples(self.model.as_ref(), &examples)
     }
 
     pub fn teach_choice(
@@ -120,25 +148,23 @@ impl OnlineJudge {
     ) -> Vec<JudgeOption> {
         let examples = build_examples(span, candidates);
         if examples.is_empty() {
-            return Vec::new();
-        }
-        if !examples.iter().any(|example| example.alias_id == chosen_alias_id) {
-            return score_examples(self.model.as_ref(), examples);
+            return vec![keep_original_option()];
         }
 
-        let records = records_for_examples(&examples);
+        // chosen_alias_id == None means "keep original" => all candidates are false
         let targets = Array1::from_vec(
             examples
                 .iter()
-                .map(|example| example.alias_id == chosen_alias_id)
+                .map(|example| Some(example.alias_id) == chosen_alias_id)
                 .collect::<Vec<_>>(),
         );
+        let records = records_for_examples(&examples);
         let dataset = Dataset::new(records, targets);
         let params = Ftrl::<f64>::params()
-            .alpha(0.25)
+            .alpha(0.5)
             .beta(1.0)
             .l1_ratio(0.001)
-            .l2_ratio(0.001);
+            .l2_ratio(0.01);
 
         let mut live_model = self.model.take();
         for _ in 0..4 {
@@ -153,43 +179,8 @@ impl OnlineJudge {
             self.update_count += 1;
         }
 
-        score_examples(self.model.as_ref(), examples)
+        score_examples(self.model.as_ref(), &examples)
     }
-}
-
-fn seed_model() -> Option<Ftrl<f64>> {
-    let records = Array2::from_shape_vec(
-        (6, FEATURE_NAMES.len()),
-        vec![
-            1.0, 0.88, 0.84, 0.81, 0.82, 0.79, 0.06, 0.76, 0.66, 0.70, 0.74, 1.0, 0.90, 0.0,
-            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.50, 0.60, 0.0, 0.0, 0.0,
-            0.0, 0.0,
-            1.0, 0.15, 0.20, 0.18, 0.22, 0.20, 0.00, 0.19, 0.12, 0.10, 0.14, 0.0, 0.40, 0.0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.30, 0.0, 0.0, 0.0,
-            0.0, 0.0,
-            1.0, 0.55, 0.52, 0.51, 0.52, 0.50, 0.01, 0.48, 0.33, 0.38, 0.40, 1.0, 0.80, 1.0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.25, 0.35, 0.0, 0.0, 0.0,
-            0.0, 0.0,
-            1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.25, 1.0, 1.0, 0.20, 0.25,
-            0.25,
-            1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.25, 1.0, 0.0, 0.85, 0.82,
-            0.25,
-            1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.25, 1.0, 0.0, 0.40, 0.35,
-            0.50,
-        ],
-    )
-    .ok()?;
-    let targets = Array1::from_vec(vec![true, false, true, true, false, false]);
-    let dataset = Dataset::new(records, targets);
-    let params = Ftrl::<f64>::params()
-        .alpha(0.25)
-        .beta(1.0)
-        .l1_ratio(0.001)
-        .l2_ratio(0.001);
-    params.fit_with(None, &dataset).ok()
 }
 
 fn build_examples(
@@ -199,105 +190,53 @@ fn build_examples(
     let span_token_count = (span.token_end - span.token_start) as f64;
     let span_phone_count = span.ipa_tokens.len() as f64;
     let span_low_content = is_low_content_span(&span.text) as u8 as f64;
-    let best_acceptance = candidates
-        .iter()
-        .map(|(candidate, _)| candidate.acceptance_score as f64)
-        .fold(0.0, f64::max);
-    let best_phonetic = candidates
-        .iter()
-        .map(|(candidate, _)| candidate.phonetic_score as f64)
-        .fold(0.0, f64::max);
-    let candidate_count = candidates.len() as f64;
 
-    let mut examples = candidates
+    candidates
         .iter()
-        .map(|(candidate, flags)| JudgeExample {
-            alias_id: Some(candidate.alias_id),
-            term: candidate.term.clone(),
-            is_keep_original: false,
-            features: vec![
-                1.0,
-                candidate.acceptance_score as f64,
-                candidate.phonetic_score as f64,
-                candidate.coarse_score as f64,
-                candidate.token_score as f64,
-                candidate.feature_score as f64,
-                candidate.feature_bonus as f64,
-                candidate.best_view_score as f64,
-                candidate.cross_view_support as f64 / 6.0,
-                candidate.qgram_overlap as f64 / 10.0,
-                candidate.total_qgram_overlap as f64 / 20.0,
-                candidate.token_count_match as u8 as f64,
-                1.0 / (1.0 + candidate.phone_count_delta.abs() as f64),
-                (candidate.alias_source == AliasSource::Spoken) as u8 as f64,
-                (candidate.alias_source == AliasSource::Identifier) as u8 as f64,
-                (candidate.alias_source == AliasSource::Confusion) as u8 as f64,
-                flags.acronym_like as u8 as f64,
-                flags.has_digits as u8 as f64,
-                flags.snake_like as u8 as f64,
-                flags.camel_like as u8 as f64,
-                flags.symbol_like as u8 as f64,
-                candidate.short_guard_passed as u8 as f64,
-                candidate.low_content_guard_passed as u8 as f64,
-                candidate.acceptance_floor_passed as u8 as f64,
-                candidate.verified as u8 as f64,
-                span_token_count / 4.0,
-                span_phone_count / 12.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-            ],
+        .map(|(candidate, flags)| {
+            let features = vec![
+                1.0,                                                           // bias
+                candidate.acceptance_score as f64,                             // acceptance_score
+                candidate.phonetic_score as f64,                               // phonetic_score
+                candidate.coarse_score as f64,                                 // coarse_score
+                candidate.token_score as f64,                                  // token_score
+                candidate.feature_score as f64,                                // feature_score
+                candidate.feature_bonus as f64,                                // feature_bonus
+                candidate.best_view_score as f64,                              // best_view_score
+                candidate.cross_view_support as f64 / 6.0,                    // cross_view_support
+                candidate.qgram_overlap as f64 / 10.0,                        // qgram_overlap
+                candidate.total_qgram_overlap as f64 / 20.0,                  // total_qgram_overlap
+                candidate.token_count_match as u8 as f64,                      // token_count_match
+                1.0 / (1.0 + candidate.phone_count_delta.abs() as f64),        // phone_closeness
+                (candidate.alias_source == AliasSource::Spoken) as u8 as f64,  // alias_source_spoken
+                (candidate.alias_source == AliasSource::Identifier) as u8 as f64, // alias_source_identifier
+                (candidate.alias_source == AliasSource::Confusion) as u8 as f64,  // alias_source_confusion
+                flags.acronym_like as u8 as f64,                               // identifier_acronym
+                flags.has_digits as u8 as f64,                                 // identifier_digits
+                flags.snake_like as u8 as f64,                                 // identifier_snake
+                flags.camel_like as u8 as f64,                                 // identifier_camel
+                flags.symbol_like as u8 as f64,                                // identifier_symbol
+                candidate.short_guard_passed as u8 as f64,                     // short_guard_passed
+                candidate.low_content_guard_passed as u8 as f64,               // low_content_guard_passed
+                candidate.acceptance_floor_passed as u8 as f64,                // acceptance_floor_passed
+                candidate.verified as u8 as f64,                               // verified
+                span_token_count / 4.0,                                        // span_token_count
+                span_phone_count / 12.0,                                       // span_phone_count
+                span_low_content,                                              // span_low_content
+            ];
+            debug_assert_eq!(features.len(), NUM_FEATURES);
+            JudgeExample {
+                alias_id: candidate.alias_id,
+                term: candidate.term.clone(),
+                features,
+            }
         })
-        .collect::<Vec<_>>();
-
-    examples.push(JudgeExample {
-        alias_id: None,
-        term: "keep_original".to_string(),
-        is_keep_original: true,
-        features: vec![
-            1.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            span_token_count / 4.0,
-            span_phone_count / 12.0,
-            1.0,
-            span_low_content,
-            best_acceptance,
-            best_phonetic,
-            candidate_count / 8.0,
-        ],
-    });
-
-    examples
+        .collect()
 }
 
 fn records_for_examples(examples: &[JudgeExample]) -> Array2<f64> {
     Array2::from_shape_vec(
-        (examples.len(), FEATURE_NAMES.len()),
+        (examples.len(), NUM_FEATURES),
         examples
             .iter()
             .flat_map(|example| example.features.iter().copied())
@@ -306,45 +245,67 @@ fn records_for_examples(examples: &[JudgeExample]) -> Array2<f64> {
     .expect("judge examples should have stable width")
 }
 
-fn score_examples(model: Option<&Ftrl<f64>>, examples: Vec<JudgeExample>) -> Vec<JudgeOption> {
+fn score_examples(model: Option<&Ftrl<f64>>, examples: &[JudgeExample]) -> Vec<JudgeOption> {
     let live_weights = model
         .map(|model| model.get_weights().iter().copied().collect::<Vec<_>>())
         .unwrap_or_else(|| BASE_WEIGHTS.to_vec());
 
-    let mut options = examples
-        .into_iter()
+    let mut options: Vec<JudgeOption> = examples
+        .iter()
         .map(|example| {
             let score = dot(&live_weights, &example.features) as f32;
             let probability = sigmoid(score as f64) as f32;
             JudgeOption {
-                alias_id: example.alias_id,
-                term: example.term,
-                is_keep_original: example.is_keep_original,
+                alias_id: Some(example.alias_id),
+                term: example.term.clone(),
+                is_keep_original: false,
                 score,
                 probability,
                 chosen: false,
             }
         })
-        .collect::<Vec<_>>();
+        .collect();
 
-    let best_index = options
-        .iter()
-        .enumerate()
-        .max_by(|(_, lhs), (_, rhs)| {
-            lhs.probability
-                .total_cmp(&rhs.probability)
-                .then_with(|| lhs.score.total_cmp(&rhs.score))
-        })
-        .map(|(index, _)| index);
-    if let Some(best_index) = best_index {
-        options[best_index].chosen = true;
-    }
+    // Sort by probability descending
     options.sort_by(|lhs, rhs| {
         rhs.probability
             .total_cmp(&lhs.probability)
             .then_with(|| rhs.score.total_cmp(&lhs.score))
     });
+
+    // Best candidate wins only if it exceeds the threshold; otherwise keep original
+    let best_exceeds_threshold = options
+        .first()
+        .is_some_and(|best| best.probability >= ACCEPT_THRESHOLD);
+
+    if best_exceeds_threshold {
+        if let Some(first) = options.first_mut() {
+            first.chosen = true;
+        }
+    }
+
+    // Always include a keep_original option so callers can see it
+    let mut keep = keep_original_option();
+    if !best_exceeds_threshold {
+        keep.chosen = true;
+    }
+    // keep_original probability = 1 - best candidate probability
+    keep.probability = 1.0 - options.first().map(|o| o.probability).unwrap_or(0.0);
+    keep.score = -options.first().map(|o| o.score).unwrap_or(0.0);
+    options.push(keep);
+
     options
+}
+
+fn keep_original_option() -> JudgeOption {
+    JudgeOption {
+        alias_id: None,
+        term: "keep_original".to_string(),
+        is_keep_original: true,
+        score: 0.0,
+        probability: 1.0,
+        chosen: false,
+    }
 }
 
 fn dot(weights: &[f64], features: &[f64]) -> f64 {
@@ -478,16 +439,146 @@ mod tests {
             .expect("reqwest option should exist")
             .probability;
 
-        let after = judge.teach_choice(&span, &candidates, Some(7));
+        // Teach 5 times so the model has enough signal
+        for _ in 0..5 {
+            judge.teach_choice(&span, &candidates, Some(7));
+        }
+
+        let after = judge.score_candidates(&span, &candidates);
         let after_reqwest = after
             .iter()
             .find(|option| option.alias_id == Some(7))
             .expect("reqwest option should exist")
             .probability;
-        let chosen = after.iter().find(|option| option.chosen).expect("winner exists");
 
-        assert_eq!(judge.update_count(), 1);
-        assert!(after_reqwest >= before_reqwest);
-        assert_eq!(chosen.alias_id, Some(7));
+        assert_eq!(judge.update_count(), 5);
+        // reqwest should still be the chosen candidate and above threshold
+        let chosen = after.iter().find(|o| o.chosen).expect("should have a chosen option");
+        assert_eq!(chosen.alias_id, Some(7), "reqwest should be chosen");
+        assert!(
+            after_reqwest > ACCEPT_THRESHOLD,
+            "reqwest should exceed threshold: prob={after_reqwest}"
+        );
+        // reqwest should beat request
+        let after_request = after
+            .iter()
+            .find(|o| o.alias_id == Some(8))
+            .expect("request option should exist")
+            .probability;
+        assert!(
+            after_reqwest > after_request,
+            "reqwest ({after_reqwest}) should beat request ({after_request})"
+        );
+    }
+
+    #[test]
+    fn teach_keep_original_lowers_candidate_scores() {
+        let mut judge = OnlineJudge::default();
+        let span = span("req west");
+        let candidates = vec![
+            (
+                candidate(7, "reqwest", 0.75, 0.74, 0.70, true),
+                IdentifierFlags::default(),
+            ),
+        ];
+
+        let before = judge.score_candidates(&span, &candidates);
+        let before_prob = before
+            .iter()
+            .find(|o| o.alias_id == Some(7))
+            .unwrap()
+            .probability;
+
+        // Teach keep_original (chosen_alias_id = None) 5 times
+        for _ in 0..5 {
+            judge.teach_choice(&span, &candidates, None);
+        }
+
+        let after = judge.score_candidates(&span, &candidates);
+        let after_prob = after
+            .iter()
+            .find(|o| o.alias_id == Some(7))
+            .unwrap()
+            .probability;
+
+        assert!(
+            after_prob < before_prob,
+            "teaching keep_original should lower candidate probability: before={before_prob} after={after_prob}"
+        );
+    }
+
+    #[test]
+    fn teaching_transfers_to_similar_candidates() {
+        let mut judge = OnlineJudge::default();
+        let span1 = span("sir day");
+        let candidates1 = vec![
+            (
+                candidate(1, "serde", 0.80, 0.78, 0.75, true),
+                IdentifierFlags::default(),
+            ),
+        ];
+
+        // Teach: "serde" is correct for "sir day"
+        for _ in 0..10 {
+            judge.teach_choice(&span1, &candidates1, Some(1));
+        }
+
+        // Now score a DIFFERENT case with similar features
+        let span2 = span("toe key oh");
+        let candidates2 = vec![
+            (
+                candidate(2, "tokio", 0.78, 0.76, 0.72, true),
+                IdentifierFlags::default(),
+            ),
+        ];
+
+        let result = judge.score_candidates(&span2, &candidates2);
+        let tokio_prob = result
+            .iter()
+            .find(|o| o.alias_id == Some(2))
+            .unwrap()
+            .probability;
+
+        // The model should have learned that high acceptance/phonetic/coarse => accept
+        // so tokio (with similar scores) should also get a high probability
+        assert!(
+            tokio_prob > 0.5,
+            "learning should transfer: tokio_prob={tokio_prob}"
+        );
+    }
+
+    #[test]
+    fn teach_choice_actually_changes_weights() {
+        let mut judge = OnlineJudge::default();
+        let weights_before = judge.weights();
+        let span = span("req west");
+        let candidates = vec![
+            (
+                candidate(7, "reqwest", 0.75, 0.74, 0.70, true),
+                IdentifierFlags::default(),
+            ),
+            (
+                candidate(8, "request", 0.40, 0.38, 0.35, false),
+                IdentifierFlags::default(),
+            ),
+        ];
+
+        for _ in 0..10 {
+            judge.teach_choice(&span, &candidates, Some(7));
+        }
+
+        let weights_after = judge.weights();
+        assert_eq!(judge.update_count(), 10);
+
+        let max_diff = weights_before
+            .iter()
+            .zip(&weights_after)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+
+        assert!(
+            max_diff > 0.01,
+            "weights should change meaningfully after 10 teaches, max_diff={max_diff}"
+        );
     }
 }

@@ -325,7 +325,10 @@ impl BeeMlService {
             .collect::<Vec<_>>();
 
         if let Some(teach) = &teach {
-            if !taught_span {
+            let sentence_level_keep = teach.choose_keep_original
+                && !teach.reject_group
+                && teach.selected_component_choices.is_empty();
+            if !taught_span && !sentence_level_keep {
                 return Err("requested span was not present in the probe result".to_string());
             }
             if teach.reject_group && rejected_group_spans.is_empty() {
@@ -539,7 +542,7 @@ const RAPID_FIRE_COMPONENT_HYPOTHESES: usize = 4;
 const RAPID_FIRE_SENTENCE_CHOICES: usize = 6;
 const RAPID_FIRE_EXACT_THRESHOLD: usize = 64;
 const RAPID_FIRE_BEAM_WIDTH: usize = 16;
-const RAPID_FIRE_MAX_EDITS_PER_SPAN: usize = 2;
+const RAPID_FIRE_MAX_EDITS_PER_SPAN: usize = 4;
 const RAPID_FIRE_MAX_COMPONENT_COMBO_EDITS: usize = 2;
 
 #[derive(Clone)]
@@ -582,10 +585,20 @@ fn build_rapid_fire_decision_set(
     let is_counterexample =
         normalize_comparable_text(transcript) == normalize_comparable_text(expected_source_text);
     let admitted_edits = collect_admitted_edits(spans, is_counterexample);
+    let span_keep_probabilities: HashMap<(u32, u32), f32> = spans
+        .iter()
+        .map(|s| {
+            let keep_prob = s.judge_options.iter()
+                .find(|o| o.is_keep_original)
+                .map(|o| o.probability)
+                .unwrap_or(0.0);
+            ((s.span.token_start, s.span.token_end), keep_prob)
+        })
+        .collect();
     let components = build_conflict_components(&admitted_edits)
         .into_iter()
         .enumerate()
-        .map(|(index, edits)| build_component(index as u32, edits))
+        .map(|(index, edits)| build_component(index as u32, edits, &span_keep_probabilities))
         .collect::<Vec<_>>();
     let total_combinations = components
         .iter()
@@ -662,42 +675,68 @@ fn build_rapid_fire_decision_set(
         })
         .collect::<Vec<_>>();
 
-    if !choices.iter().any(|choice| choice.choose_keep_original) {
-        if let Some((index, hypothesis)) = sentence_hypotheses
-            .iter()
-            .enumerate()
-            .find(|(_, hypothesis)| hypothesis.components.iter().all(|component| component.choose_keep_original))
-        {
-            choices.push(RapidFireChoice {
-                option_id: format!("hypothesis:{index}"),
-                span_token_start: 0,
-                span_token_end: 0,
-                choose_keep_original: true,
-                chosen_alias_id: None,
-                sentence: hypothesis.sentence.clone(),
-                replaced_text: String::new(),
-                replacement_text: String::new(),
-                score: hypothesis.score,
-                probability: hypothesis.probability,
-                is_gold: normalize_comparable_text(&hypothesis.sentence)
-                    == normalize_comparable_text(expected_source_text),
-                is_judge_pick: false,
-                edits: Vec::new(),
-                component_choices: hypothesis
-                    .components
-                    .iter()
-                    .map(component_hypothesis_to_rpc)
-                    .collect(),
-            });
-        }
-    }
-
     choices.sort_by(|lhs, rhs| {
         rhs.probability
             .total_cmp(&lhs.probability)
             .then_with(|| rhs.score.total_cmp(&lhs.score))
     });
-    choices.truncate(RAPID_FIRE_SENTENCE_CHOICES);
+
+    // Ensure keep_original is always present: partition edit choices from keep,
+    // truncate edits to leave room, then append the keep choice.
+    let keep_choice = choices
+        .iter()
+        .position(|choice| choice.choose_keep_original)
+        .map(|idx| choices.remove(idx))
+        .or_else(|| {
+            // Fallback: synthesize from the all-keep sentence hypothesis
+            sentence_hypotheses
+                .iter()
+                .enumerate()
+                .find(|(_, h)| h.components.iter().all(|c| c.choose_keep_original))
+                .map(|(index, hypothesis)| RapidFireChoice {
+                    option_id: format!("hypothesis:{index}"),
+                    span_token_start: 0,
+                    span_token_end: 0,
+                    choose_keep_original: true,
+                    chosen_alias_id: None,
+                    sentence: hypothesis.sentence.clone(),
+                    replaced_text: String::new(),
+                    replacement_text: String::new(),
+                    score: hypothesis.score,
+                    probability: hypothesis.probability,
+                    is_gold: normalize_comparable_text(&hypothesis.sentence)
+                        == normalize_comparable_text(expected_source_text),
+                    is_judge_pick: false,
+                    edits: Vec::new(),
+                    component_choices: hypothesis
+                        .components
+                        .iter()
+                        .map(component_hypothesis_to_rpc)
+                        .collect(),
+                })
+        })
+        .unwrap_or_else(|| {
+            // Last resort: synthesize directly from transcript
+            RapidFireChoice {
+                option_id: "keep_original".to_string(),
+                span_token_start: 0,
+                span_token_end: 0,
+                choose_keep_original: true,
+                chosen_alias_id: None,
+                sentence: transcript.to_string(),
+                replaced_text: String::new(),
+                replacement_text: String::new(),
+                score: 0.0,
+                probability: 0.0,
+                is_gold: normalize_comparable_text(transcript)
+                    == normalize_comparable_text(expected_source_text),
+                is_judge_pick: false,
+                edits: Vec::new(),
+                component_choices: Vec::new(),
+            }
+        });
+    choices.truncate(RAPID_FIRE_SENTENCE_CHOICES - 1);
+    choices.push(keep_choice);
 
     if let Some(first) = choices.first_mut() {
         first.is_judge_pick = true;
@@ -766,16 +805,19 @@ fn collect_admitted_edits(spans: &[SpanDebugTrace], is_counterexample: bool) -> 
             let verified = candidate.features.verified;
             let accepted = if is_counterexample {
                 verified
-                    && margin >= 0.18
-                    && acceptance_score >= 0.72
-                    && phonetic_score >= 0.70
+                    && margin >= 0.10
+                    && acceptance_score >= 0.60
+                    && phonetic_score >= 0.60
             } else {
                 verified
-                    && margin >= 0.03
-                    && acceptance_score >= 0.48
-                    && phonetic_score >= 0.45
+                    && acceptance_score >= 0.30
+                    && phonetic_score >= 0.30
             };
             if !accepted {
+                continue;
+            }
+            // Skip identity edits — replacement is the same as the original span text
+            if normalize_comparable_text(&option.term) == normalize_comparable_text(&span.span.text) {
                 continue;
             }
             admitted_for_span.push(EditCandidate {
@@ -791,6 +833,43 @@ fn collect_admitted_edits(spans: &[SpanDebugTrace], is_counterexample: bool) -> 
                 verified,
             });
         }
+
+        if !is_counterexample && admitted_for_span.is_empty() {
+            let fallback = dedupe_judge_options(&span.judge_options)
+                .into_iter()
+                .filter(|option| !option.is_keep_original)
+                .filter(|option| normalize_comparable_text(&option.term) != normalize_comparable_text(&span.span.text))
+                .filter_map(|option| {
+                    let alias_id = option.alias_id?;
+                    let candidate = span.candidates.iter().find(|candidate| candidate.alias_id == alias_id)?;
+                    let acceptance_score = candidate.features.acceptance_score;
+                    let phonetic_score = candidate.features.phonetic_score;
+                    let verified = candidate.features.verified;
+                    (verified && acceptance_score >= 0.20 && phonetic_score >= 0.20).then_some(
+                        EditCandidate {
+                            span_token_start: span.span.token_start,
+                            span_token_end: span.span.token_end,
+                            span_text: span.span.text.clone(),
+                            alias_id,
+                            replacement_text: option.term,
+                            score: option.score,
+                            probability: option.probability,
+                            acceptance_score,
+                            phonetic_score,
+                            verified,
+                        },
+                    )
+                })
+                .max_by(|lhs, rhs| {
+                    lhs.probability
+                        .total_cmp(&rhs.probability)
+                        .then_with(|| lhs.score.total_cmp(&rhs.score))
+                });
+            if let Some(fallback) = fallback {
+                admitted_for_span.push(fallback);
+            }
+        }
+
         admitted_for_span.sort_by(|lhs, rhs| {
             rhs.probability
                 .total_cmp(&lhs.probability)
@@ -865,30 +944,47 @@ fn build_conflict_components(edits: &[EditCandidate]) -> Vec<Vec<EditCandidate>>
     groups
 }
 
-fn build_component(component_id: u32, edits: Vec<EditCandidate>) -> Component {
+fn build_component(
+    component_id: u32,
+    edits: Vec<EditCandidate>,
+    span_keep_probabilities: &HashMap<(u32, u32), f32>,
+) -> Component {
     let component_spans = unique_component_spans(&edits);
     let atomic_edits = edits;
 
-    let mut all_hypotheses = vec![score_component_hypothesis(
+    // Keep hypothesis uses the max keep_original probability across the component's spans.
+    let keep_probability = component_spans
+        .iter()
+        .filter_map(|s| span_keep_probabilities.get(&(s.token_start, s.token_end)))
+        .copied()
+        .fold(0.0f32, f32::max);
+    let keep_hypothesis = ComponentHypothesis {
         component_id,
-        component_spans.clone(),
-        Vec::new(),
-    )];
+        component_spans: component_spans.clone(),
+        choose_keep_original: true,
+        edits: Vec::new(),
+        score: keep_probability,
+        probability: keep_probability,
+    };
+    let mut edit_hypotheses = Vec::new();
     enumerate_component_hypotheses(
         component_id,
         &component_spans,
         &atomic_edits,
         0,
         Vec::new(),
-        &mut all_hypotheses,
+        &mut edit_hypotheses,
     );
-    dedupe_component_hypotheses(&mut all_hypotheses);
-    all_hypotheses.sort_by(|lhs, rhs| {
+    dedupe_component_hypotheses(&mut edit_hypotheses);
+    edit_hypotheses.sort_by(|lhs, rhs| {
         rhs.probability
             .total_cmp(&lhs.probability)
             .then_with(|| rhs.score.total_cmp(&lhs.score))
     });
-    all_hypotheses.truncate(RAPID_FIRE_COMPONENT_HYPOTHESES);
+    // Reserve one slot for keep_original so it never gets truncated out.
+    edit_hypotheses.truncate(RAPID_FIRE_COMPONENT_HYPOTHESES - 1);
+    let mut all_hypotheses = edit_hypotheses;
+    all_hypotheses.push(keep_hypothesis);
 
     Component {
         component_id,
