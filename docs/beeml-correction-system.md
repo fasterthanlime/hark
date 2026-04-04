@@ -834,71 +834,62 @@ For this system definition, do not optimize for:
 
 ## Roadmap
 
-The roadmap should be reviewed as one continuous sequence, not as "retrieval"
-and "modeling" plans that drift apart.
+This roadmap should be read as:
 
-### Phase 0: Finish the Phonetic Baseline
+1. committed architecture
+2. near-term de-risking work
+3. deferred productization
 
-Goal:
+It should **not** be read as a waterfall plan where every design detail must be
+implemented before the next experiment starts.
 
-- make the phonetic stack reliable enough that later judge work is built on
-  truthful candidate sets and truthful features
+### Bucket 1: Committed Architecture
 
-Done or mostly done:
+These are the decisions we should treat as settled unless new evidence forces a
+change:
 
-- raw and reduced IPA q-gram retrieval
-- feature-aware verifier
-- short-query fallback
-- case-debug tooling
-- counterexample eval split
+- retrieval-first correction, not generation-first correction
+- vocabulary lives in bundles and overlays, not in model weights
+- phonetics should surface truthful candidates and phonetic plausibility; it
+  should not be tuned until it becomes a fake contextual judge
+- the default judge stack is:
+  1. deterministic scorer
+  2. tiny learned feature-based scorer
+  3. optional frozen neural fallback
+- user corrections should first update memory and overlays, not trigger default
+  retraining
+- the whole pipeline must stay inspectable in `beeml-web`
 
-Still worth doing here:
+These are architecture constraints, not hypotheses.
 
-- tighten retrieval provenance in `beeml-web`
-- expose the same deep verifier trace in the frontend that the CLI debugger has
-- continue targeted cleanup of miss buckets and counterexample false positives
+### Bucket 2: Near-Term De-Risking
 
-Exit criteria:
+This is the actual execution roadmap.
 
-- candidate traces are inspectable in the frontend
-- retrieval and verification metrics are stable enough to use as training
-  features
-- span proposal recall is measured explicitly, not hidden inside later failure
-  buckets
-- all four oracle evaluation layers are wired and reported together for at
-  least one stable benchmark suite
+The goal is to prove or falsify the critical hypotheses with the smallest
+amount of machinery.
 
-### Phase 0.5: Define Span and Trace Contracts
+#### 2.1 Finish the Current Phonetic Loop
 
-Before candidate features harden, the system needs one explicit contract for:
+We already have most of this, but it needs to be made stable enough to feed
+later judge work.
 
-- span proposal
-- region conflict resolution
-- candidate trace shape
+Required:
 
-Deliverables:
-
-- one region-policy section in the docs
-- one typed trace schema for span, retrieval, verification, and judge outputs
-- one eval attribution path that can blame:
-  - span proposal
-  - retrieval
-  - final judging
-  - region assembly
+- span proposal recall is measured explicitly
+- retrieval, verification, and region-assembly failures are attributable
+- the full verifier trace is visible in `beeml-web`, not only the CLI debugger
+- known hard cases are inspectable end to end
 
 Exit criteria:
 
-- end-to-end failures are not mislabeled as judge failures when the real fault
-  is span or region policy
+- the current phonetic stack produces trustworthy candidate traces
+- the four oracle layers below are operational on at least one stable
+  benchmark suite
 
-### Phase 1: Stabilize and Version the Candidate Feature Schema
+#### 2.2 Stabilize Candidate Features v1
 
-Goal:
-
-- define the exact feature vector that later learned layers consume
-
-This is critical. If the feature schema keeps drifting without versioning, the
-tiny learned judge cannot stabilize.
+Before training any judge, define the feature row the judge will consume.
 
 Candidate feature groups:
 
@@ -931,162 +922,126 @@ Candidate feature groups:
   - session/project prior
   - recency / repetition counters
 
-Deliverables:
+Required:
 
-- one typed Rust struct for candidate judge features
+- one typed Rust feature struct
 - one schema version field
-- one stable JSON/debug rendering of those features
-- one frontend inspector panel for them
-- explicit migration rules when features change
+- one stable export path from eval/debug runs
+- one frontend inspector for the feature row
 
 Exit criteria:
 
-- every verified candidate can be rendered as a stable feature record
-- eval can export feature rows for offline and online learning
+- every verified candidate can be exported as a stable feature record
 - the feature record supports oracle attribution across:
   - span proposal
   - retrieval shortlist
   - final-judge selection
   - end-to-end outcome
 
-### Phase 2: Add User Memory Before Adding More Models
+#### 2.3 Add the Simplest Useful Overlay Memory
 
-Goal:
+Before online learning, prove that memory alone buys value.
 
-- make the system improve immediately from user edits even before any learned
-  model update happens
+Do first:
 
-This is the first personalization layer.
+- user-local term priors
+- alias priors
+- session/project recency priors
+- confusion-memory counts
 
-Memory updates from a user correction should include:
+Do not do yet:
 
-1. if the user adds a new term:
-   - insert lexicon entry
-   - derive aliases and structure metadata
-   - rebuild or incrementally update retrieval state
-2. if the user chooses an existing term:
-   - increment user-local term prior
-   - increment alias prior if a specific spoken form matched
-   - increment confusion stats for observed span -> chosen term
-3. update session/project context:
-   - recent vocabulary
-   - local repetition priors
+- user-local online weight updates
 
-Required backend work:
+Required:
 
-- user-local memory store
-- base bundle + overlay loading model
+- base bundle + overlay loading
 - overlay precedence and merge policy
-- typed update events from accepted corrections
-- memory-aware candidate feature generation
-- replay and rebuild support from the event log
-
-Required frontend work:
-
-- show whether a score is being helped by user memory
-- show recent/session/project prior contributions in the inspector
+- deterministic replay from event log
+- UI visibility into memory contributions
 
 Exit criteria:
 
-- user corrections visibly alter future rankings without retraining
 - new vocabulary works immediately after insertion
+- repeated user choices visibly shift rankings without retraining
 
-### Phase 3: Train the Tiny Learned Judge
+#### 2.4 Train Offline Judge Baselines
 
-Goal:
+Once the feature row is stable and memory exists, benchmark the simplest useful
+judges.
 
-- make feature-based ranking the default learned decision layer
-
-Recommended first formulation:
-
-- pointwise binary classifier: "is this candidate the right correction?"
-
-Baselines to benchmark:
+Required baselines:
 
 - linear online-friendly model
 - small tree model as the strongest offline tabular baseline
 
-Training examples should capture:
+Initial task:
 
-- query span
-- context window
-- candidate features
-- chosen correction
-- keep-original cases
-- hard negatives from the same shortlist
+- pointwise binary classification:
+  - "is this candidate the right correction?"
 
-Why pointwise first:
+Evaluation must include:
 
-- operationally simpler
-- easy to drive from existing eval traces
-- easy to update online later
+- time-aware splits that simulate user history
+- term-family-isolated splits
+- speaker/session isolation where applicable
+- protected slices:
+  - acronyms
+  - mixed alphanumeric identifiers
+  - snake_case and camelCase forms
+  - person-name-like near neighbors
+  - common-English-word vs technical-term collisions
+  - very short spans
 
-What to measure:
-
-- top-1 correction accuracy after deterministic filtering
-- delta versus deterministic-only acceptance
-- calibration of confidence and acceptance margin
-- sensitivity to user priors
-- comparison under time-aware and term-family-isolated splits
-
-Deliverables:
-
-- offline trainer for feature rows
-- artifact format for tiny learned weights
-- inference path inside `beeml`
-- per-candidate contribution breakdown where feasible
+Random splits are acceptable as smoke tests only.
 
 Exit criteria:
 
-- the tiny learned judge beats deterministic-only selection on held-out cases
-- user priors measurably improve decisions
-- latency remains cheap on CPU
+- a tiny judge materially beats deterministic-only selection
+- memory features help on real held-out cases
+- calibration is good enough for abstention work to be meaningful
 
-### Phase 4: Add Online User Updates
+#### 2.5 Decide the Next Leverage Point
 
-Goal:
+After the first offline judge results, decide what actually matters next.
 
-- let the tiny learned judge improve incrementally from real user corrections
+The likely forks are:
 
-Online update flow:
+1. if shortlist quality is still the bottleneck:
+   - improve retrieval next
+   - likely with structure-aware retrieval upgrades, then articulatory-feature
+     retrieval lanes
+2. if shortlist quality is good but near-neighbor ranking is the bottleneck:
+   - move to the tiny final judge
+3. if tiny judge helps but remaining cases are still stubborn:
+   - benchmark frozen neural fallback on ambiguous top candidates only
 
-1. user accepts or overrides a correction
-2. log the candidate set and chosen outcome
-3. update memory immediately
-4. perform a tiny online weight update:
-   - one positive
-   - a few hard negatives
+This decision should be evidence-based, not assumed in advance.
 
-Constraints:
+### Bucket 3: Deferred Productization
 
-- bounded artifact size
-- local execution
-- deterministic rollback or reset path
-- per-user isolation
+These things are probably right eventually, but they should not block de-risking
+the core loop.
 
-Safety rules:
+Do them after Bucket 2 proves the core plan is real:
 
-- memory updates should be the default immediate effect
-- weight updates should be conservative and reversible
-- repeated evidence should be preferred over one-off updates
+- richer bundle manifest enforcement
+- promotion policy automation
+- shadow and suggestion modes
+- online weight updates
+- rollback checkpoints for learned weights
+- neural fallback integration
+- richer deployment and compatibility ceremony
 
-Deliverables:
+These are productization tasks, not prerequisites for learning whether the core
+design works.
 
-- online update API in `beeml`
-- user-local weight store
-- debug view for why a user-specific score changed
+### Evaluation Contract
 
-Exit criteria:
+The evaluation model itself is committed now, even if some scoreboards arrive
+incrementally.
 
-- repeated user choices shift rankings locally
-- no offline retraining is required for normal personalization
-
-### Evaluation Layers
-
-Evaluation should be decomposed into explicit oracle layers, not collapsed into
-one number.
-
-The core layers are:
+The core oracle layers are:
 
 1. span proposal recall
    - did we even propose the right region?
@@ -1098,87 +1053,13 @@ The core layers are:
 4. end-to-end correction accuracy
    - what happened in the full pipeline?
 
-This decomposition prevents retrieval, judging, and region-assembly failures
-from being mixed together.
+For any failed eval case, the system should be able to say:
 
-These four layers should be operational together by the time Phase 3 starts,
-since Phase 3 is the first phase where learned judge comparisons become
-decision-relevant.
+- what was the first failing stage?
+- whether downstream stages ever had a chance to recover
 
-### Protected Evaluation Slices
-
-Promotion and regression analysis should always include protected slices for:
-
-- acronyms
-- mixed alphanumeric identifiers
-- snake_case and camelCase forms
-- person-name-like near neighbors
-- common-English-word versus technical-term collisions
-- very short spans
-
-These slices matter enough that aggregate metrics alone are not sufficient.
-
-### Phase 5: Benchmark Frozen Neural Fallbacks
-
-Goal:
-
-- use a neural reranker only where it materially helps
-
-Rules:
-
-- benchmark frozen models
-- use them only on top ambiguous cases
-- do not make them the default path until they prove worth the latency and
-  complexity
-
-Good benchmark regime:
-
-- run only on top 2 to 5 candidates
-- compare against deterministic + tiny learned judge
-- test instruction-aware formatting if the model expects it
-
-What to measure:
-
-- ambiguous-case accuracy
-- overall accuracy delta
-- latency delta
-- whether it reduces specific near-neighbor errors:
-  - `Quinn/qwen`
-  - `Marco/MachO`
-  - `request/reqwest`
-
-Exit criteria:
-
-- frozen neural fallback only ships if it improves ambiguous cases enough to
-  justify its cost
-
-### Phase 6: Productize the Judge in `beeml` and `beeml-web`
-
-Goal:
-
-- make the three-level judge a first-class debuggable product feature
-
-`beeml` should expose:
-
-- deterministic judge trace
-- tiny learned judge trace
-- optional neural fallback trace
-- user-memory contributions
-- correction-feedback update APIs
-
-`beeml-web` should expose:
-
-- per-candidate feature table
-- deterministic acceptance explanation
-- tiny learned score and feature contributions
-- neural fallback result when used
-- memory and prior contributions
-- one-click correction capture path
-
-Exit criteria:
-
-- a bad correction can be explained without reading logs
-- a user correction can be traced through memory and model updates
+These four layers must be operational together before we trust learned-judge
+results.
 
 ### What We Should Not Do By Default
 
@@ -1187,22 +1068,10 @@ Do not make these the main plan:
 - per-user LoRA or adapter fine-tuning
 - storing new vocabulary in model weights
 - generic prompted LLM judging as the default final decision maker
+- building the full productization shell before the core loop is de-risked
 
-Those can remain experiments. They should not be the core architecture.
-
-### Resolved Strategic Calls
-
-The following design questions are considered settled unless new evidence
-forces a change:
-
-- vocabulary should live in bundles and overlays, not in model weights
-- user corrections should first update memory and overlays, not trigger default
-  retraining
-- once shortlist quality is good enough, the next leverage moves to the tiny
-  feature-based final judge rather than endless phonetic threshold tuning
-- near-neighbor cases like `Quinn/qwen`, `Marco/MachO`, and
-  `request/reqwest` should be treated as memory/context/final-judge problems
-  once the phonetic layer is already surfacing truthful candidates
+Those can remain experiments or later infrastructure work. They should not be
+the default execution path.
 
 ## Acceptance Criteria
 
