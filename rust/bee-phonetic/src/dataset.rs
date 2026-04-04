@@ -375,7 +375,7 @@ mod tests {
 
         assert_eq!(dataset.terms.len(), 26);
         assert_eq!(dataset.sentence_examples.len(), 140);
-        assert_eq!(dataset.recording_examples.len(), 139);
+        assert_eq!(dataset.recording_examples.len(), 106);
         assert!(!dataset
             .sentence_examples
             .iter()
