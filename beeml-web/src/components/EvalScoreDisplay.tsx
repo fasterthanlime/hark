@@ -33,8 +33,8 @@ export const EvalScoreDisplay = memo(function EvalScoreDisplay({
         const rpcPromise = client.runRetrievalPrototypeEval({
           limit: 500,
           max_span_words: maxSpanWords,
-          shortlist_limit: 50,
-          verify_limit: 50,
+          shortlist_limit: 20,
+          verify_limit: 20,
         }, progressTx).catch((e: unknown) => {
           console.error("eval RPC error:", e);
           return { ok: false as const, error: String(e) };

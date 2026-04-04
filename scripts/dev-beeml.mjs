@@ -82,7 +82,7 @@ run("beeml", "zsh", [
     "cargo watch",
     "-w rust",
     "-w data/phonetic-seed",
-    "-x 'run -p beeml'",
+    "-x 'run --release -p beeml'",
   ].join(" "),
 ]);
 run("web", "pnpm", ["--dir", "beeml-web", "dev"]);

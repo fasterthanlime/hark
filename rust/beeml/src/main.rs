@@ -175,7 +175,7 @@ impl BeeMlService {
                         feature_tokens: bee_phonetic::feature_tokens_for_ipa(&span.ipa_tokens),
                         token_count: (span.token_end - span.token_start) as u8,
                     },
-                    request.shortlist_limit.max(50) as usize,
+                    request.shortlist_limit as usize,
                 );
                 let scored_rows = score_shortlist(&span, &shortlist, &self.inner.index);
                 let judge_input = scored_rows
@@ -1362,6 +1362,25 @@ impl BeeMl for BeeMlService {
             );
         }
 
+        let total = cases.len() as u32;
+        let eval_start = std::time::Instant::now();
+
+        // Evaluate all cases in parallel using rayon.
+        let service = self.clone();
+        let eval_results: Vec<(usize, EvalCase, Result<CaseEvalResult, String>)> =
+            tokio::task::block_in_place(|| {
+                use rayon::prelude::*;
+                cases
+                    .into_par_iter()
+                    .enumerate()
+                    .map(|(idx, case)| {
+                        let result = service.evaluate_case(&case, &request);
+                        (idx, case, result)
+                    })
+                    .collect()
+            });
+
+        // Aggregate metrics sequentially and send progress.
         let mut top1_hits = 0u32;
         let mut top3_hits = 0u32;
         let mut top10_hits = 0u32;
@@ -1372,9 +1391,8 @@ impl BeeMl for BeeMlService {
         let mut judge_failures = Vec::new();
         let mut per_term = HashMap::<String, RetrievalEvalTermSummary>::new();
 
-        let total = cases.len() as u32;
-        for (recording_id, case) in cases.iter().enumerate() {
-            let result = self.evaluate_case(case, &request)?;
+        for (recording_id, case, result) in eval_results {
+            let result = result?;
             let entry = per_term
                 .entry(case.target_term.clone())
                 .or_insert(RetrievalEvalTermSummary {
@@ -1442,31 +1460,30 @@ impl BeeMl for BeeMlService {
                 });
             }
 
-            if let Err(e) = progress.send(RetrievalPrototypeEvalProgress {
+            let _ = progress.send(RetrievalPrototypeEvalProgress {
                 evaluated: recording_id as u32 + 1,
                 total,
                 judge_correct,
-            }).await {
-                warn!("eval progress send failed: {e}");
-                break;
-            }
+            }).await;
         }
 
         let mut per_term = per_term.into_values().collect::<Vec<_>>();
         per_term.sort_by(|a, b| a.term.cmp(&b.term));
 
+        let eval_elapsed = eval_start.elapsed();
         info!(
-            evaluated = cases.len(),
+            evaluated = total,
             judge_correct,
             judge_replace_correct,
             judge_abstain_correct,
             top1_hits,
             judge_failures = judge_failures.len(),
+            total_ms = eval_elapsed.as_millis() as u64,
             "eval complete"
         );
 
         Ok(RetrievalPrototypeEvalResult {
-            evaluated_cases: cases.len() as u32,
+            evaluated_cases: total,
             top1_hits,
             top3_hits,
             top10_hits,
