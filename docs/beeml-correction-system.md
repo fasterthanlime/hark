@@ -501,6 +501,9 @@ non-overlap and conflict rules defined in `Span and Region Policy`.
 Before aggressive auto-application, the product should support a shadow or
 suggestion mode.
 
+This is conceptually part of the product design, but its rollout is
+implementation-deferred until the core loop is proven.
+
 In that mode, the system should:
 
 - run the full correction pipeline
@@ -518,8 +521,8 @@ This helps with:
 
 ## Canonical Assets
 
-The system should distinguish between source-of-truth assets and derived
-artifacts.
+The system should distinguish between source-of-truth assets, derived build
+artifacts, and runtime mutable state.
 
 ### Source-of-Truth Assets
 
@@ -532,7 +535,7 @@ These should stay reviewable and file-first:
 - recording manifests
 - audio references
 
-### Derived Artifacts
+### Derived Build Artifacts
 
 These should be rebuilt, not hand-edited:
 
@@ -546,8 +549,15 @@ These should be rebuilt, not hand-edited:
 - tiny judge training examples
 - tiny judge weights
 - optional neural fallback weights
+
+### Runtime Mutable State
+
+These are mutable overlay or replay-derived state, not build artifacts:
+
 - user-local memory state
+- session/project overlay state
 - user-local online weight state
+- event-log-derived checkpoints
 
 ### Bundle Manifest
 
@@ -583,6 +593,9 @@ Promotion should require, at minimum:
 - no regression on a fixed critical-vocabulary suite
 - compatibility checks pass for bundle manifest, feature schema, and event-log
   schema
+
+Promotion should be based on protected slices and latency budgets, not only on
+aggregate score.
 
 ### Event Log
 
@@ -869,6 +882,12 @@ This is the actual execution roadmap.
 The goal is to prove or falsify the critical hypotheses with the smallest
 amount of machinery.
 
+Execution should always prefer the smallest experiment that can falsify the
+next key assumption.
+
+Typed events and deterministic replay belong to this de-risking backbone,
+because memory, offline training, and rollback all depend on them.
+
 #### 2.1 Finish the Current Phonetic Loop
 
 We already have most of this, but it needs to be made stable enough to feed
@@ -957,6 +976,7 @@ Required:
 
 - base bundle + overlay loading
 - overlay precedence and merge policy
+- typed correction events
 - deterministic replay from event log
 - UI visibility into memory contributions
 
@@ -1060,6 +1080,20 @@ For any failed eval case, the system should be able to say:
 
 These four layers must be operational together before we trust learned-judge
 results.
+
+### Minimum Benchmark Suites
+
+The project should maintain at least three named suites:
+
+1. core frozen benchmark suite
+   - stable cases used for regression tracking
+2. critical vocabulary suite
+   - protected high-value terms and failure classes
+3. exploratory suite
+   - evolving cases used to probe new hypotheses
+
+The first two should remain stable enough to support meaningful before/after
+comparison.
 
 ### What We Should Not Do By Default
 
