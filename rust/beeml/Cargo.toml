@@ -23,6 +23,7 @@ bee-transcribe = { path = "../bee-transcribe" }
 anyhow = { workspace = true }
 espeak-ng = { version = "0.1.0", features = ["bundled-data-en"] }
 facet = "0.44.3"
+rayon = "1.10.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"], optional = true }
 vox = { path = "../../../vox/rust/vox", default-features = false, features = ["runtime"] }
 vox-core = { path = "../../../vox/rust/vox-core", optional = true }

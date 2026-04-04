@@ -23,6 +23,7 @@ pub struct Posting {
 #[derive(Debug, Clone)]
 pub struct PhoneticIndex {
     pub aliases: Vec<LexiconAlias>,
+    pub alias_feature_vectors: Vec<Vec<Vec<f32>>>,
     pub postings: HashMap<(IndexView, String), Vec<Posting>>,
     pub short_query_postings: HashMap<String, Vec<Posting>>,
     pub by_phone_len: BTreeMap<u8, Vec<u32>>,
@@ -68,8 +69,12 @@ pub fn build_index(aliases: Vec<LexiconAlias>) -> PhoneticIndex {
     let mut short_query_postings: HashMap<String, Vec<Posting>> = HashMap::new();
     let mut by_phone_len: BTreeMap<u8, Vec<u32>> = BTreeMap::new();
     let mut by_token_count: HashMap<u8, Vec<u32>> = HashMap::new();
+    let mut alias_feature_vectors = Vec::with_capacity(aliases.len());
 
     for alias in &aliases {
+        alias_feature_vectors.push(crate::feature_view::feature_vectors_for_ipa(
+            &alias.ipa_tokens,
+        ));
         by_phone_len
             .entry(alias.phone_count)
             .or_default()
@@ -84,8 +89,6 @@ pub fn build_index(aliases: Vec<LexiconAlias>) -> PhoneticIndex {
             (IndexView::RawIpa3, qgrams(&alias.ipa_tokens, 3)),
             (IndexView::ReducedIpa2, qgrams(&alias.reduced_ipa_tokens, 2)),
             (IndexView::ReducedIpa3, qgrams(&alias.reduced_ipa_tokens, 3)),
-            (IndexView::Feature2, qgrams(&alias.feature_tokens, 2)),
-            (IndexView::Feature3, qgrams(&alias.feature_tokens, 3)),
         ] {
             let mut seen_grams = HashSet::new();
             for gram in grams {
@@ -113,6 +116,7 @@ pub fn build_index(aliases: Vec<LexiconAlias>) -> PhoneticIndex {
 
     PhoneticIndex {
         aliases,
+        alias_feature_vectors,
         postings,
         short_query_postings,
         by_phone_len,
@@ -131,8 +135,6 @@ pub fn query_index(
         (IndexView::RawIpa3, qgrams(&query.ipa_tokens, 3)),
         (IndexView::ReducedIpa2, qgrams(&query.reduced_ipa_tokens, 2)),
         (IndexView::ReducedIpa3, qgrams(&query.reduced_ipa_tokens, 3)),
-        (IndexView::Feature2, qgrams(&query.feature_tokens, 2)),
-        (IndexView::Feature3, qgrams(&query.feature_tokens, 3)),
     ];
     let mut accum: HashMap<u32, CandidateAccumulator> = HashMap::new();
 
@@ -262,7 +264,7 @@ fn phone_count_compatible(query: u8, candidate: u8) -> bool {
 
 fn normalized_view_overlap(
     overlap: &u16,
-    query_grams_by_view: &[(IndexView, Vec<String>); 6],
+    query_grams_by_view: &[(IndexView, Vec<String>)],
     view: &IndexView,
 ) -> f32 {
     if *view == IndexView::ShortQueryFallback {

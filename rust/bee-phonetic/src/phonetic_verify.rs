@@ -29,6 +29,7 @@ pub fn verify_shortlist(
     index: &PhoneticIndex,
     limit: usize,
 ) -> Vec<VerifiedCandidate> {
+    let span_feature_vectors = crate::feature_view::feature_vectors_for_ipa(&span.ipa_tokens);
     let mut out = shortlist
         .iter()
         .filter_map(|candidate| {
@@ -39,8 +40,14 @@ pub fn verify_shortlist(
                 && candidate.coarse_score >= 0.45
                 && candidate.phone_count_delta.abs() <= 2;
             let feature_score = if should_apply_feature_bonus {
-                crate::feature_view::feature_similarity(&span.ipa_tokens, &alias.ipa_tokens)
-                    .unwrap_or(token_score)
+                crate::feature_view::feature_similarity_from_vectors(
+                    &span_feature_vectors,
+                    index
+                        .alias_feature_vectors
+                        .get(candidate.alias_id as usize)?,
+                    span.ipa_tokens.len().max(alias.ipa_tokens.len()),
+                )
+                .unwrap_or(token_score)
             } else {
                 token_score
             };

@@ -12,7 +12,10 @@ pub use dataset::{
     RecordingExampleRow, SeedDataset, SeedDatasetError, SeedDatasetValidationError, SeedTermRow,
     SentenceExampleRow,
 };
-pub use feature_view::{feature_similarity, feature_tokens_for_ipa};
+pub use feature_view::{
+    feature_similarity, feature_similarity_from_vectors, feature_tokens_for_ipa,
+    feature_vector_for_token, feature_vectors_for_ipa,
+};
 pub use phonetic_index::{
     build_index, query_index, IndexView, PhoneticIndex, RetrievalCandidate, RetrievalQuery,
 };

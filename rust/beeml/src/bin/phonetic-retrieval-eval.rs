@@ -3,9 +3,10 @@ use std::time::{Duration, Instant};
 
 use bee_phonetic::{
     enumerate_transcript_spans_with, query_index, verify_shortlist, RetrievalQuery, SeedDataset,
-    TranscriptAlignmentToken, VerifiedCandidate,
+    TranscriptAlignmentToken, TranscriptSpan, VerifiedCandidate,
 };
 use beeml::g2p::CachedEspeakG2p;
+use rayon::prelude::*;
 
 #[derive(Debug, Clone)]
 struct EvalConfig {
@@ -31,6 +32,13 @@ struct RankedTermHit {
     term: String,
     span_text: String,
     candidate: VerifiedCandidate,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedRecording {
+    term: String,
+    transcript: String,
+    spans: Vec<TranscriptSpan>,
 }
 
 #[derive(Debug, Default)]
@@ -80,14 +88,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut timings = EvalTimings::default();
     let mut misses = Vec::new();
 
+    let mut prepared = Vec::new();
     for row in dataset
         .recording_examples
         .iter()
         .take(config.sample_limit.unwrap_or(usize::MAX))
     {
         summary.total += 1;
-
-        let (ranked, recording_timings) = evaluate_recording(&index, &mut g2p, row, &config)?;
+        let (prepared_recording, recording_timings) = prepare_recording(&mut g2p, row, &config)?;
         timings.recordings += 1;
         timings.spans += recording_timings.spans;
         timings.g2p_calls += recording_timings.g2p_calls;
@@ -95,12 +103,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         timings.g2p_cache_misses += recording_timings.g2p_cache_misses;
         timings.enumerate_total += recording_timings.enumerate_total;
         timings.g2p_total += recording_timings.g2p_total;
+        timings.recording_total += recording_timings.recording_total;
+        prepared.push(prepared_recording);
+    }
+
+    let evaluated = prepared
+        .par_iter()
+        .map(|recording| evaluate_prepared_recording(&index, recording, &config))
+        .collect::<Vec<_>>();
+
+    for (recording, ranked, recording_timings) in evaluated {
         timings.query_total += recording_timings.query_total;
         timings.verify_total += recording_timings.verify_total;
         timings.recording_total += recording_timings.recording_total;
         let target_rank = ranked
             .iter()
-            .position(|hit| hit.term.eq_ignore_ascii_case(&row.term))
+            .position(|hit| hit.term.eq_ignore_ascii_case(&recording.term))
             .map(|idx| idx + 1);
 
         match target_rank {
@@ -118,8 +136,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None => {
                 summary.miss += 1;
                 misses.push((
-                    row.term.clone(),
-                    row.transcript.clone(),
+                    recording.term,
+                    recording.transcript,
                     ranked.into_iter().take(5).collect::<Vec<_>>(),
                 ));
             }
@@ -197,12 +215,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn evaluate_recording(
-    index: &bee_phonetic::PhoneticIndex,
+fn prepare_recording(
     g2p: &mut CachedEspeakG2p,
     row: &bee_phonetic::RecordingExampleRow,
     config: &EvalConfig,
-) -> Result<(Vec<RankedTermHit>, RecordingTimings), Box<dyn std::error::Error>> {
+) -> Result<(PreparedRecording, RecordingTimings), Box<dyn std::error::Error>> {
     let recording_start = Instant::now();
     let mut timings = RecordingTimings::default();
     let mut g2p_error = None;
@@ -235,10 +252,29 @@ fn evaluate_recording(
         return Err(error.into());
     }
     timings.spans = spans.len();
+    timings.recording_total = recording_start.elapsed();
 
+    Ok((
+        PreparedRecording {
+            term: row.term.clone(),
+            transcript: row.transcript.clone(),
+            spans,
+        },
+        timings,
+    ))
+}
+
+fn evaluate_prepared_recording(
+    index: &bee_phonetic::PhoneticIndex,
+    recording: &PreparedRecording,
+    config: &EvalConfig,
+) -> (PreparedRecording, Vec<RankedTermHit>, RecordingTimings) {
+    let recording_start = Instant::now();
     let mut best_by_term: HashMap<String, RankedTermHit> = HashMap::new();
 
-    for span in spans {
+    let mut timings = RecordingTimings::default();
+
+    for span in &recording.spans {
         let query_start = Instant::now();
         let shortlist = query_index(
             index,
@@ -246,7 +282,7 @@ fn evaluate_recording(
                 text: span.text.clone(),
                 ipa_tokens: span.ipa_tokens.clone(),
                 reduced_ipa_tokens: span.reduced_ipa_tokens.clone(),
-                feature_tokens: bee_phonetic::feature_tokens_for_ipa(&span.ipa_tokens),
+                feature_tokens: Vec::new(),
                 token_count: (span.token_end - span.token_start) as u8,
             },
             config.shortlist_limit,
@@ -274,7 +310,7 @@ fn evaluate_recording(
     let mut ranked = best_by_term.into_values().collect::<Vec<_>>();
     ranked.sort_by(compare_hits);
     timings.recording_total = recording_start.elapsed();
-    Ok((ranked, timings))
+    (recording.clone(), ranked, timings)
 }
 
 fn compare_hits(a: &RankedTermHit, b: &RankedTermHit) -> std::cmp::Ordering {

@@ -1,8 +1,10 @@
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use rspanphon::featuretable::FeatureTable;
 
 static FEATURE_TABLE: OnceLock<FeatureTable> = OnceLock::new();
+static FEATURE_VECTOR_CACHE: OnceLock<Mutex<HashMap<String, Option<Vec<f32>>>>> = OnceLock::new();
 
 pub fn feature_tokens_for_ipa(ipa_tokens: &[String]) -> Vec<String> {
     let table = FEATURE_TABLE.get_or_init(FeatureTable::new);
@@ -20,9 +22,25 @@ pub fn feature_similarity(a: &[String], b: &[String]) -> Option<f32> {
         return None;
     }
 
-    let table = FEATURE_TABLE.get_or_init(FeatureTable::new);
-    let distance = feature_edit_distance(table, a, b)?;
-    let max_len = a.len().max(b.len()) as f32;
+    let a_vecs = feature_vectors_for_ipa(a);
+    let b_vecs = feature_vectors_for_ipa(b);
+    feature_similarity_from_vectors(&a_vecs, &b_vecs, a.len().max(b.len()))
+}
+
+pub fn feature_vectors_for_ipa(ipa_tokens: &[String]) -> Vec<Vec<f32>> {
+    ipa_tokens
+        .iter()
+        .filter_map(|token| feature_vector_for_token(token))
+        .collect()
+}
+
+pub fn feature_similarity_from_vectors(
+    a: &[Vec<f32>],
+    b: &[Vec<f32>],
+    max_token_len: usize,
+) -> Option<f32> {
+    let distance = feature_edit_distance(a, b)?;
+    let max_len = max_token_len.max(1) as f32;
     Some((1.0 - (distance / max_len)).clamp(0.0, 1.0))
 }
 
@@ -39,25 +57,23 @@ fn encode_feature_vector(features: &[i8]) -> String {
     out
 }
 
-fn feature_edit_distance(table: &FeatureTable, a: &[String], b: &[String]) -> Option<f32> {
+fn feature_edit_distance(a: &[Vec<f32>], b: &[Vec<f32>]) -> Option<f32> {
     let mut prev = vec![0.0f32; b.len() + 1];
     let mut curr = vec![0.0f32; b.len() + 1];
-
-    let any_known = a.iter().chain(b.iter()).any(|token| feature_vector(table, token).is_some());
-    if !any_known {
+    if a.is_empty() || b.is_empty() {
         return None;
     }
 
     for (j, by) in b.iter().enumerate() {
-        prev[j + 1] = prev[j] + insertion_deletion_cost(std::slice::from_ref(by), table);
+        prev[j + 1] = prev[j] + insertion_deletion_cost(by);
     }
 
     for ax in a {
-        curr[0] = prev[0] + insertion_deletion_cost(std::slice::from_ref(ax), table);
+        curr[0] = prev[0] + insertion_deletion_cost(ax);
         for (j, by) in b.iter().enumerate() {
-            let del = prev[j + 1] + insertion_deletion_cost(std::slice::from_ref(ax), table);
-            let ins = curr[j] + insertion_deletion_cost(std::slice::from_ref(by), table);
-            let sub = prev[j] + substitution_cost(table, ax, by);
+            let del = prev[j + 1] + insertion_deletion_cost(ax);
+            let ins = curr[j] + insertion_deletion_cost(by);
+            let sub = prev[j] + substitution_cost(ax, by);
             curr[j + 1] = del.min(ins.min(sub));
         }
         prev.copy_from_slice(&curr);
@@ -66,40 +82,25 @@ fn feature_edit_distance(table: &FeatureTable, a: &[String], b: &[String]) -> Op
     Some(prev[b.len()])
 }
 
-fn substitution_cost(table: &FeatureTable, a: &str, b: &str) -> f32 {
+fn substitution_cost(a: &[f32], b: &[f32]) -> f32 {
     if a == b {
         return 0.0;
     }
 
-    let Some(a_vec) = feature_vector(table, a) else {
-        return 1.0;
-    };
-    let Some(b_vec) = feature_vector(table, b) else {
-        return 1.0;
-    };
-
-    let diff_sum = a_vec
+    let diff_sum = a
         .iter()
-        .zip(&b_vec)
+        .zip(b)
         .map(|(lhs, rhs)| (lhs - rhs).abs() / 2.0)
         .sum::<f32>();
-    (diff_sum / a_vec.len().max(1) as f32).clamp(0.0, 1.0)
+    (diff_sum / a.len().max(1) as f32).clamp(0.0, 1.0)
 }
 
-fn insertion_deletion_cost(tokens: &[String], table: &FeatureTable) -> f32 {
-    let token = match tokens.last() {
-        Some(token) => token,
-        None => return 0.0,
-    };
-
-    let Some(vec) = feature_vector(table, token) else {
-        return 1.0;
-    };
-
-    let syllabic = feature_flag(table, &vec, "syl");
-    let continuant = feature_flag(table, &vec, "cont");
-    let sonorant = feature_flag(table, &vec, "son");
-    let glottal = feature_flag(table, &vec, "cg") || feature_flag(table, &vec, "sg");
+fn insertion_deletion_cost(vec: &[f32]) -> f32 {
+    let table = FEATURE_TABLE.get_or_init(FeatureTable::new);
+    let syllabic = feature_flag(table, vec, "syl");
+    let continuant = feature_flag(table, vec, "cont");
+    let sonorant = feature_flag(table, vec, "son");
+    let glottal = feature_flag(table, vec, "cg") || feature_flag(table, vec, "sg");
 
     if glottal {
         0.55
@@ -119,7 +120,25 @@ fn feature_flag(table: &FeatureTable, vec: &[f32], name: &str) -> bool {
     vec.get(idx).copied().unwrap_or(0.0) > 0.0
 }
 
-fn feature_vector(table: &FeatureTable, token: &str) -> Option<Vec<f32>> {
+pub fn feature_vector_for_token(token: &str) -> Option<Vec<f32>> {
+    let cache = FEATURE_VECTOR_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    {
+        let guard = cache.lock().expect("feature vector cache poisoned");
+        if let Some(cached) = guard.get(token) {
+            return cached.clone();
+        }
+    }
+
+    let table = FEATURE_TABLE.get_or_init(FeatureTable::new);
+    let computed = compute_feature_vector(table, token);
+    cache
+        .lock()
+        .expect("feature vector cache poisoned")
+        .insert(token.to_string(), computed.clone());
+    computed
+}
+
+fn compute_feature_vector(table: &FeatureTable, token: &str) -> Option<Vec<f32>> {
     if let Some(vec) = table.ft.get(token) {
         return Some(vec.iter().map(|value| *value as f32).collect());
     }
