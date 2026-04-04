@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use bee_phonetic::{
@@ -7,6 +8,7 @@ use bee_phonetic::{
 };
 use beeml::g2p::CachedEspeakG2p;
 use rayon::prelude::*;
+use serde::Deserialize;
 
 #[derive(Debug, Clone)]
 struct EvalConfig {
@@ -41,6 +43,16 @@ struct PreparedRecording {
     spans: Vec<TranscriptSpan>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct CounterexampleRecordingRow {
+    term: String,
+    text: String,
+    take: i64,
+    audio_path: String,
+    transcript: String,
+    surface_form: String,
+}
+
 #[derive(Debug, Default)]
 struct EvalSummary {
     total: usize,
@@ -48,6 +60,14 @@ struct EvalSummary {
     hit_top3: usize,
     hit_top10: usize,
     miss: usize,
+}
+
+#[derive(Debug, Default)]
+struct CounterexampleSummary {
+    total: usize,
+    false_positive_top1: usize,
+    false_positive_top3: usize,
+    false_positive_top10: usize,
 }
 
 #[derive(Debug, Default)]
@@ -85,8 +105,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let index = dataset.phonetic_index();
     let mut g2p = CachedEspeakG2p::english_with_persist_path(Some(eval_g2p_cache_path()))?;
     let mut summary = EvalSummary::default();
+    let mut counter_summary = CounterexampleSummary::default();
     let mut timings = EvalTimings::default();
     let mut misses = Vec::new();
+    let mut counter_hits = Vec::new();
 
     let mut prepared = Vec::new();
     for row in dataset
@@ -144,11 +166,72 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let counterexample_rows = load_counterexample_recordings()?;
+    let mut counter_prepared = Vec::new();
+    for row in counterexample_rows
+        .iter()
+        .take(config.sample_limit.unwrap_or(usize::MAX))
+    {
+        counter_summary.total += 1;
+        let (prepared_recording, recording_timings) =
+            prepare_counterexample_recording(&mut g2p, row, &config)?;
+        timings.recordings += 1;
+        timings.spans += recording_timings.spans;
+        timings.g2p_calls += recording_timings.g2p_calls;
+        timings.g2p_cache_hits += recording_timings.g2p_cache_hits;
+        timings.g2p_cache_misses += recording_timings.g2p_cache_misses;
+        timings.enumerate_total += recording_timings.enumerate_total;
+        timings.g2p_total += recording_timings.g2p_total;
+        timings.recording_total += recording_timings.recording_total;
+        counter_prepared.push(prepared_recording);
+    }
+
+    let counter_evaluated = counter_prepared
+        .par_iter()
+        .map(|recording| evaluate_prepared_recording(&index, recording, &config))
+        .collect::<Vec<_>>();
+
+    for (recording, ranked, recording_timings) in counter_evaluated {
+        timings.query_total += recording_timings.query_total;
+        timings.verify_total += recording_timings.verify_total;
+        timings.recording_total += recording_timings.recording_total;
+        let target_rank = ranked
+            .iter()
+            .position(|hit| hit.term.eq_ignore_ascii_case(&recording.term))
+            .map(|idx| idx + 1);
+        if let Some(rank) = target_rank {
+            if rank <= 1 {
+                counter_summary.false_positive_top1 += 1;
+            }
+            if rank <= 3 {
+                counter_summary.false_positive_top3 += 1;
+            }
+            if rank <= 10 {
+                counter_summary.false_positive_top10 += 1;
+            }
+            counter_hits.push((recording.term, recording.transcript, ranked, rank));
+        }
+    }
+
     println!("recordings={}", summary.total);
     println!("top1={}", summary.hit_top1);
     println!("top3={}", summary.hit_top3);
     println!("top10={}", summary.hit_top10);
     println!("miss={}", summary.miss);
+    println!();
+    println!("counterexamples={}", counter_summary.total);
+    println!(
+        "counterexample_fp_top1={}",
+        counter_summary.false_positive_top1
+    );
+    println!(
+        "counterexample_fp_top3={}",
+        counter_summary.false_positive_top3
+    );
+    println!(
+        "counterexample_fp_top10={}",
+        counter_summary.false_positive_top10
+    );
     println!();
     println!("timings_ms");
     println!(
@@ -212,12 +295,82 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    if !counter_hits.is_empty() {
+        println!();
+        println!("sample_counterexample_hits={}", counter_hits.len().min(10));
+        counter_hits.sort_by_key(|(_, _, _, rank)| *rank);
+        for (term, transcript, ranked, rank) in counter_hits.into_iter().take(10) {
+            println!("---");
+            println!("term={term}");
+            println!("transcript={transcript}");
+            println!("false_positive_rank={rank}");
+            for hit in ranked.into_iter().take(5) {
+                println!(
+                    "candidate={} span={} phonetic_score={:.3} coarse_score={:.3}",
+                    hit.term,
+                    hit.span_text,
+                    hit.candidate.phonetic_score,
+                    hit.candidate.coarse_score
+                );
+            }
+        }
+    }
+
     Ok(())
 }
 
 fn prepare_recording(
     g2p: &mut CachedEspeakG2p,
     row: &bee_phonetic::RecordingExampleRow,
+    config: &EvalConfig,
+) -> Result<(PreparedRecording, RecordingTimings), Box<dyn std::error::Error>> {
+    let recording_start = Instant::now();
+    let mut timings = RecordingTimings::default();
+    let mut g2p_error = None;
+    let enumerate_start = Instant::now();
+    let spans = enumerate_transcript_spans_with::<_, TranscriptAlignmentToken>(
+        &row.transcript,
+        config.max_span_words,
+        None,
+        |text| {
+            let g2p_start = Instant::now();
+            let result = match g2p.ipa_tokens(text) {
+                Ok(tokens) => tokens,
+                Err(error) => {
+                    g2p_error = Some(error.to_string());
+                    None
+                }
+            };
+            timings.g2p_total += g2p_start.elapsed();
+            timings.g2p_calls += 1;
+            if g2p.last_lookup_hit_cache() {
+                timings.g2p_cache_hits += 1;
+            } else {
+                timings.g2p_cache_misses += 1;
+            }
+            result
+        },
+    );
+    timings.enumerate_total += enumerate_start.elapsed();
+    if let Some(error) = g2p_error {
+        return Err(error.into());
+    }
+    timings.spans = spans.len();
+    timings.recording_total = recording_start.elapsed();
+
+    Ok((
+        PreparedRecording {
+            term: row.term.clone(),
+            transcript: row.transcript.clone(),
+            spans,
+        },
+        timings,
+    ))
+}
+
+fn prepare_counterexample_recording(
+    g2p: &mut CachedEspeakG2p,
+    row: &CounterexampleRecordingRow,
     config: &EvalConfig,
 ) -> Result<(PreparedRecording, RecordingTimings), Box<dyn std::error::Error>> {
     let recording_start = Instant::now();
@@ -373,4 +526,25 @@ fn millis_per(duration: Duration, count: usize) -> f64 {
 fn eval_g2p_cache_path() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/phonetic-retrieval-eval-g2p-cache.tsv")
+}
+
+fn load_counterexample_recordings(
+) -> Result<Vec<CounterexampleRecordingRow>, Box<dyn std::error::Error>> {
+    let path = counterexample_recordings_path();
+    let text = std::fs::read_to_string(&path)?;
+    let mut out = Vec::new();
+    for (line_idx, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let row = serde_json::from_str::<CounterexampleRecordingRow>(line)
+            .map_err(|error| format!("{}:{}: {error}", path.display(), line_idx + 1))?;
+        out.push(row);
+    }
+    Ok(out)
+}
+
+fn counterexample_recordings_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../data/phonetic-seed/counterexample_recordings.jsonl")
 }

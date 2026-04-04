@@ -20,6 +20,10 @@ pub struct VerifiedCandidate {
     pub phone_bonus: f32,
     pub extra_length_penalty: f32,
     pub coarse_score: f32,
+    pub token_score: f32,
+    pub feature_score: f32,
+    pub feature_bonus: f32,
+    pub used_feature_bonus: bool,
     pub phonetic_score: f32,
 }
 
@@ -68,6 +72,10 @@ pub fn verify_shortlist(
                 phone_bonus: candidate.phone_bonus,
                 extra_length_penalty: candidate.extra_length_penalty,
                 coarse_score: candidate.coarse_score,
+                token_score,
+                feature_score,
+                feature_bonus,
+                used_feature_bonus: should_apply_feature_bonus && feature_bonus > 0.0,
                 phonetic_score,
             })
         })
