@@ -5,6 +5,9 @@ use crate::phonetic_lexicon::AliasSource;
 use crate::region_proposal::TranscriptSpan;
 use crate::word_split::sentence_word_tokens;
 
+pub use crate::feature_view::FeatureEditOp;
+pub use crate::prototype::TokenEditOp;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifiedCandidate {
     pub alias_id: u32,
@@ -23,11 +26,17 @@ pub struct VerifiedCandidate {
     pub structure_bonus: f32,
     pub coarse_score: f32,
     pub token_distance: u16,
+    pub token_weighted_distance: f32,
+    pub token_boundary_penalty: f32,
     pub token_max_len: u16,
     pub token_score: f32,
+    pub token_ops: Vec<TokenEditOp>,
     pub feature_distance: f32,
+    pub feature_weighted_distance: f32,
+    pub feature_boundary_penalty: f32,
     pub feature_max_len: u16,
     pub feature_score: f32,
+    pub feature_ops: Vec<FeatureEditOp>,
     pub feature_bonus: f32,
     pub feature_gate_token_ok: bool,
     pub feature_gate_coarse_ok: bool,
@@ -62,8 +71,10 @@ pub fn verify_shortlist(
             let should_apply_feature_bonus =
                 feature_gate_token_ok && feature_gate_coarse_ok && feature_gate_phone_ok;
             let feature_details = if should_apply_feature_bonus {
-                crate::feature_view::feature_similarity_details_from_vectors(
+                crate::feature_view::feature_similarity_details_with_labels(
+                    &span.ipa_tokens,
                     &span_feature_vectors,
+                    &alias.ipa_tokens,
                     index
                         .alias_feature_vectors
                         .get(candidate.alias_id as usize)?,
@@ -71,14 +82,20 @@ pub fn verify_shortlist(
                 )
                 .unwrap_or(crate::feature_view::FeatureSimilarityDetails {
                     distance: token_details.distance as f32,
+                    weighted_distance: token_details.weighted_distance,
+                    boundary_penalty: token_details.boundary_penalty,
                     max_len: token_details.max_len,
                     similarity: token_details.similarity,
+                    ops: Vec::new(),
                 })
             } else {
                 crate::feature_view::FeatureSimilarityDetails {
                     distance: token_details.distance as f32,
+                    weighted_distance: token_details.weighted_distance,
+                    boundary_penalty: token_details.boundary_penalty,
                     max_len: token_details.max_len,
                     similarity: token_details.similarity,
+                    ops: Vec::new(),
                 }
             };
             let feature_bonus =
@@ -130,11 +147,17 @@ pub fn verify_shortlist(
                 structure_bonus: candidate.structure_bonus,
                 coarse_score: candidate.coarse_score,
                 token_distance: token_details.distance as u16,
+                token_weighted_distance: token_details.weighted_distance,
+                token_boundary_penalty: token_details.boundary_penalty,
                 token_max_len: token_details.max_len as u16,
                 token_score: token_details.similarity,
+                token_ops: token_details.ops,
                 feature_distance: feature_details.distance,
+                feature_weighted_distance: feature_details.weighted_distance,
+                feature_boundary_penalty: feature_details.boundary_penalty,
                 feature_max_len: feature_details.max_len as u16,
                 feature_score: feature_details.similarity,
+                feature_ops: feature_details.ops,
                 feature_bonus,
                 feature_gate_token_ok,
                 feature_gate_coarse_ok,

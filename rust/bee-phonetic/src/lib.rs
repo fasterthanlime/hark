@@ -14,7 +14,8 @@ pub use dataset::{
 };
 pub use feature_view::{
     feature_similarity, feature_similarity_from_vectors, feature_tokens_for_ipa,
-    feature_vector_for_token, feature_vectors_for_ipa,
+    feature_vector_for_token, feature_vectors_for_ipa, FeatureEditKind, FeatureEditOp,
+    FeatureSimilarityDetails,
 };
 pub use phonetic_index::{
     build_index, query_index, IndexView, PhoneticIndex, RetrievalCandidate, RetrievalQuery,
@@ -24,7 +25,10 @@ pub use phonetic_lexicon::{
     IdentifierFlags, LexiconAlias,
 };
 pub use phonetic_verify::{verify_shortlist, VerifiedCandidate};
-pub use prototype::{parse_reviewed_ipa, phoneme_similarity};
+pub use prototype::{
+    parse_reviewed_ipa, phoneme_similarity, phoneme_similarity_details, PhonemeSimilarityDetails,
+    TokenEditKind, TokenEditOp,
+};
 pub use region_proposal::{
     enumerate_transcript_spans_with, TranscriptAlignmentTiming, TranscriptAlignmentToken,
     TranscriptSpan,

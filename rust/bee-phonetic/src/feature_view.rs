@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+use serde::{Deserialize, Serialize};
+
 use rspanphon::featuretable::FeatureTable;
 
 static FEATURE_TABLE: OnceLock<FeatureTable> = OnceLock::new();
@@ -43,11 +45,31 @@ pub fn feature_similarity_from_vectors(
     Some(details.similarity)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct FeatureSimilarityDetails {
     pub distance: f32,
+    pub weighted_distance: f32,
+    pub boundary_penalty: f32,
     pub max_len: usize,
     pub similarity: f32,
+    pub ops: Vec<FeatureEditOp>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FeatureEditKind {
+    Match,
+    Substitute,
+    Insert,
+    Delete,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeatureEditOp {
+    pub kind: FeatureEditKind,
+    pub left: Option<String>,
+    pub right: Option<String>,
+    pub cost: f32,
+    pub boundary_penalty: f32,
 }
 
 pub fn feature_similarity_details_from_vectors(
@@ -55,13 +77,33 @@ pub fn feature_similarity_details_from_vectors(
     b: &[Vec<f32>],
     max_token_len: usize,
 ) -> Option<FeatureSimilarityDetails> {
-    let distance = feature_edit_distance(a, b)?;
+    let left = (0..a.len())
+        .map(|idx| format!("#{idx}"))
+        .collect::<Vec<_>>();
+    let right = (0..b.len())
+        .map(|idx| format!("#{idx}"))
+        .collect::<Vec<_>>();
+    feature_similarity_details_with_labels(left.as_slice(), a, right.as_slice(), b, max_token_len)
+}
+
+pub fn feature_similarity_details_with_labels(
+    a_tokens: &[String],
+    a: &[Vec<f32>],
+    b_tokens: &[String],
+    b: &[Vec<f32>],
+    max_token_len: usize,
+) -> Option<FeatureSimilarityDetails> {
+    let (distance, weighted_distance, boundary_penalty, ops) =
+        feature_edit_distance_details(a_tokens, a, b_tokens, b)?;
     let max_len = max_token_len.max(1);
-    let similarity = (1.0 - (distance / max_len as f32)).clamp(0.0, 1.0);
+    let similarity = (1.0 - (weighted_distance / max_len as f32)).clamp(0.0, 1.0);
     Some(FeatureSimilarityDetails {
         distance,
+        weighted_distance,
+        boundary_penalty,
         max_len,
         similarity,
+        ops,
     })
 }
 
@@ -78,29 +120,143 @@ fn encode_feature_vector(features: &[i8]) -> String {
     out
 }
 
-fn feature_edit_distance(a: &[Vec<f32>], b: &[Vec<f32>]) -> Option<f32> {
-    let mut prev = vec![0.0f32; b.len() + 1];
-    let mut curr = vec![0.0f32; b.len() + 1];
+fn feature_edit_distance_details(
+    a_tokens: &[String],
+    a: &[Vec<f32>],
+    b_tokens: &[String],
+    b: &[Vec<f32>],
+) -> Option<(f32, f32, f32, Vec<FeatureEditOp>)> {
     if a.is_empty() || b.is_empty() {
         return None;
     }
 
-    for (j, by) in b.iter().enumerate() {
-        prev[j + 1] = prev[j] + insertion_deletion_cost(by);
+    #[derive(Clone, Copy)]
+    enum Step {
+        Match,
+        Substitute,
+        Insert,
+        Delete,
     }
 
-    for ax in a {
-        curr[0] = prev[0] + insertion_deletion_cost(ax);
-        for (j, by) in b.iter().enumerate() {
-            let del = prev[j + 1] + insertion_deletion_cost(ax);
-            let ins = curr[j] + insertion_deletion_cost(by);
-            let sub = prev[j] + substitution_cost(ax, by);
-            curr[j + 1] = del.min(ins.min(sub));
+    let rows = a.len();
+    let cols = b.len();
+    let mut dp = vec![vec![0.0f32; cols + 1]; rows + 1];
+    let mut steps = vec![vec![Step::Match; cols + 1]; rows + 1];
+
+    for i in 1..=rows {
+        dp[i][0] = dp[i - 1][0] + insertion_deletion_cost(&a[i - 1]);
+        steps[i][0] = Step::Delete;
+    }
+    for j in 1..=cols {
+        dp[0][j] = dp[0][j - 1] + insertion_deletion_cost(&b[j - 1]);
+        steps[0][j] = Step::Insert;
+    }
+
+    for i in 1..=rows {
+        for j in 1..=cols {
+            let sub_cost = substitution_cost(&a[i - 1], &b[j - 1]);
+            let del = dp[i - 1][j] + insertion_deletion_cost(&a[i - 1]);
+            let ins = dp[i][j - 1] + insertion_deletion_cost(&b[j - 1]);
+            let sub = dp[i - 1][j - 1] + sub_cost;
+
+            let (best, step) = if sub <= del && sub <= ins {
+                (
+                    sub,
+                    if sub_cost == 0.0 {
+                        Step::Match
+                    } else {
+                        Step::Substitute
+                    },
+                )
+            } else if del <= ins {
+                (del, Step::Delete)
+            } else {
+                (ins, Step::Insert)
+            };
+            dp[i][j] = best;
+            steps[i][j] = step;
         }
-        prev.copy_from_slice(&curr);
     }
 
-    Some(prev[b.len()])
+    let mut ops = Vec::new();
+    let mut i = rows;
+    let mut j = cols;
+    while i > 0 || j > 0 {
+        let step = if i == 0 {
+            Step::Insert
+        } else if j == 0 {
+            Step::Delete
+        } else {
+            steps[i][j]
+        };
+        match step {
+            Step::Match => {
+                ops.push(FeatureEditOp {
+                    kind: FeatureEditKind::Match,
+                    left: Some(a_tokens[i - 1].clone()),
+                    right: Some(b_tokens[j - 1].clone()),
+                    cost: 0.0,
+                    boundary_penalty: 0.0,
+                });
+                i -= 1;
+                j -= 1;
+            }
+            Step::Substitute => {
+                let penalty = feature_boundary_penalty(i - 1, rows, j - 1, cols);
+                ops.push(FeatureEditOp {
+                    kind: FeatureEditKind::Substitute,
+                    left: Some(a_tokens[i - 1].clone()),
+                    right: Some(b_tokens[j - 1].clone()),
+                    cost: substitution_cost(&a[i - 1], &b[j - 1]),
+                    boundary_penalty: penalty,
+                });
+                i -= 1;
+                j -= 1;
+            }
+            Step::Delete => {
+                let penalty = feature_boundary_penalty(i - 1, rows, j.saturating_sub(1), cols);
+                ops.push(FeatureEditOp {
+                    kind: FeatureEditKind::Delete,
+                    left: Some(a_tokens[i - 1].clone()),
+                    right: None,
+                    cost: insertion_deletion_cost(&a[i - 1]),
+                    boundary_penalty: penalty,
+                });
+                i -= 1;
+            }
+            Step::Insert => {
+                let penalty = feature_boundary_penalty(i.saturating_sub(1), rows, j - 1, cols);
+                ops.push(FeatureEditOp {
+                    kind: FeatureEditKind::Insert,
+                    left: None,
+                    right: Some(b_tokens[j - 1].clone()),
+                    cost: insertion_deletion_cost(&b[j - 1]),
+                    boundary_penalty: penalty,
+                });
+                j -= 1;
+            }
+        }
+    }
+    ops.reverse();
+
+    let boundary_penalty = ops.iter().map(|op| op.boundary_penalty).sum::<f32>();
+    let weighted_distance = dp[rows][cols] + boundary_penalty;
+    Some((dp[rows][cols], weighted_distance, boundary_penalty, ops))
+}
+
+fn feature_boundary_penalty(
+    left_idx: usize,
+    left_len: usize,
+    right_idx: usize,
+    right_len: usize,
+) -> f32 {
+    let left_boundary = left_len > 0 && (left_idx == 0 || left_idx + 1 == left_len);
+    let right_boundary = right_len > 0 && (right_idx == 0 || right_idx + 1 == right_len);
+    if left_boundary || right_boundary {
+        0.10
+    } else {
+        0.0
+    }
 }
 
 fn substitution_cost(a: &[f32], b: &[f32]) -> f32 {

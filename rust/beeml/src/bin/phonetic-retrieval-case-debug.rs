@@ -279,18 +279,48 @@ fn print_case(case: &SpanCaseDebug, term: &str, aliases: &[LexiconAlias]) {
         );
         if let Some(verified) = verified_by_alias.get(&candidate.alias_id) {
             println!(
-                "    verify token={:.3} ({}/{}) feature={:.3} ({:.3}/{}) bonus={:.3} used_feature_bonus={} phonetic={:.3} accept={:.3}",
+                "    verify token={:.3} ({:.3}/{}) feature={:.3} ({:.3}/{}) bonus={:.3} used_feature_bonus={} phonetic={:.3} accept={:.3}",
                 verified.token_score,
-                verified.token_distance,
+                verified.token_weighted_distance,
                 verified.token_max_len,
                 verified.feature_score,
-                verified.feature_distance,
+                verified.feature_weighted_distance,
                 verified.feature_max_len,
                 verified.feature_bonus,
                 verified.used_feature_bonus,
                 verified.phonetic_score,
                 verified.acceptance_score
             );
+            println!(
+                "    token_distance raw={} boundary_penalty={:.2}",
+                verified.token_distance, verified.token_boundary_penalty
+            );
+            if !verified.token_ops.is_empty() {
+                println!(
+                    "    token_ops={}",
+                    verified
+                        .token_ops
+                        .iter()
+                        .map(format_token_op)
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                );
+            }
+            println!(
+                "    feature_distance raw={:.3} boundary_penalty={:.2}",
+                verified.feature_distance, verified.feature_boundary_penalty
+            );
+            if !verified.feature_ops.is_empty() {
+                println!(
+                    "    feature_ops={}",
+                    verified
+                        .feature_ops
+                        .iter()
+                        .map(format_feature_op)
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                );
+            }
             println!(
                 "    feature_gate token_ok={} coarse_ok={} phone_ok={}",
                 verified.feature_gate_token_ok,
@@ -315,6 +345,38 @@ fn print_case(case: &SpanCaseDebug, term: &str, aliases: &[LexiconAlias]) {
             println!("    verify <not in verified shortlist>");
         }
     }
+}
+
+fn format_token_op(op: &bee_phonetic::TokenEditOp) -> String {
+    let kind = match op.kind {
+        bee_phonetic::prototype::TokenEditKind::Match => "=",
+        bee_phonetic::prototype::TokenEditKind::Substitute => "~",
+        bee_phonetic::prototype::TokenEditKind::Insert => "+",
+        bee_phonetic::prototype::TokenEditKind::Delete => "-",
+    };
+    format!(
+        "{kind}({}->{}) c={:.2} bp={:.2}",
+        op.left.as_deref().unwrap_or("_"),
+        op.right.as_deref().unwrap_or("_"),
+        op.cost,
+        op.boundary_penalty
+    )
+}
+
+fn format_feature_op(op: &bee_phonetic::FeatureEditOp) -> String {
+    let kind = match op.kind {
+        bee_phonetic::feature_view::FeatureEditKind::Match => "=",
+        bee_phonetic::feature_view::FeatureEditKind::Substitute => "~",
+        bee_phonetic::feature_view::FeatureEditKind::Insert => "+",
+        bee_phonetic::feature_view::FeatureEditKind::Delete => "-",
+    };
+    format!(
+        "{kind}({}->{}) c={:.2} bp={:.2}",
+        op.left.as_deref().unwrap_or("_"),
+        op.right.as_deref().unwrap_or("_"),
+        op.cost,
+        op.boundary_penalty
+    )
 }
 
 fn parse_args() -> Result<Config, Box<dyn std::error::Error>> {
