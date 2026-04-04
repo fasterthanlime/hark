@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
-use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use bee_phonetic::{
-    enumerate_transcript_spans_with, parse_reviewed_ipa, query_index, verify_shortlist,
-    PhoneticIndex, RetrievalQuery, SeedDataset, TranscriptAlignmentToken,
+    enumerate_transcript_spans_with, query_index, verify_shortlist, PhoneticIndex, RetrievalQuery,
+    SeedDataset, TranscriptAlignmentToken,
 };
 use bee_transcribe::{Engine, EngineConfig, SessionOptions};
+use beeml::g2p::CachedEspeakG2p;
 use beeml::rpc::{
     AcceptedEdit, AliasSource, BeeMl, CorrectionDebugResult, CorrectionRequest, CorrectionResult,
     FilterDecision, IdentifierFlags, RerankerDebugTrace, RetrievalCandidateDebug,
@@ -29,6 +29,7 @@ struct BeeMlService {
 struct BeemlServiceInner {
     engine: Engine,
     index: PhoneticIndex,
+    g2p: Mutex<CachedEspeakG2p>,
 }
 
 impl BeeMl for BeeMlService {
@@ -106,7 +107,11 @@ impl BeeMl for BeeMlService {
             )
         };
 
-        let mut g2p = EspeakG2p::default();
+        let mut g2p = self
+            .inner
+            .g2p
+            .lock()
+            .map_err(|_| "g2p cache mutex poisoned".to_string())?;
         let spans = enumerate_transcript_spans_with(
             &request.transcript,
             request.max_span_words as usize,
@@ -287,7 +292,11 @@ async fn main() -> Result<()> {
     let index = dataset.phonetic_index();
 
     let handler = BeeMlService {
-        inner: Arc::new(BeemlServiceInner { engine, index }),
+        inner: Arc::new(BeemlServiceInner {
+            engine,
+            index,
+            g2p: Mutex::new(CachedEspeakG2p::english().context("initializing g2p engine")?),
+        }),
     };
 
     let listener = TcpListener::bind(&listen_addr)
@@ -355,41 +364,5 @@ fn map_identifier_flags(flags: &bee_phonetic::IdentifierFlags) -> IdentifierFlag
         snake_like: flags.snake_like,
         camel_like: flags.camel_like,
         symbol_like: flags.symbol_like,
-    }
-}
-
-#[derive(Default)]
-struct EspeakG2p {
-    cache: HashMap<String, Vec<String>>,
-}
-
-impl EspeakG2p {
-    fn ipa_tokens(&mut self, text: &str) -> Result<Option<Vec<String>>, String> {
-        let key = text.trim();
-        if key.is_empty() {
-            return Ok(None);
-        }
-        if let Some(tokens) = self.cache.get(key) {
-            return Ok(Some(tokens.clone()));
-        }
-
-        let output = Command::new("espeak-ng")
-            .args(["-q", "--ipa=3", "--sep= "])
-            .arg(key)
-            .output()
-            .map_err(|e| format!("spawn espeak-ng for '{key}': {e}"))?;
-        if !output.status.success() {
-            return Err(format!("espeak-ng failed for '{key}'"));
-        }
-
-        let ipa = String::from_utf8(output.stdout)
-            .map_err(|e| format!("decode espeak-ng output for '{key}': {e}"))?;
-        let tokens = parse_reviewed_ipa(ipa.trim());
-        if tokens.is_empty() {
-            return Ok(None);
-        }
-
-        self.cache.insert(key.to_string(), tokens.clone());
-        Ok(Some(tokens))
     }
 }
