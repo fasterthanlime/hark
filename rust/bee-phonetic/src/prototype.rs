@@ -49,14 +49,30 @@ pub fn parse_reviewed_ipa(ipa_text: &str) -> Vec<String> {
 }
 
 pub fn phoneme_similarity(a: &[String], b: &[String]) -> Option<f32> {
+    let details = phoneme_similarity_details(a, b)?;
+    Some(details.similarity)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PhonemeSimilarityDetails {
+    pub distance: usize,
+    pub max_len: usize,
+    pub similarity: f32,
+}
+
+pub fn phoneme_similarity_details(a: &[String], b: &[String]) -> Option<PhonemeSimilarityDetails> {
     if a.is_empty() || b.is_empty() {
         return None;
     }
 
-    let distance = levenshtein(a, b) as f32;
-    let max_len = a.len().max(b.len()) as f32;
-    let normalized = 1.0 - (distance / max_len);
-    Some(normalized.clamp(0.0, 1.0))
+    let distance = levenshtein(a, b);
+    let max_len = a.len().max(b.len());
+    let normalized = 1.0 - (distance as f32 / max_len as f32);
+    Some(PhonemeSimilarityDetails {
+        distance,
+        max_len,
+        similarity: normalized.clamp(0.0, 1.0),
+    })
 }
 
 fn levenshtein(a: &[String], b: &[String]) -> usize {

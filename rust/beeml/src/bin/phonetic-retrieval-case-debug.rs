@@ -1,10 +1,13 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use bee_phonetic::{
     enumerate_transcript_spans_with, feature_tokens_for_ipa, query_index, verify_shortlist,
-    RetrievalQuery, SeedDataset, TranscriptAlignmentToken, TranscriptSpan, VerifiedCandidate,
+    LexiconAlias, RetrievalQuery, SeedDataset, TranscriptAlignmentToken, TranscriptSpan,
+    VerifiedCandidate,
 };
 use beeml::g2p::CachedEspeakG2p;
+use serde::Deserialize;
 
 #[derive(Debug, Clone)]
 struct Config {
@@ -13,6 +16,7 @@ struct Config {
     shortlist_limit: usize,
     verify_limit: usize,
     recordings_limit: usize,
+    counterexamples: bool,
 }
 
 impl Default for Config {
@@ -23,8 +27,28 @@ impl Default for Config {
             shortlist_limit: 10,
             verify_limit: 10,
             recordings_limit: 3,
+            counterexamples: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CounterexampleRecordingRow {
+    term: String,
+    text: String,
+    take: i64,
+    audio_path: String,
+    transcript: String,
+    surface_form: String,
+}
+
+#[derive(Debug, Clone)]
+struct DebugRecording {
+    text: String,
+    transcript: String,
+    surface_form: Option<String>,
+    take: Option<i64>,
+    audio_path: Option<String>,
 }
 
 #[derive(Debug)]
@@ -73,20 +97,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let rows = dataset
-        .recording_examples
-        .iter()
-        .filter(|row| row.term.eq_ignore_ascii_case(&config.term))
-        .take(config.recordings_limit)
-        .collect::<Vec<_>>();
+    let rows = if config.counterexamples {
+        load_counterexample_recordings()?
+            .into_iter()
+            .filter(|row| row.term.eq_ignore_ascii_case(&config.term))
+            .take(config.recordings_limit)
+            .map(|row| DebugRecording {
+                text: row.text,
+                transcript: row.transcript,
+                surface_form: Some(row.surface_form),
+                take: Some(row.take),
+                audio_path: Some(row.audio_path),
+            })
+            .collect::<Vec<_>>()
+    } else {
+        dataset
+            .recording_examples
+            .iter()
+            .filter(|row| row.term.eq_ignore_ascii_case(&config.term))
+            .take(config.recordings_limit)
+            .map(|row| DebugRecording {
+                text: row.text.clone(),
+                transcript: row.transcript.clone(),
+                surface_form: None,
+                take: Some(row.take),
+                audio_path: Some(row.audio_path.clone()),
+            })
+            .collect::<Vec<_>>()
+    };
 
     println!("recordings={}", rows.len());
+    println!("source={}", if config.counterexamples { "counterexamples" } else { "canonical" });
 
     for (idx, row) in rows.into_iter().enumerate() {
         println!();
         println!("===== recording {} =====", idx + 1);
         println!("text={}", row.text);
         println!("transcript={}", row.transcript);
+        if let Some(surface_form) = &row.surface_form {
+            println!("surface_form={surface_form}");
+        }
+        if let Some(take) = row.take {
+            println!("take={take}");
+        }
+        if let Some(audio_path) = &row.audio_path {
+            println!("audio_path={audio_path}");
+        }
 
         let spans = enumerate_transcript_spans_with::<_, TranscriptAlignmentToken>(
             &row.transcript,
@@ -121,7 +177,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cases.sort_by(|a, b| score_case(b, &config.term).total_cmp(&score_case(a, &config.term)));
 
         for case in cases.iter().take(12) {
-            print_case(case, &config.term);
+            print_case(case, &config.term, &index.aliases);
         }
     }
 
@@ -158,7 +214,7 @@ fn score_case(case: &SpanCaseDebug, term: &str) -> f32 {
         .unwrap_or(0.0)
 }
 
-fn print_case(case: &SpanCaseDebug, term: &str) {
+fn print_case(case: &SpanCaseDebug, term: &str, aliases: &[LexiconAlias]) {
     let target_in_shortlist = case
         .shortlist
         .iter()
@@ -191,10 +247,14 @@ fn print_case(case: &SpanCaseDebug, term: &str) {
         .collect::<HashMap<_, _>>();
 
     for candidate in case.shortlist.iter().take(6) {
+        let alias = &aliases[candidate.alias_id as usize];
         println!(
             "  candidate term={} alias={}",
             candidate.term, candidate.alias_text
         );
+        println!("    alias_ipa={}", alias.ipa_tokens.join(" "));
+        println!("    alias_reduced={}", alias.reduced_ipa_tokens.join(" "));
+        println!("    alias_features={}", alias.feature_tokens.join(" "));
         println!(
             "    source={:?} lane={:?} q={} q_total={} coarse={:.3} best_view={:.3} support={} token_bonus={:.2} phone_bonus={:.2} length_penalty={:.2}",
             candidate.alias_source,
@@ -210,12 +270,33 @@ fn print_case(case: &SpanCaseDebug, term: &str) {
         );
         if let Some(verified) = verified_by_alias.get(&candidate.alias_id) {
             println!(
-                "    verify token={:.3} feature={:.3} bonus={:.3} used_feature_bonus={} phonetic={:.3}",
+                "    verify token={:.3} ({}/{}) feature={:.3} ({:.3}/{}) bonus={:.3} used_feature_bonus={} phonetic={:.3}",
                 verified.token_score,
+                verified.token_distance,
+                verified.token_max_len,
                 verified.feature_score,
+                verified.feature_distance,
+                verified.feature_max_len,
                 verified.feature_bonus,
                 verified.used_feature_bonus,
                 verified.phonetic_score
+            );
+            println!(
+                "    feature_gate token_ok={} coarse_ok={} phone_ok={}",
+                verified.feature_gate_token_ok,
+                verified.feature_gate_coarse_ok,
+                verified.feature_gate_phone_ok
+            );
+            println!(
+                "    short_guard applied={} onset_match={} passed={}",
+                verified.short_guard_applied,
+                verified.short_guard_onset_match,
+                verified.short_guard_passed
+            );
+            println!(
+                "    low_content_guard applied={} passed={}",
+                verified.low_content_guard_applied,
+                verified.low_content_guard_passed
             );
         } else {
             println!("    verify <not in verified shortlist>");
@@ -256,9 +337,33 @@ fn parse_args() -> Result<Config, Box<dyn std::error::Error>> {
                     .ok_or("missing value for --recordings")?
                     .parse()?;
             }
+            "--counterexamples" => {
+                config.counterexamples = true;
+            }
             other => return Err(format!("unknown argument: {other}").into()),
         }
     }
 
     Ok(config)
+}
+
+fn load_counterexample_recordings(
+) -> Result<Vec<CounterexampleRecordingRow>, Box<dyn std::error::Error>> {
+    let path = counterexample_recordings_path();
+    let text = std::fs::read_to_string(&path)?;
+    let mut out = Vec::new();
+    for (line_idx, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let row = serde_json::from_str::<CounterexampleRecordingRow>(line)
+            .map_err(|error| format!("{}:{}: {error}", path.display(), line_idx + 1))?;
+        out.push(row);
+    }
+    Ok(out)
+}
+
+fn counterexample_recordings_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../data/phonetic-seed/counterexample_recordings.jsonl")
 }

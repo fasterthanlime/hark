@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::phonetic_index::{PhoneticIndex, RetrievalCandidate};
 use crate::phonetic_lexicon::AliasSource;
 use crate::region_proposal::TranscriptSpan;
+use crate::word_split::sentence_word_tokens;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifiedCandidate {
@@ -20,9 +21,21 @@ pub struct VerifiedCandidate {
     pub phone_bonus: f32,
     pub extra_length_penalty: f32,
     pub coarse_score: f32,
+    pub token_distance: u16,
+    pub token_max_len: u16,
     pub token_score: f32,
+    pub feature_distance: f32,
+    pub feature_max_len: u16,
     pub feature_score: f32,
     pub feature_bonus: f32,
+    pub feature_gate_token_ok: bool,
+    pub feature_gate_coarse_ok: bool,
+    pub feature_gate_phone_ok: bool,
+    pub short_guard_applied: bool,
+    pub short_guard_onset_match: bool,
+    pub short_guard_passed: bool,
+    pub low_content_guard_applied: bool,
+    pub low_content_guard_passed: bool,
     pub used_feature_bonus: bool,
     pub phonetic_score: f32,
 }
@@ -38,25 +51,57 @@ pub fn verify_shortlist(
         .iter()
         .filter_map(|candidate| {
             let alias = index.aliases.get(candidate.alias_id as usize)?;
-            let token_score =
-                crate::prototype::phoneme_similarity(&span.ipa_tokens, &alias.ipa_tokens)?;
-            let should_apply_feature_bonus = token_score >= 0.45
-                && candidate.coarse_score >= 0.45
-                && candidate.phone_count_delta.abs() <= 2;
-            let feature_score = if should_apply_feature_bonus {
-                crate::feature_view::feature_similarity_from_vectors(
+            let token_details =
+                crate::prototype::phoneme_similarity_details(&span.ipa_tokens, &alias.ipa_tokens)?;
+            let feature_gate_token_ok = token_details.similarity >= 0.45;
+            let feature_gate_coarse_ok = candidate.coarse_score >= 0.45;
+            let feature_gate_phone_ok = candidate.phone_count_delta.abs() <= 2;
+            let should_apply_feature_bonus =
+                feature_gate_token_ok && feature_gate_coarse_ok && feature_gate_phone_ok;
+            let feature_details = if should_apply_feature_bonus {
+                crate::feature_view::feature_similarity_details_from_vectors(
                     &span_feature_vectors,
                     index
                         .alias_feature_vectors
                         .get(candidate.alias_id as usize)?,
                     span.ipa_tokens.len().max(alias.ipa_tokens.len()),
                 )
-                .unwrap_or(token_score)
+                .unwrap_or(crate::feature_view::FeatureSimilarityDetails {
+                    distance: token_details.distance as f32,
+                    max_len: token_details.max_len,
+                    similarity: token_details.similarity,
+                })
             } else {
-                token_score
+                crate::feature_view::FeatureSimilarityDetails {
+                    distance: token_details.distance as f32,
+                    max_len: token_details.max_len,
+                    similarity: token_details.similarity,
+                }
             };
-            let feature_bonus = (feature_score - token_score).max(0.0) * 0.25;
-            let phonetic_score = (token_score + feature_bonus).clamp(0.0, 1.0);
+            let feature_bonus = (feature_details.similarity - token_details.similarity).max(0.0) * 0.25;
+            let phonetic_score = (token_details.similarity + feature_bonus).clamp(0.0, 1.0);
+            let short_guard_applied = (span.token_end - span.token_start) == 1
+                && span.ipa_tokens.len() <= 4
+                && alias.token_count == 1
+                && alias.ipa_tokens.len() <= 5;
+            let short_guard_onset_match = span
+                .reduced_ipa_tokens
+                .first()
+                .zip(alias.reduced_ipa_tokens.first())
+                .is_some_and(|(lhs, rhs)| lhs == rhs);
+            let short_guard_passed = !short_guard_applied
+                || token_details.similarity >= 0.75
+                || (short_guard_onset_match && feature_details.similarity >= 0.65);
+            let low_content_guard_applied = is_low_content_span(&span.text);
+            let low_content_guard_passed = !low_content_guard_applied
+                || token_details.similarity >= 0.75
+                || feature_details.similarity >= 0.85;
+            if !low_content_guard_passed {
+                return None;
+            }
+            if !short_guard_passed {
+                return None;
+            }
             Some(VerifiedCandidate {
                 alias_id: candidate.alias_id,
                 term: candidate.term.clone(),
@@ -72,9 +117,21 @@ pub fn verify_shortlist(
                 phone_bonus: candidate.phone_bonus,
                 extra_length_penalty: candidate.extra_length_penalty,
                 coarse_score: candidate.coarse_score,
-                token_score,
-                feature_score,
+                token_distance: token_details.distance as u16,
+                token_max_len: token_details.max_len as u16,
+                token_score: token_details.similarity,
+                feature_distance: feature_details.distance,
+                feature_max_len: feature_details.max_len as u16,
+                feature_score: feature_details.similarity,
                 feature_bonus,
+                feature_gate_token_ok,
+                feature_gate_coarse_ok,
+                feature_gate_phone_ok,
+                short_guard_applied,
+                short_guard_onset_match,
+                short_guard_passed,
+                low_content_guard_applied,
+                low_content_guard_passed,
                 used_feature_bonus: should_apply_feature_bonus && feature_bonus > 0.0,
                 phonetic_score,
             })
@@ -89,6 +146,22 @@ pub fn verify_shortlist(
     });
     out.truncate(limit);
     out
+}
+
+fn is_low_content_span(text: &str) -> bool {
+    const LOW_CONTENT: &[&str] = &[
+        "a", "an", "and", "the", "then", "that", "this", "these", "those", "if", "you", "we",
+        "they", "he", "she", "it", "i", "me", "my", "your", "our", "their", "him", "her",
+        "them", "about", "not", "sure", "what", "yeah", "well", "oh", "hmm", "uh", "um",
+        "want", "some", "there", "here",
+    ];
+
+    let tokens = sentence_word_tokens(text);
+    !tokens.is_empty()
+        && tokens.iter().all(|token| {
+            let lower = token.text.to_ascii_lowercase();
+            LOW_CONTENT.iter().any(|entry| *entry == lower)
+        })
 }
 
 #[cfg(test)]

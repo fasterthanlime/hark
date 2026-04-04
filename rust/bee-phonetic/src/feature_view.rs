@@ -39,9 +39,30 @@ pub fn feature_similarity_from_vectors(
     b: &[Vec<f32>],
     max_token_len: usize,
 ) -> Option<f32> {
+    let details = feature_similarity_details_from_vectors(a, b, max_token_len)?;
+    Some(details.similarity)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FeatureSimilarityDetails {
+    pub distance: f32,
+    pub max_len: usize,
+    pub similarity: f32,
+}
+
+pub fn feature_similarity_details_from_vectors(
+    a: &[Vec<f32>],
+    b: &[Vec<f32>],
+    max_token_len: usize,
+) -> Option<FeatureSimilarityDetails> {
     let distance = feature_edit_distance(a, b)?;
-    let max_len = max_token_len.max(1) as f32;
-    Some((1.0 - (distance / max_len)).clamp(0.0, 1.0))
+    let max_len = max_token_len.max(1);
+    let similarity = (1.0 - (distance / max_len as f32)).clamp(0.0, 1.0);
+    Some(FeatureSimilarityDetails {
+        distance,
+        max_len,
+        similarity,
+    })
 }
 
 fn encode_feature_vector(features: &[i8]) -> String {
