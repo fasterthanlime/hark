@@ -153,10 +153,6 @@ export function buildTeachingChoices(
   }
 
   return [...bestBySentence.values()].sort((a, b) => {
-    if (a.isGold !== b.isGold) return a.isGold ? -1 : 1;
-    if (a.option.is_keep_original !== b.option.is_keep_original) {
-      return a.option.is_keep_original ? -1 : 1;
-    }
     return b.option.probability - a.option.probability || b.option.score - a.option.score;
   }).slice(0, 6);
 }

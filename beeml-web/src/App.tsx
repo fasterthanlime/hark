@@ -12,40 +12,38 @@ export default function App() {
     "transcribe" | "retrieval" | "rapid-fire" | "judge-eval"
   >("rapid-fire");
 
-  const subtitle =
-    tab === "transcribe"
-      ? "Transcribe demo"
-      : tab === "retrieval"
-        ? "Retrieval prototype lab"
-        : tab === "rapid-fire"
-          ? "Judge rapid fire"
-          : "Judge eval";
-
   return (
     <div className="app-shell">
       <header className="app-header">
-        <strong>beeml-web</strong>
-        <span className="subtitle">{subtitle}</span>
-        <div className="tab-row">
+        <strong>beeml</strong>
+        <div className="tab-row" role="tablist">
           <button
+            role="tab"
+            aria-selected={tab === "rapid-fire"}
             className={tab === "rapid-fire" ? "primary" : ""}
             onClick={() => setTab("rapid-fire")}
           >
             Rapid Fire
           </button>
           <button
+            role="tab"
+            aria-selected={tab === "judge-eval"}
             className={tab === "judge-eval" ? "primary" : ""}
             onClick={() => setTab("judge-eval")}
           >
             Judge Eval
           </button>
           <button
+            role="tab"
+            aria-selected={tab === "retrieval"}
             className={tab === "retrieval" ? "primary" : ""}
             onClick={() => setTab("retrieval")}
           >
             Retrieval Lab
           </button>
           <button
+            role="tab"
+            aria-selected={tab === "transcribe"}
             className={tab === "transcribe" ? "primary" : ""}
             onClick={() => setTab("transcribe")}
           >
