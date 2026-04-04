@@ -258,6 +258,7 @@ pub struct TeachRetrievalPrototypeJudgeRequest {
     pub chosen_alias_id: Option<u32>,
     pub reject_group: bool,
     pub rejected_group_spans: Vec<RejectedGroupSpan>,
+    pub selected_component_choices: Vec<RapidFireTeachChoice>,
 }
 
 #[derive(Clone, Debug, Facet)]
@@ -274,13 +275,57 @@ pub struct RapidFireChoice {
     pub probability: f32,
     pub is_gold: bool,
     pub is_judge_pick: bool,
+    pub edits: Vec<RapidFireEdit>,
+    pub component_choices: Vec<RapidFireComponentChoice>,
 }
 
 #[derive(Clone, Debug, Facet)]
 pub struct RapidFireDecisionSet {
     pub choices: Vec<RapidFireChoice>,
+    pub components: Vec<RapidFireComponent>,
     pub rejected_group_spans: Vec<RejectedGroupSpan>,
     pub no_exact_match: bool,
+    pub total_combinations: u32,
+    pub search_mode: String,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct RapidFireEdit {
+    pub span_token_start: u32,
+    pub span_token_end: u32,
+    pub replaced_text: String,
+    pub replacement_text: String,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct RapidFireComponent {
+    pub component_id: u32,
+    pub spans: Vec<RejectedGroupSpan>,
+    pub hypotheses: Vec<RapidFireComponentChoice>,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct RapidFireComponentChoice {
+    pub component_id: u32,
+    pub choose_keep_original: bool,
+    pub span_token_start: Option<u32>,
+    pub span_token_end: Option<u32>,
+    pub chosen_alias_id: Option<u32>,
+    pub replaced_text: String,
+    pub replacement_text: String,
+    pub score: f32,
+    pub probability: f32,
+    pub component_spans: Vec<RejectedGroupSpan>,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct RapidFireTeachChoice {
+    pub component_id: u32,
+    pub choose_keep_original: bool,
+    pub span_token_start: Option<u32>,
+    pub span_token_end: Option<u32>,
+    pub chosen_alias_id: Option<u32>,
+    pub component_spans: Vec<RejectedGroupSpan>,
 }
 
 #[derive(Clone, Debug, Facet)]

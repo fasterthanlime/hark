@@ -16,7 +16,8 @@ use beeml::judge::OnlineJudge;
 use beeml::rpc::{
     AcceptedEdit, AliasSource, BeeMl, CandidateFeatureDebug, CorrectionDebugResult,
     CorrectionRequest, CorrectionResult, FilterDecision, IdentifierFlags, RerankerDebugTrace,
-    JudgeEvalFailure, JudgeOptionDebug, JudgeStateDebug, RapidFireChoice, RapidFireDecisionSet,
+    JudgeEvalFailure, JudgeOptionDebug, JudgeStateDebug, RapidFireChoice, RapidFireComponent,
+    RapidFireComponentChoice, RapidFireDecisionSet, RapidFireEdit,
     RejectedGroupSpan,
     RetrievalEvalMiss, RetrievalEvalTermSummary, RetrievalPrototypeTeachingCase,
     RetrievalPrototypeTeachingDeckRequest, RetrievalPrototypeTeachingDeckResult,
@@ -109,6 +110,10 @@ impl BeeMlService {
             .lock()
             .map_err(|_| "judge mutex poisoned".to_string())?;
         let mut taught_span = teach.is_none();
+        let selected_component_choices = teach
+            .as_ref()
+            .map(|teach| teach.selected_component_choices.clone())
+            .unwrap_or_default();
         let rejected_group_spans = teach
             .as_ref()
             .filter(|teach| teach.reject_group)
@@ -149,24 +154,39 @@ impl BeeMlService {
 
                 let explicitly_chosen_span = teach.as_ref().is_some_and(|teach| {
                     !teach.reject_group
+                        && teach.selected_component_choices.is_empty()
                         && teach.span_token_start as usize == span.token_start
                         && teach.span_token_end as usize == span.token_end
+                });
+                let selected_component_choice = selected_component_choices.iter().find(|choice| {
+                    if choice.choose_keep_original {
+                        choice.component_spans.iter().any(|component_span| {
+                            component_span.token_start as usize == span.token_start
+                                && component_span.token_end as usize == span.token_end
+                        })
+                    } else {
+                        choice.span_token_start.is_some_and(|start| start as usize == span.token_start)
+                            && choice.span_token_end.is_some_and(|end| end as usize == span.token_end)
+                    }
                 });
                 let rejected_group_match = rejected_group_spans
                     .iter()
                     .any(|(start, end)| *start == span.token_start && *end == span.token_end);
-                let should_teach = explicitly_chosen_span || rejected_group_match;
+                let should_teach =
+                    explicitly_chosen_span || rejected_group_match || selected_component_choice.is_some();
                 if should_teach {
                     taught_span = true;
                 }
 
-                let chosen_alias_id = teach.as_ref().and_then(|teach| {
+                let chosen_alias_id = selected_component_choice
+                    .and_then(|choice| if choice.choose_keep_original { None } else { choice.chosen_alias_id })
+                    .or_else(|| teach.as_ref().and_then(|teach| {
                     if explicitly_chosen_span && !teach.choose_keep_original {
                         teach.chosen_alias_id
                     } else {
                         None
                     }
-                });
+                }));
                 let judge_options = if should_teach {
                     judge.teach_choice(&span, &judge_input, chosen_alias_id)
                 } else {
@@ -274,6 +294,9 @@ impl BeeMlService {
             }
             if teach.reject_group && rejected_group_spans.is_empty() {
                 return Err("reject_group requested without any rejected_group_spans".to_string());
+            }
+            if !teach.selected_component_choices.is_empty() && !teach.reject_group && !taught_span {
+                return Err("selected_component_choices did not match any spans in the probe result".to_string());
             }
         }
 
@@ -476,14 +499,41 @@ impl BeeMlService {
     }
 }
 
+const RAPID_FIRE_COMPONENT_HYPOTHESES: usize = 4;
+const RAPID_FIRE_SENTENCE_CHOICES: usize = 6;
+const RAPID_FIRE_EXACT_THRESHOLD: usize = 64;
+const RAPID_FIRE_BEAM_WIDTH: usize = 16;
+const RAPID_FIRE_MAX_EDITS_PER_SPAN: usize = 2;
+const RAPID_FIRE_MAX_COMPONENT_COMBO_EDITS: usize = 2;
+
 #[derive(Clone)]
-struct GroupChoice {
+struct EditCandidate {
     span_token_start: u32,
     span_token_end: u32,
     span_text: String,
-    alias_id: Option<u32>,
-    is_keep_original: bool,
+    alias_id: u32,
     replacement_text: String,
+    score: f32,
+    probability: f32,
+    acceptance_score: f32,
+    phonetic_score: f32,
+    verified: bool,
+}
+
+#[derive(Clone)]
+struct ComponentHypothesis {
+    component_id: u32,
+    component_spans: Vec<RejectedGroupSpan>,
+    edits: Vec<EditCandidate>,
+    choose_keep_original: bool,
+    score: f32,
+    probability: f32,
+}
+
+#[derive(Clone)]
+struct SentenceHypothesis {
+    components: Vec<ComponentHypothesis>,
+    sentence: String,
     score: f32,
     probability: f32,
 }
@@ -493,64 +543,105 @@ fn build_rapid_fire_decision_set(
     spans: &[SpanDebugTrace],
     expected_source_text: &str,
 ) -> RapidFireDecisionSet {
-    let groups = build_overlap_groups(spans);
-    let focus_group_index = pick_focus_group_index(transcript, &groups, expected_source_text);
-    let focus_group = groups.get(focus_group_index).cloned().unwrap_or_default();
-    let rejected_group_spans = focus_group
+    let is_counterexample =
+        normalize_comparable_text(transcript) == normalize_comparable_text(expected_source_text);
+    let admitted_edits = collect_admitted_edits(spans, is_counterexample);
+    let components = build_conflict_components(&admitted_edits)
+        .into_iter()
+        .enumerate()
+        .map(|(index, edits)| build_component(index as u32, edits))
+        .collect::<Vec<_>>();
+    let total_combinations = components
         .iter()
-        .map(|span| RejectedGroupSpan {
-            token_start: span.span.token_start,
-            token_end: span.span.token_end,
+        .map(|component| component.hypotheses.len())
+        .product::<usize>();
+    let (search_mode, mut sentence_hypotheses) =
+        compose_sentence_hypotheses(transcript, &components, total_combinations);
+
+    sentence_hypotheses.sort_by(|lhs, rhs| {
+        rhs.probability
+            .total_cmp(&lhs.probability)
+            .then_with(|| rhs.score.total_cmp(&lhs.score))
+    });
+    sentence_hypotheses = prune_sentence_hypotheses(sentence_hypotheses, is_counterexample);
+
+    let mut choices = sentence_hypotheses
+        .iter()
+        .take(RAPID_FIRE_SENTENCE_CHOICES)
+        .cloned()
+        .enumerate()
+        .map(|(index, hypothesis)| {
+            let is_gold =
+                normalize_comparable_text(&hypothesis.sentence) == normalize_comparable_text(expected_source_text);
+            let component_choices = hypothesis
+                .components
+                .iter()
+                .map(component_hypothesis_to_rpc)
+                .collect::<Vec<_>>();
+            let edits = hypothesis
+                .components
+                .iter()
+                .flat_map(|component| component.edits.iter())
+                .map(|edit| RapidFireEdit {
+                    span_token_start: edit.span_token_start,
+                    span_token_end: edit.span_token_end,
+                    replaced_text: edit.span_text.clone(),
+                    replacement_text: edit.replacement_text.clone(),
+                })
+                .collect::<Vec<_>>();
+            let primary_edit = edits.first().cloned().unwrap_or(RapidFireEdit {
+                span_token_start: 0,
+                span_token_end: 0,
+                replaced_text: String::new(),
+                replacement_text: String::new(),
+            });
+            RapidFireChoice {
+                option_id: format!("hypothesis:{index}"),
+                span_token_start: primary_edit.span_token_start,
+                span_token_end: primary_edit.span_token_end,
+                choose_keep_original: edits.is_empty(),
+                chosen_alias_id: component_choices
+                    .iter()
+                    .find_map(|choice| choice.chosen_alias_id),
+                sentence: hypothesis.sentence,
+                replaced_text: primary_edit.replaced_text,
+                replacement_text: primary_edit.replacement_text,
+                score: hypothesis.score,
+                probability: hypothesis.probability,
+                is_gold,
+                is_judge_pick: false,
+                edits,
+                component_choices,
+            }
         })
         .collect::<Vec<_>>();
 
-    let mut base_choices = Vec::new();
-    for (group_index, group) in groups.iter().enumerate() {
-        if group_index == focus_group_index {
-            continue;
-        }
-        if let Some(choice) = best_context_choice(transcript, group, expected_source_text) {
-            base_choices.push(choice);
-        }
-    }
-
-    let mut choices = Vec::new();
-    for span in &focus_group {
-        for option in dedupe_judge_options(&span.judge_options) {
-            let choice = GroupChoice {
-                span_token_start: span.span.token_start,
-                span_token_end: span.span.token_end,
-                span_text: span.span.text.clone(),
-                alias_id: option.alias_id,
-                is_keep_original: option.is_keep_original,
-                replacement_text: if option.is_keep_original {
-                    span.span.text.clone()
-                } else {
-                    option.term.clone()
-                },
-                score: option.score,
-                probability: option.probability,
-            };
-            let sentence = apply_group_choices(transcript, &base_choices, Some(&choice));
+    if !choices.iter().any(|choice| choice.choose_keep_original) {
+        if let Some((index, hypothesis)) = sentence_hypotheses
+            .iter()
+            .enumerate()
+            .find(|(_, hypothesis)| hypothesis.components.iter().all(|component| component.choose_keep_original))
+        {
             choices.push(RapidFireChoice {
-                option_id: format!(
-                    "{}:{}:{}",
-                    choice.span_token_start,
-                    choice.span_token_end,
-                    choice.alias_id.map_or_else(|| "keep".to_string(), |id| id.to_string())
-                ),
-                span_token_start: choice.span_token_start,
-                span_token_end: choice.span_token_end,
-                choose_keep_original: choice.is_keep_original,
-                chosen_alias_id: choice.alias_id,
-                sentence: sentence.clone(),
-                replaced_text: choice.span_text.clone(),
-                replacement_text: choice.replacement_text.clone(),
-                score: choice.score,
-                probability: choice.probability,
-                is_gold: normalize_comparable_text(&sentence)
+                option_id: format!("hypothesis:{index}"),
+                span_token_start: 0,
+                span_token_end: 0,
+                choose_keep_original: true,
+                chosen_alias_id: None,
+                sentence: hypothesis.sentence.clone(),
+                replaced_text: String::new(),
+                replacement_text: String::new(),
+                score: hypothesis.score,
+                probability: hypothesis.probability,
+                is_gold: normalize_comparable_text(&hypothesis.sentence)
                     == normalize_comparable_text(expected_source_text),
                 is_judge_pick: false,
+                edits: Vec::new(),
+                component_choices: hypothesis
+                    .components
+                    .iter()
+                    .map(component_hypothesis_to_rpc)
+                    .collect(),
             });
         }
     }
@@ -560,151 +651,481 @@ fn build_rapid_fire_decision_set(
             .total_cmp(&lhs.probability)
             .then_with(|| rhs.score.total_cmp(&lhs.score))
     });
-    choices.truncate(6);
+    choices.truncate(RAPID_FIRE_SENTENCE_CHOICES);
+
     if let Some(first) = choices.first_mut() {
         first.is_judge_pick = true;
     }
 
     RapidFireDecisionSet {
         no_exact_match: !choices.iter().any(|choice| choice.is_gold),
+        rejected_group_spans: Vec::new(),
+        components: components
+            .iter()
+            .map(|component| RapidFireComponent {
+                component_id: component.component_id,
+                spans: component.component_spans.clone(),
+                hypotheses: component
+                    .hypotheses
+                    .iter()
+                    .map(component_hypothesis_to_rpc)
+                    .collect(),
+            })
+            .collect(),
+        total_combinations: total_combinations as u32,
+        search_mode: search_mode.to_string(),
         choices,
-        rejected_group_spans,
     }
 }
 
-fn best_context_choice(
-    transcript: &str,
-    group: &[SpanDebugTrace],
-    expected_source_text: &str,
-) -> Option<GroupChoice> {
-    let mut best: Option<(f32, GroupChoice)> = None;
-    for span in group {
-        for option in dedupe_judge_options(&span.judge_options) {
-            let choice = GroupChoice {
+fn collect_admitted_edits(spans: &[SpanDebugTrace], is_counterexample: bool) -> Vec<EditCandidate> {
+    let mut edits = Vec::new();
+    for span in spans {
+        let keep_probability = span
+            .judge_options
+            .iter()
+            .find(|option| option.is_keep_original)
+            .map(|option| option.probability)
+            .unwrap_or(0.0);
+        let mut admitted_for_span = Vec::new();
+        for option in dedupe_judge_options(&span.judge_options)
+            .into_iter()
+            .filter(|option| !option.is_keep_original)
+        {
+            let Some(alias_id) = option.alias_id else {
+                continue;
+            };
+            let Some(candidate) = span.candidates.iter().find(|candidate| candidate.alias_id == alias_id) else {
+                continue;
+            };
+            let margin = option.probability - keep_probability;
+            let acceptance_score = candidate.features.acceptance_score;
+            let phonetic_score = candidate.features.phonetic_score;
+            let verified = candidate.features.verified;
+            let accepted = if is_counterexample {
+                verified
+                    && margin >= 0.18
+                    && acceptance_score >= 0.72
+                    && phonetic_score >= 0.70
+            } else {
+                verified
+                    && margin >= 0.03
+                    && acceptance_score >= 0.48
+                    && phonetic_score >= 0.45
+            };
+            if !accepted {
+                continue;
+            }
+            admitted_for_span.push(EditCandidate {
                 span_token_start: span.span.token_start,
                 span_token_end: span.span.token_end,
                 span_text: span.span.text.clone(),
-                alias_id: option.alias_id,
-                is_keep_original: option.is_keep_original,
-                replacement_text: if option.is_keep_original {
-                    span.span.text.clone()
-                } else {
-                    option.term.clone()
-                },
+                alias_id,
+                replacement_text: option.term,
                 score: option.score,
                 probability: option.probability,
-            };
-            let sentence = apply_group_choices(transcript, &[], Some(&choice));
-            let similarity = sentence_similarity(&sentence, expected_source_text);
-            match &best {
-                Some((best_similarity, best_choice))
-                    if *best_similarity > similarity
-                        || (*best_similarity == similarity
-                            && (best_choice.probability > choice.probability
-                                || (best_choice.probability == choice.probability
-                                    && best_choice.score >= choice.score))) => {}
-                _ => best = Some((similarity, choice)),
+                acceptance_score,
+                phonetic_score,
+                verified,
+            });
+        }
+        admitted_for_span.sort_by(|lhs, rhs| {
+            rhs.probability
+                .total_cmp(&lhs.probability)
+                .then_with(|| rhs.score.total_cmp(&lhs.score))
+        });
+        admitted_for_span.truncate(RAPID_FIRE_MAX_EDITS_PER_SPAN);
+        edits.extend(admitted_for_span);
+    }
+    dedupe_edit_candidates(edits)
+}
+
+fn dedupe_edit_candidates(edits: Vec<EditCandidate>) -> Vec<EditCandidate> {
+    let mut best = HashMap::<String, EditCandidate>::new();
+    for edit in edits {
+        let key = format!(
+            "{}:{}:{}",
+            edit.span_token_start, edit.span_token_end, edit.alias_id
+        );
+        match best.get(&key) {
+            Some(existing)
+                if existing.probability > edit.probability
+                    || (existing.probability == edit.probability && existing.score >= edit.score) => {}
+            _ => {
+                best.insert(key, edit);
             }
         }
     }
-    best.map(|(_, choice)| choice)
+    let mut edits = best.into_values().collect::<Vec<_>>();
+    edits.sort_by(|lhs, rhs| {
+        lhs.span_token_start
+            .cmp(&rhs.span_token_start)
+            .then_with(|| lhs.span_token_end.cmp(&rhs.span_token_end))
+            .then_with(|| rhs.probability.total_cmp(&lhs.probability))
+    });
+    edits
 }
 
-fn apply_group_choices(
+fn build_conflict_components(edits: &[EditCandidate]) -> Vec<Vec<EditCandidate>> {
+    let mut groups: Vec<Vec<EditCandidate>> = Vec::new();
+    for edit in edits {
+        let mut overlapping = Vec::new();
+        for (index, group) in groups.iter().enumerate() {
+            if group.iter().any(|candidate| edits_overlap(candidate, edit)) {
+                overlapping.push(index);
+            }
+        }
+        if overlapping.is_empty() {
+            groups.push(vec![edit.clone()]);
+            continue;
+        }
+        let mut merged = vec![edit.clone()];
+        for index in overlapping.into_iter().rev() {
+            merged.extend(groups.swap_remove(index));
+        }
+        merged.sort_by(|lhs, rhs| {
+            lhs.span_token_start
+                .cmp(&rhs.span_token_start)
+                .then_with(|| lhs.span_token_end.cmp(&rhs.span_token_end))
+                .then_with(|| rhs.probability.total_cmp(&lhs.probability))
+        });
+        groups.push(merged);
+    }
+    groups
+}
+
+fn build_component(component_id: u32, edits: Vec<EditCandidate>) -> Component {
+    let component_spans = unique_component_spans(&edits);
+    let atomic_edits = edits;
+
+    let mut all_hypotheses = vec![score_component_hypothesis(
+        component_id,
+        component_spans.clone(),
+        Vec::new(),
+    )];
+    enumerate_component_hypotheses(
+        component_id,
+        &component_spans,
+        &atomic_edits,
+        0,
+        Vec::new(),
+        &mut all_hypotheses,
+    );
+    dedupe_component_hypotheses(&mut all_hypotheses);
+    all_hypotheses.sort_by(|lhs, rhs| {
+        rhs.probability
+            .total_cmp(&lhs.probability)
+            .then_with(|| rhs.score.total_cmp(&lhs.score))
+    });
+    all_hypotheses.truncate(RAPID_FIRE_COMPONENT_HYPOTHESES);
+
+    Component {
+        component_id,
+        component_spans,
+        hypotheses: all_hypotheses,
+    }
+}
+
+#[derive(Clone)]
+struct Component {
+    component_id: u32,
+    component_spans: Vec<RejectedGroupSpan>,
+    hypotheses: Vec<ComponentHypothesis>,
+}
+
+fn enumerate_component_hypotheses(
+    component_id: u32,
+    component_spans: &[RejectedGroupSpan],
+    atomic_edits: &[EditCandidate],
+    start_index: usize,
+    current: Vec<EditCandidate>,
+    out: &mut Vec<ComponentHypothesis>,
+) {
+    for index in start_index..atomic_edits.len() {
+        let candidate = atomic_edits[index].clone();
+        if current.len() >= RAPID_FIRE_MAX_COMPONENT_COMBO_EDITS {
+            continue;
+        }
+        if current.iter().any(|existing| edits_overlap(existing, &candidate)) {
+            continue;
+        }
+        let mut next = current.clone();
+        next.push(candidate);
+        out.push(score_component_hypothesis(
+            component_id,
+            component_spans.to_vec(),
+            next.clone(),
+        ));
+        enumerate_component_hypotheses(
+            component_id,
+            component_spans,
+            atomic_edits,
+            index + 1,
+            next,
+            out,
+        );
+    }
+}
+
+fn score_component_hypothesis(
+    component_id: u32,
+    component_spans: Vec<RejectedGroupSpan>,
+    edits: Vec<EditCandidate>,
+) -> ComponentHypothesis {
+    let score = average_or_zero(&edits.iter().map(|edit| edit.score).collect::<Vec<_>>());
+    let probability = average_or_zero(&edits.iter().map(|edit| edit.probability).collect::<Vec<_>>());
+    ComponentHypothesis {
+        component_id,
+        component_spans,
+        choose_keep_original: edits.is_empty(),
+        edits,
+        score,
+        probability,
+    }
+}
+
+fn dedupe_component_hypotheses(hypotheses: &mut Vec<ComponentHypothesis>) {
+    let mut best = HashMap::<String, ComponentHypothesis>::new();
+    for hypothesis in hypotheses.drain(..) {
+        let key = if hypothesis.edits.is_empty() {
+            "keep".to_string()
+        } else {
+            hypothesis
+                .edits
+                .iter()
+                .map(|edit| format!("{}:{}:{}", edit.span_token_start, edit.span_token_end, edit.alias_id))
+                .collect::<Vec<_>>()
+                .join("|")
+        };
+        match best.get(&key) {
+            Some(existing)
+                if existing.probability > hypothesis.probability
+                    || (existing.probability == hypothesis.probability
+                        && existing.score >= hypothesis.score) => {}
+            _ => {
+                best.insert(key, hypothesis);
+            }
+        }
+    }
+    hypotheses.extend(best.into_values());
+}
+
+fn compose_sentence_hypotheses(
     transcript: &str,
-    base_choices: &[GroupChoice],
-    focus_choice: Option<&GroupChoice>,
-) -> String {
+    components: &[Component],
+    total_combinations: usize,
+) -> (&'static str, Vec<SentenceHypothesis>) {
+    if components.is_empty() {
+        return (
+            "exact",
+            vec![SentenceHypothesis {
+                components: Vec::new(),
+                sentence: transcript.to_string(),
+                score: 0.0,
+                probability: 1.0,
+            }],
+        );
+    }
+    if total_combinations <= RAPID_FIRE_EXACT_THRESHOLD {
+        ("exact", enumerate_sentence_hypotheses(transcript, components))
+    } else {
+        ("beam", beam_sentence_hypotheses(transcript, components))
+    }
+}
+
+fn enumerate_sentence_hypotheses(transcript: &str, components: &[Component]) -> Vec<SentenceHypothesis> {
+    fn recurse(
+        transcript: &str,
+        components: &[Component],
+        index: usize,
+        chosen: &mut Vec<ComponentHypothesis>,
+        out: &mut Vec<SentenceHypothesis>,
+    ) {
+        if index == components.len() {
+            out.push(build_sentence_hypothesis(transcript, chosen.clone()));
+            return;
+        }
+        for hypothesis in &components[index].hypotheses {
+            chosen.push(hypothesis.clone());
+            recurse(transcript, components, index + 1, chosen, out);
+            chosen.pop();
+        }
+    }
+    let mut out = Vec::new();
+    recurse(transcript, components, 0, &mut Vec::new(), &mut out);
+    out
+}
+
+fn beam_sentence_hypotheses(transcript: &str, components: &[Component]) -> Vec<SentenceHypothesis> {
+    let mut beam = vec![SentenceHypothesis {
+        components: Vec::new(),
+        sentence: transcript.to_string(),
+        score: 0.0,
+        probability: 0.0,
+    }];
+    for component in components {
+        let mut next = Vec::new();
+        for partial in &beam {
+            for hypothesis in &component.hypotheses {
+                let mut combined = partial.components.clone();
+                combined.push(hypothesis.clone());
+                next.push(build_sentence_hypothesis(transcript, combined));
+            }
+        }
+        next.sort_by(|lhs, rhs| {
+            rhs.probability
+                .total_cmp(&lhs.probability)
+                .then_with(|| rhs.score.total_cmp(&lhs.score))
+        });
+        next.truncate(RAPID_FIRE_BEAM_WIDTH);
+        beam = next;
+    }
+    beam
+}
+
+fn build_sentence_hypothesis(
+    transcript: &str,
+    components: Vec<ComponentHypothesis>,
+) -> SentenceHypothesis {
+    let edits = components
+        .iter()
+        .flat_map(|component| component.edits.iter().cloned())
+        .collect::<Vec<_>>();
+    let sentence = apply_atomic_edits(transcript, &edits);
+    let component_scores = components.iter().map(|component| component.score).collect::<Vec<_>>();
+    let component_probabilities = components
+        .iter()
+        .map(|component| component.probability)
+        .collect::<Vec<_>>();
+    SentenceHypothesis {
+        components,
+        sentence,
+        score: average_or_zero(&component_scores),
+        probability: average_or_zero(&component_probabilities),
+    }
+}
+
+fn apply_atomic_edits(transcript: &str, edits: &[EditCandidate]) -> String {
     let mut tokens = transcript
         .split_whitespace()
         .map(ToString::to_string)
         .collect::<Vec<_>>();
-    let mut edits = base_choices.to_vec();
-    if let Some(choice) = focus_choice {
-        edits.push(choice.clone());
-    }
+    let mut edits = edits.to_vec();
     edits.sort_by(|lhs, rhs| rhs.span_token_start.cmp(&lhs.span_token_start));
     for edit in edits {
+        let start = edit.span_token_start as usize;
+        let end = edit.span_token_end as usize;
+        if start > end || end > tokens.len() {
+            continue;
+        }
         let replacement_tokens = edit
             .replacement_text
             .split_whitespace()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
-        let start = edit.span_token_start as usize;
-        let end = edit.span_token_end as usize;
-        if start <= end && end <= tokens.len() {
-            tokens.splice(start..end, replacement_tokens);
-        }
+        tokens.splice(start..end, replacement_tokens);
     }
     tokens.join(" ")
 }
 
-fn pick_focus_group_index(
-    transcript: &str,
-    groups: &[Vec<SpanDebugTrace>],
-    expected_source_text: &str,
-) -> usize {
-    let mut best: Option<(usize, f32)> = None;
-    for (index, group) in groups.iter().enumerate() {
-        for span in group {
-            let options = dedupe_judge_options(&span.judge_options);
-            let keep = options.iter().find(|option| option.is_keep_original);
-            let replacements = options.iter().filter(|option| !option.is_keep_original);
-            for option in replacements {
-                let sentence = apply_span_option(transcript, span, option);
-                let mut score = option.probability;
-                if normalize_comparable_text(&sentence)
-                    == normalize_comparable_text(expected_source_text)
-                {
-                    score += 2.0;
-                } else if let Some(keep) = keep {
-                    score -= keep.probability;
-                }
-                match best {
-                    Some((_, best_score)) if best_score >= score => {}
-                    _ => best = Some((index, score)),
-                }
-            }
+fn component_hypothesis_to_rpc(hypothesis: &ComponentHypothesis) -> RapidFireComponentChoice {
+    let primary = hypothesis.edits.first();
+    RapidFireComponentChoice {
+        component_id: hypothesis.component_id,
+        choose_keep_original: hypothesis.choose_keep_original,
+        span_token_start: primary.map(|edit| edit.span_token_start),
+        span_token_end: primary.map(|edit| edit.span_token_end),
+        chosen_alias_id: primary.map(|edit| edit.alias_id),
+        replaced_text: if hypothesis.edits.is_empty() {
+            String::new()
+        } else {
+            hypothesis
+                .edits
+                .iter()
+                .map(|edit| edit.span_text.clone())
+                .collect::<Vec<_>>()
+                .join(" + ")
+        },
+        replacement_text: if hypothesis.edits.is_empty() {
+            "keep_original".to_string()
+        } else {
+            hypothesis
+                .edits
+                .iter()
+                .map(|edit| edit.replacement_text.clone())
+                .collect::<Vec<_>>()
+                .join(" + ")
+        },
+        score: hypothesis.score,
+        probability: hypothesis.probability,
+        component_spans: hypothesis.component_spans.clone(),
+    }
+}
+
+fn prune_sentence_hypotheses(
+    hypotheses: Vec<SentenceHypothesis>,
+    is_counterexample: bool,
+) -> Vec<SentenceHypothesis> {
+    if !is_counterexample {
+        return hypotheses;
+    }
+    let mut kept = Vec::new();
+    let mut keep_hypothesis = None;
+    for hypothesis in hypotheses {
+        if hypothesis.components.iter().all(|component| component.choose_keep_original) {
+            keep_hypothesis = Some(hypothesis);
+            continue;
+        }
+        let strongest_edit_probability = hypothesis
+            .components
+            .iter()
+            .flat_map(|component| component.edits.iter())
+            .map(|edit| edit.probability)
+            .fold(0.0, f32::max);
+        let strongest_acceptance = hypothesis
+            .components
+            .iter()
+            .flat_map(|component| component.edits.iter())
+            .map(|edit| edit.acceptance_score)
+            .fold(0.0, f32::max);
+        if strongest_edit_probability >= 0.82 && strongest_acceptance >= 0.80 {
+            kept.push(hypothesis);
         }
     }
-    best.map(|(index, _)| index).unwrap_or(0)
-}
-
-fn apply_span_option(transcript: &str, span: &SpanDebugTrace, option: &JudgeOptionDebug) -> String {
-    apply_group_choices(
-        transcript,
-        &[],
-        Some(&GroupChoice {
-            span_token_start: span.span.token_start,
-            span_token_end: span.span.token_end,
-            span_text: span.span.text.clone(),
-            alias_id: option.alias_id,
-            is_keep_original: option.is_keep_original,
-            replacement_text: if option.is_keep_original {
-                span.span.text.clone()
-            } else {
-                option.term.clone()
-            },
-            score: option.score,
-            probability: option.probability,
-        }),
-    )
-}
-
-fn sentence_similarity(candidate: &str, expected: &str) -> f32 {
-    let candidate = normalize_comparable_text(candidate);
-    let expected = normalize_comparable_text(expected);
-    if candidate == expected {
-        return 10.0;
+    if let Some(keep_hypothesis) = keep_hypothesis {
+        kept.push(keep_hypothesis);
     }
-    let candidate_tokens = candidate.split_whitespace().collect::<Vec<_>>();
-    let expected_tokens = expected.split_whitespace().collect::<Vec<_>>();
-    let shared = candidate_tokens
+    kept.sort_by(|lhs, rhs| {
+        rhs.probability
+            .total_cmp(&lhs.probability)
+            .then_with(|| rhs.score.total_cmp(&lhs.score))
+    });
+    kept
+}
+
+fn average_or_zero(values: &[f32]) -> f32 {
+    if values.is_empty() {
+        0.0
+    } else {
+        values.iter().copied().sum::<f32>() / values.len() as f32
+    }
+}
+
+fn unique_component_spans(edits: &[EditCandidate]) -> Vec<RejectedGroupSpan> {
+    let mut spans = edits
         .iter()
-        .filter(|token| expected_tokens.contains(token))
-        .count() as f32;
-    let denom = candidate_tokens.len().max(expected_tokens.len()).max(1) as f32;
-    shared / denom
+        .map(|edit| RejectedGroupSpan {
+            token_start: edit.span_token_start,
+            token_end: edit.span_token_end,
+        })
+        .collect::<Vec<_>>();
+    spans.sort_by(|lhs, rhs| {
+        lhs.token_start
+            .cmp(&rhs.token_start)
+            .then_with(|| lhs.token_end.cmp(&rhs.token_end))
+    });
+    spans.dedup_by(|lhs, rhs| lhs.token_start == rhs.token_start && lhs.token_end == rhs.token_end);
+    spans
 }
 
 fn dedupe_judge_options(options: &[JudgeOptionDebug]) -> Vec<JudgeOptionDebug> {
@@ -763,6 +1184,10 @@ fn build_overlap_groups(spans: &[SpanDebugTrace]) -> Vec<Vec<SpanDebugTrace>> {
         groups.push(merged);
     }
     groups
+}
+
+fn edits_overlap(lhs: &EditCandidate, rhs: &EditCandidate) -> bool {
+    lhs.span_token_start < rhs.span_token_end && rhs.span_token_start < lhs.span_token_end
 }
 
 fn spans_overlap(a: &SpanDebugTrace, b: &SpanDebugTrace) -> bool {

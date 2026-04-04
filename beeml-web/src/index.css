@@ -569,6 +569,7 @@ button.choice-button {
   padding: 0.5rem 0.6rem;
   background: var(--bg);
   text-align: left;
+  cursor: pointer;
 }
 
 button.choice-button:hover {
@@ -585,6 +586,10 @@ button.choice-button.choice-button-current {
   border-left-color: var(--accent);
 }
 
+button.choice-button.choice-button-current:hover {
+  background: light-dark(#dde9ff, #1a2d4a);
+}
+
 button.choice-button.choice-button-gold {
   border-left-color: light-dark(#b8860b, #daa520);
 }
@@ -593,8 +598,99 @@ button.choice-button.choice-button-gold:not(.choice-button-current) {
   background: light-dark(#fdf8e8, #2a2210);
 }
 
+button.choice-button.choice-button-gold:not(.choice-button-current):hover {
+  background: light-dark(#f8f0d0, #352d18);
+}
+
 button.choice-button.choice-button-keep {
   background: var(--bg-surface);
+}
+
+button.choice-button.choice-button-keep:hover {
+  background: var(--bg-surface-hover);
+}
+
+/* Debug search expander */
+.debug-search-expander {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-surface-alt);
+  font-size: 13px;
+}
+
+.debug-search-expander summary {
+  padding: 0.35rem 0.6rem;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  user-select: none;
+}
+
+.debug-search-content {
+  border-top: 1px solid var(--border);
+  padding: 0.35rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.debug-search-meta {
+  display: flex;
+  gap: 0.75rem;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  padding-bottom: 0.25rem;
+}
+
+.debug-warn {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.component-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.component-header {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.hypothesis-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.1rem 0 0.1rem 0.75rem;
+  font-size: 13px;
+}
+
+.hypothesis-diff {
+  display: flex;
+  align-items: baseline;
+  gap: 0;
+}
+
+.hypothesis-keep {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.hypothesis-prob {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 
 .choice-score {

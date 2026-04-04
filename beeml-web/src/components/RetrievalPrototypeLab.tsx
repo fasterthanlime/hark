@@ -210,6 +210,7 @@ export function RetrievalPrototypeLab({
           chosen_alias_id: option.is_keep_original ? null : option.alias_id,
           reject_group: false,
           rejected_group_spans: [],
+          selected_component_choices: [],
         });
         if (!result.ok) throw new Error(result.error);
         setProbeResult(result.value);
