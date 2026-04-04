@@ -420,115 +420,92 @@ impl BeeMlService {
         }
     }
 
-    fn spans_for_transcript(
-        &self,
-        transcript: &str,
-        max_span_words: usize,
-    ) -> Result<Vec<TranscriptSpan>, String> {
-        let mut g2p = self
-            .inner
-            .g2p
-            .lock()
-            .map_err(|_| "g2p cache mutex poisoned".to_string())?;
-        Ok(enumerate_transcript_spans_with(
-            transcript,
-            max_span_words,
-            None::<&[TranscriptAlignmentToken]>,
-            |text| g2p.ipa_tokens(text).ok().flatten(),
-        ))
-    }
-
     fn evaluate_case(
         &self,
-        judge: &OnlineJudge,
         case: &EvalCase,
         request: &RetrievalPrototypeEvalRequest,
     ) -> Result<CaseEvalResult, String> {
-        let spans = self.spans_for_transcript(&case.transcript, request.max_span_words as usize)?;
-        let mut best_by_term: HashMap<String, (String, bee_phonetic::CandidateFeatureRow)> =
-            HashMap::new();
-        let mut best_judge_choice: Option<CaseJudgeChoice> = None;
+        // Use the same pipeline as run_probe — one path for everything.
+        let probe_result = self.run_probe(
+            RetrievalPrototypeProbeRequest {
+                transcript: case.transcript.clone(),
+                words: Vec::new(),
+                max_span_words: request.max_span_words,
+                shortlist_limit: request.shortlist_limit,
+                verify_limit: request.verify_limit,
+                expected_source_text: None,
+            },
+            None,
+        )?;
 
-        for span in spans {
-            let shortlist = query_index(
-                &self.inner.index,
-                &RetrievalQuery {
-                    text: span.text.clone(),
-                    ipa_tokens: span.ipa_tokens.clone(),
-                    reduced_ipa_tokens: span.reduced_ipa_tokens.clone(),
-                    feature_tokens: bee_phonetic::feature_tokens_for_ipa(&span.ipa_tokens),
-                    token_count: (span.token_end - span.token_start) as u8,
-                },
-                request.shortlist_limit as usize,
-            );
-            let scored_rows = score_shortlist(&span, &shortlist, &self.inner.index)
-                .into_iter()
-                .take(request.verify_limit as usize)
-                .collect::<Vec<_>>();
-
-            for candidate in scored_rows.iter().filter(|candidate| candidate.verified) {
-                match best_by_term.get(&candidate.term) {
-                    Some((_, existing))
-                        if compare_candidate_rows(existing, candidate).is_ge() => {}
-                    _ => {
-                        best_by_term.insert(
-                            candidate.term.clone(),
-                            (span.text.clone(), candidate.clone()),
-                        );
-                    }
+        // Extract retrieval rank: best verified candidate per term across all spans.
+        let mut best_by_term: HashMap<String, f32> = HashMap::new();
+        for span_trace in &probe_result.spans {
+            for candidate in &span_trace.candidates {
+                if !candidate.accepted {
+                    continue;
                 }
-            }
-
-            let judge_input = scored_rows
-                .iter()
-                .map(|row| {
-                    let alias = &self.inner.index.aliases[row.alias_id as usize];
-                    (row.clone(), alias.identifier_flags.clone())
-                })
-                .collect::<Vec<_>>();
-            let judge_options = judge.score_candidates(&span, &judge_input);
-            if let Some(chosen) = judge_options.into_iter().find(|option| option.chosen) {
-                match &best_judge_choice {
-                    Some(existing)
-                        if existing.probability > chosen.probability
-                            || (existing.probability == chosen.probability
-                                && existing.score >= chosen.score) => {}
+                let score = candidate.features.acceptance_score;
+                match best_by_term.get(&candidate.term) {
+                    Some(&existing) if existing >= score => {}
                     _ => {
-                        best_judge_choice = Some(CaseJudgeChoice {
-                            span_text: span.text.clone(),
-                            chosen_action: if chosen.is_keep_original {
-                                "keep_original".to_string()
-                            } else {
-                                chosen.term.clone()
-                            },
-                            probability: chosen.probability,
-                            score: chosen.score,
-                            is_keep_original: chosen.is_keep_original,
-                        });
+                        best_by_term.insert(candidate.term.clone(), score);
                     }
                 }
             }
         }
-
-        let mut ranked = best_by_term.into_iter().collect::<Vec<_>>();
-        ranked.sort_by(|(a_term, a_hit), (b_term, b_hit)| {
-            compare_candidate_rows(&b_hit.1, &a_hit.1).then_with(|| a_term.cmp(b_term))
-        });
+        let mut ranked: Vec<(String, f32)> = best_by_term.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let target_rank = ranked
             .iter()
             .position(|(term, _)| term.eq_ignore_ascii_case(&case.target_term))
             .map(|idx| idx + 1);
         let best_span_text = ranked
             .first()
-            .map(|(_, hit)| hit.0.clone())
+            .map(|(term, _)| term.clone())
             .unwrap_or_default();
-        let judge_choice = best_judge_choice.unwrap_or(CaseJudgeChoice {
-            span_text: String::new(),
-            chosen_action: "keep_original".to_string(),
-            probability: 0.0,
-            score: 0.0,
-            is_keep_original: true,
-        });
+
+        // Extract judge choice: best non-keep candidate across all spans.
+        let mut best_judge_choice: Option<CaseJudgeChoice> = None;
+        for span_trace in &probe_result.spans {
+            if let Some(best) = span_trace
+                .judge_options
+                .iter()
+                .filter(|o| !o.is_keep_original)
+                .max_by(|a, b| {
+                    a.probability
+                        .total_cmp(&b.probability)
+                        .then_with(|| a.score.total_cmp(&b.score))
+                })
+            {
+                match &best_judge_choice {
+                    Some(existing)
+                        if existing.probability > best.probability
+                            || (existing.probability == best.probability
+                                && existing.score >= best.score) => {}
+                    _ => {
+                        best_judge_choice = Some(CaseJudgeChoice {
+                            span_text: span_trace.span.text.clone(),
+                            chosen_action: best.term.clone(),
+                            probability: best.probability,
+                            score: best.score,
+                            is_keep_original: false,
+                        });
+                    }
+                }
+            }
+        }
+        // Judge chooses keep_original if no candidate exceeded threshold
+        let judge_choice = match best_judge_choice {
+            Some(choice) if choice.probability >= 0.5 => choice,
+            _ => CaseJudgeChoice {
+                span_text: String::new(),
+                chosen_action: "keep_original".to_string(),
+                probability: 0.0,
+                score: 0.0,
+                is_keep_original: true,
+            },
+        };
 
         Ok(CaseEvalResult {
             target_rank,
@@ -1514,12 +1491,17 @@ impl BeeMl for BeeMlService {
         request: RetrievalPrototypeEvalRequest,
     ) -> Result<RetrievalPrototypeEvalResult, String> {
         let cases = self.teaching_cases(request.limit as usize, true);
-        let judge = self
-            .inner
-            .judge
-            .lock()
-            .map_err(|_| "judge mutex poisoned".to_string())?
-            .clone();
+        {
+            let judge = self
+                .inner
+                .judge
+                .lock()
+                .map_err(|_| "judge mutex poisoned".to_string())?;
+            info!(
+                update_count = judge.update_count(),
+                "running eval"
+            );
+        }
 
         let mut top1_hits = 0u32;
         let mut top3_hits = 0u32;
@@ -1532,7 +1514,7 @@ impl BeeMl for BeeMlService {
         let mut per_term = HashMap::<String, RetrievalEvalTermSummary>::new();
 
         for (recording_id, case) in cases.iter().enumerate() {
-            let result = self.evaluate_case(&judge, case, &request)?;
+            let result = self.evaluate_case(case, &request)?;
             let entry = per_term
                 .entry(case.target_term.clone())
                 .or_insert(RetrievalEvalTermSummary {
@@ -1603,6 +1585,16 @@ impl BeeMl for BeeMlService {
 
         let mut per_term = per_term.into_values().collect::<Vec<_>>();
         per_term.sort_by(|a, b| a.term.cmp(&b.term));
+
+        info!(
+            evaluated = cases.len(),
+            judge_correct,
+            judge_replace_correct,
+            judge_abstain_correct,
+            top1_hits,
+            judge_failures = judge_failures.len(),
+            "eval complete"
+        );
 
         Ok(RetrievalPrototypeEvalResult {
             evaluated_cases: cases.len() as u32,

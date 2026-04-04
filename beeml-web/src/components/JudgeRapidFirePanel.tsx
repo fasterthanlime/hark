@@ -99,7 +99,7 @@ export function JudgeRapidFirePanel({
       const client = await connectBeeMl(wsUrl);
       const result = await client.loadRetrievalPrototypeTeachingDeck({
         limit: deckLimit,
-        include_counterexamples: true,
+        include_counterexamples: false,
       });
       if (!result.ok) throw new Error(result.error);
       setCases(result.value.cases);

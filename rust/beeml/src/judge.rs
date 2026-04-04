@@ -107,11 +107,95 @@ struct JudgeExample {
 
 impl Default for OnlineJudge {
     fn default() -> Self {
-        Self {
-            model: None,
+        let judge = Self {
+            model: seed_model(),
             update_count: 0,
-        }
+        };
+        tracing::info!(
+            weights = ?judge.weights().iter().map(|w| format!("{w:.3}")).collect::<Vec<_>>(),
+            "judge initialized with seed weights"
+        );
+        judge
     }
+}
+
+/// Seed the FTRL model by training on synthetic examples that span the
+/// quality range. This teaches the model: high scores → replace, low scores → keep.
+fn seed_model() -> Option<Ftrl<f64>> {
+    // Synthetic candidates at various quality levels.
+    // (accept, phonetic, coarse, token, feature, verified, target)
+    let levels: &[(f64, f64, f64, f64, f64, f64, bool)] = &[
+        // Strong matches → should replace
+        (0.90, 0.88, 0.85, 0.86, 0.88, 1.0, true),
+        (0.82, 0.80, 0.75, 0.78, 0.82, 1.0, true),
+        (0.75, 0.72, 0.68, 0.70, 0.74, 1.0, true),
+        (0.68, 0.65, 0.60, 0.64, 0.66, 1.0, true),
+        (0.60, 0.58, 0.55, 0.56, 0.60, 1.0, true),
+        // Borderline → should replace (above threshold)
+        (0.55, 0.52, 0.50, 0.50, 0.54, 1.0, true),
+        // Weak matches → should NOT replace
+        (0.45, 0.42, 0.40, 0.40, 0.44, 1.0, false),
+        (0.38, 0.35, 0.32, 0.34, 0.36, 0.0, false),
+        (0.30, 0.28, 0.25, 0.26, 0.30, 0.0, false),
+        (0.20, 0.18, 0.15, 0.16, 0.20, 0.0, false),
+        (0.12, 0.10, 0.08, 0.10, 0.12, 0.0, false),
+        (0.05, 0.04, 0.03, 0.04, 0.05, 0.0, false),
+    ];
+
+    let mut all_features = Vec::new();
+    let mut all_targets = Vec::new();
+    for &(accept, phonetic, coarse, token, feature, verified, target) in levels {
+        let features = vec![
+            1.0,                    // bias
+            accept,                 // acceptance_score
+            phonetic,               // phonetic_score
+            coarse,                 // coarse_score
+            token,                  // token_score
+            feature,                // feature_score
+            (feature - token).max(0.0), // feature_bonus
+            coarse * 0.9,           // best_view_score
+            0.33,                   // cross_view_support
+            coarse * 0.5,           // qgram_overlap
+            coarse * 0.8,           // total_qgram_overlap
+            if accept > 0.5 { 1.0 } else { 0.0 }, // token_count_match
+            if accept > 0.5 { 0.80 } else { 0.40 }, // phone_closeness
+            0.0,                    // alias_source_spoken
+            0.0,                    // alias_source_identifier
+            0.0,                    // alias_source_confusion
+            0.0, 0.0, 0.0, 0.0, 0.0, // identifier flags
+            if verified > 0.5 { 1.0 } else { 0.0 }, // short_guard_passed
+            1.0,                    // low_content_guard_passed
+            if accept > 0.35 { 1.0 } else { 0.0 }, // acceptance_floor_passed
+            verified,               // verified
+            0.25,                   // span_token_count
+            0.40,                   // span_phone_count
+            0.0,                    // span_low_content
+        ];
+        debug_assert_eq!(features.len(), NUM_FEATURES);
+        all_features.extend(features);
+        all_targets.push(target);
+    }
+
+    let n = all_targets.len();
+    let records = Array2::from_shape_vec((n, NUM_FEATURES), all_features).ok()?;
+    let targets = Array1::from_vec(all_targets);
+    let dataset = Dataset::new(records, targets);
+    let params = Ftrl::<f64>::params()
+        .alpha(1.0)
+        .beta(1.0)
+        .l1_ratio(0.0001)
+        .l2_ratio(0.001);
+
+    // Train multiple epochs so the model actually converges
+    let mut model: Option<Ftrl<f64>> = None;
+    for _ in 0..20 {
+        let prior = model.clone();
+        model = match params.fit_with(model, &dataset) {
+            Ok(m) => Some(m),
+            Err(_) => prior,
+        };
+    }
+    model
 }
 
 impl OnlineJudge {
@@ -177,6 +261,18 @@ impl OnlineJudge {
         if let Some(model) = live_model {
             self.model = Some(model);
             self.update_count += 1;
+            let w = self.weights();
+            tracing::debug!(
+                update_count = self.update_count,
+                chosen = ?chosen_alias_id,
+                num_candidates = examples.len(),
+                w_bias = w[0],
+                w_accept = w[1],
+                w_phonetic = w[2],
+                w_coarse = w[3],
+                w_verified = w[24],
+                "judge taught"
+            );
         }
 
         score_examples(self.model.as_ref(), &examples)
