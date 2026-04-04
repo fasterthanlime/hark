@@ -237,6 +237,7 @@ pub struct RetrievalPrototypeProbeRequest {
     pub max_span_words: u8,
     pub shortlist_limit: u16,
     pub verify_limit: u16,
+    pub expected_source_text: Option<String>,
 }
 
 #[derive(Clone, Debug, Facet)]
@@ -245,6 +246,7 @@ pub struct RetrievalPrototypeProbeResult {
     pub spans: Vec<SpanDebugTrace>,
     pub timings: TimingBreakdown,
     pub judge_state: JudgeStateDebug,
+    pub rapid_fire: Option<RapidFireDecisionSet>,
 }
 
 #[derive(Clone, Debug, Facet)]
@@ -256,6 +258,29 @@ pub struct TeachRetrievalPrototypeJudgeRequest {
     pub chosen_alias_id: Option<u32>,
     pub reject_group: bool,
     pub rejected_group_spans: Vec<RejectedGroupSpan>,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct RapidFireChoice {
+    pub option_id: String,
+    pub span_token_start: u32,
+    pub span_token_end: u32,
+    pub choose_keep_original: bool,
+    pub chosen_alias_id: Option<u32>,
+    pub sentence: String,
+    pub replaced_text: String,
+    pub replacement_text: String,
+    pub score: f32,
+    pub probability: f32,
+    pub is_gold: bool,
+    pub is_judge_pick: bool,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct RapidFireDecisionSet {
+    pub choices: Vec<RapidFireChoice>,
+    pub rejected_group_spans: Vec<RejectedGroupSpan>,
+    pub no_exact_match: bool,
 }
 
 #[derive(Clone, Debug, Facet)]

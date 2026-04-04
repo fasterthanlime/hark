@@ -16,7 +16,8 @@ use beeml::judge::OnlineJudge;
 use beeml::rpc::{
     AcceptedEdit, AliasSource, BeeMl, CandidateFeatureDebug, CorrectionDebugResult,
     CorrectionRequest, CorrectionResult, FilterDecision, IdentifierFlags, RerankerDebugTrace,
-    JudgeEvalFailure, JudgeOptionDebug, JudgeStateDebug,
+    JudgeEvalFailure, JudgeOptionDebug, JudgeStateDebug, RapidFireChoice, RapidFireDecisionSet,
+    RejectedGroupSpan,
     RetrievalEvalMiss, RetrievalEvalTermSummary, RetrievalPrototypeTeachingCase,
     RetrievalPrototypeTeachingDeckRequest, RetrievalPrototypeTeachingDeckResult,
     RetrievalCandidateDebug, RetrievalIndexView, RetrievalPrototypeEvalRequest,
@@ -72,6 +73,7 @@ impl BeeMlService {
         request: RetrievalPrototypeProbeRequest,
         teach: Option<TeachRetrievalPrototypeJudgeRequest>,
     ) -> Result<RetrievalPrototypeProbeResult, String> {
+        let expected_source_text = request.expected_source_text.clone();
         let alignments = if request.words.is_empty() {
             None
         } else {
@@ -275,6 +277,10 @@ impl BeeMlService {
             }
         }
 
+        let rapid_fire = expected_source_text
+            .as_deref()
+            .map(|expected| build_rapid_fire_decision_set(&request.transcript, &traces, expected));
+
         Ok(RetrievalPrototypeProbeResult {
             transcript: request.transcript,
             spans: traces,
@@ -291,6 +297,7 @@ impl BeeMlService {
                 feature_names: judge.feature_names(),
                 weights: judge.weights(),
             },
+            rapid_fire,
         })
     }
 
@@ -467,6 +474,314 @@ impl BeeMlService {
             judge_choice,
         })
     }
+}
+
+#[derive(Clone)]
+struct GroupChoice {
+    span_token_start: u32,
+    span_token_end: u32,
+    span_text: String,
+    alias_id: Option<u32>,
+    is_keep_original: bool,
+    replacement_text: String,
+    score: f32,
+    probability: f32,
+}
+
+fn build_rapid_fire_decision_set(
+    transcript: &str,
+    spans: &[SpanDebugTrace],
+    expected_source_text: &str,
+) -> RapidFireDecisionSet {
+    let groups = build_overlap_groups(spans);
+    let focus_group_index = pick_focus_group_index(transcript, &groups, expected_source_text);
+    let focus_group = groups.get(focus_group_index).cloned().unwrap_or_default();
+    let rejected_group_spans = focus_group
+        .iter()
+        .map(|span| RejectedGroupSpan {
+            token_start: span.span.token_start,
+            token_end: span.span.token_end,
+        })
+        .collect::<Vec<_>>();
+
+    let mut base_choices = Vec::new();
+    for (group_index, group) in groups.iter().enumerate() {
+        if group_index == focus_group_index {
+            continue;
+        }
+        if let Some(choice) = best_context_choice(transcript, group, expected_source_text) {
+            base_choices.push(choice);
+        }
+    }
+
+    let mut choices = Vec::new();
+    for span in &focus_group {
+        for option in dedupe_judge_options(&span.judge_options) {
+            let choice = GroupChoice {
+                span_token_start: span.span.token_start,
+                span_token_end: span.span.token_end,
+                span_text: span.span.text.clone(),
+                alias_id: option.alias_id,
+                is_keep_original: option.is_keep_original,
+                replacement_text: if option.is_keep_original {
+                    span.span.text.clone()
+                } else {
+                    option.term.clone()
+                },
+                score: option.score,
+                probability: option.probability,
+            };
+            let sentence = apply_group_choices(transcript, &base_choices, Some(&choice));
+            choices.push(RapidFireChoice {
+                option_id: format!(
+                    "{}:{}:{}",
+                    choice.span_token_start,
+                    choice.span_token_end,
+                    choice.alias_id.map_or_else(|| "keep".to_string(), |id| id.to_string())
+                ),
+                span_token_start: choice.span_token_start,
+                span_token_end: choice.span_token_end,
+                choose_keep_original: choice.is_keep_original,
+                chosen_alias_id: choice.alias_id,
+                sentence: sentence.clone(),
+                replaced_text: choice.span_text.clone(),
+                replacement_text: choice.replacement_text.clone(),
+                score: choice.score,
+                probability: choice.probability,
+                is_gold: normalize_comparable_text(&sentence)
+                    == normalize_comparable_text(expected_source_text),
+                is_judge_pick: false,
+            });
+        }
+    }
+
+    choices.sort_by(|lhs, rhs| {
+        rhs.probability
+            .total_cmp(&lhs.probability)
+            .then_with(|| rhs.score.total_cmp(&lhs.score))
+    });
+    choices.truncate(6);
+    if let Some(first) = choices.first_mut() {
+        first.is_judge_pick = true;
+    }
+
+    RapidFireDecisionSet {
+        no_exact_match: !choices.iter().any(|choice| choice.is_gold),
+        choices,
+        rejected_group_spans,
+    }
+}
+
+fn best_context_choice(
+    transcript: &str,
+    group: &[SpanDebugTrace],
+    expected_source_text: &str,
+) -> Option<GroupChoice> {
+    let mut best: Option<(f32, GroupChoice)> = None;
+    for span in group {
+        for option in dedupe_judge_options(&span.judge_options) {
+            let choice = GroupChoice {
+                span_token_start: span.span.token_start,
+                span_token_end: span.span.token_end,
+                span_text: span.span.text.clone(),
+                alias_id: option.alias_id,
+                is_keep_original: option.is_keep_original,
+                replacement_text: if option.is_keep_original {
+                    span.span.text.clone()
+                } else {
+                    option.term.clone()
+                },
+                score: option.score,
+                probability: option.probability,
+            };
+            let sentence = apply_group_choices(transcript, &[], Some(&choice));
+            let similarity = sentence_similarity(&sentence, expected_source_text);
+            match &best {
+                Some((best_similarity, best_choice))
+                    if *best_similarity > similarity
+                        || (*best_similarity == similarity
+                            && (best_choice.probability > choice.probability
+                                || (best_choice.probability == choice.probability
+                                    && best_choice.score >= choice.score))) => {}
+                _ => best = Some((similarity, choice)),
+            }
+        }
+    }
+    best.map(|(_, choice)| choice)
+}
+
+fn apply_group_choices(
+    transcript: &str,
+    base_choices: &[GroupChoice],
+    focus_choice: Option<&GroupChoice>,
+) -> String {
+    let mut tokens = transcript
+        .split_whitespace()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let mut edits = base_choices.to_vec();
+    if let Some(choice) = focus_choice {
+        edits.push(choice.clone());
+    }
+    edits.sort_by(|lhs, rhs| rhs.span_token_start.cmp(&lhs.span_token_start));
+    for edit in edits {
+        let replacement_tokens = edit
+            .replacement_text
+            .split_whitespace()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let start = edit.span_token_start as usize;
+        let end = edit.span_token_end as usize;
+        if start <= end && end <= tokens.len() {
+            tokens.splice(start..end, replacement_tokens);
+        }
+    }
+    tokens.join(" ")
+}
+
+fn pick_focus_group_index(
+    transcript: &str,
+    groups: &[Vec<SpanDebugTrace>],
+    expected_source_text: &str,
+) -> usize {
+    let mut best: Option<(usize, f32)> = None;
+    for (index, group) in groups.iter().enumerate() {
+        for span in group {
+            let options = dedupe_judge_options(&span.judge_options);
+            let keep = options.iter().find(|option| option.is_keep_original);
+            let replacements = options.iter().filter(|option| !option.is_keep_original);
+            for option in replacements {
+                let sentence = apply_span_option(transcript, span, option);
+                let mut score = option.probability;
+                if normalize_comparable_text(&sentence)
+                    == normalize_comparable_text(expected_source_text)
+                {
+                    score += 2.0;
+                } else if let Some(keep) = keep {
+                    score -= keep.probability;
+                }
+                match best {
+                    Some((_, best_score)) if best_score >= score => {}
+                    _ => best = Some((index, score)),
+                }
+            }
+        }
+    }
+    best.map(|(index, _)| index).unwrap_or(0)
+}
+
+fn apply_span_option(transcript: &str, span: &SpanDebugTrace, option: &JudgeOptionDebug) -> String {
+    apply_group_choices(
+        transcript,
+        &[],
+        Some(&GroupChoice {
+            span_token_start: span.span.token_start,
+            span_token_end: span.span.token_end,
+            span_text: span.span.text.clone(),
+            alias_id: option.alias_id,
+            is_keep_original: option.is_keep_original,
+            replacement_text: if option.is_keep_original {
+                span.span.text.clone()
+            } else {
+                option.term.clone()
+            },
+            score: option.score,
+            probability: option.probability,
+        }),
+    )
+}
+
+fn sentence_similarity(candidate: &str, expected: &str) -> f32 {
+    let candidate = normalize_comparable_text(candidate);
+    let expected = normalize_comparable_text(expected);
+    if candidate == expected {
+        return 10.0;
+    }
+    let candidate_tokens = candidate.split_whitespace().collect::<Vec<_>>();
+    let expected_tokens = expected.split_whitespace().collect::<Vec<_>>();
+    let shared = candidate_tokens
+        .iter()
+        .filter(|token| expected_tokens.contains(token))
+        .count() as f32;
+    let denom = candidate_tokens.len().max(expected_tokens.len()).max(1) as f32;
+    shared / denom
+}
+
+fn dedupe_judge_options(options: &[JudgeOptionDebug]) -> Vec<JudgeOptionDebug> {
+    let mut keep = None;
+    let mut best_by_term = HashMap::<String, JudgeOptionDebug>::new();
+    for option in options {
+        if option.is_keep_original {
+            keep = Some(option.clone());
+            continue;
+        }
+        match best_by_term.get(&option.term) {
+            Some(existing)
+                if existing.probability > option.probability
+                    || (existing.probability == option.probability
+                        && existing.score >= option.score) => {}
+            _ => {
+                best_by_term.insert(option.term.clone(), option.clone());
+            }
+        }
+    }
+    let mut deduped = best_by_term.into_values().collect::<Vec<_>>();
+    deduped.sort_by(|lhs, rhs| {
+        rhs.probability
+            .total_cmp(&lhs.probability)
+            .then_with(|| rhs.score.total_cmp(&lhs.score))
+    });
+    if let Some(keep) = keep {
+        deduped.insert(0, keep);
+    }
+    deduped
+}
+
+fn build_overlap_groups(spans: &[SpanDebugTrace]) -> Vec<Vec<SpanDebugTrace>> {
+    let mut groups: Vec<Vec<SpanDebugTrace>> = Vec::new();
+    for span in spans {
+        let mut overlapping = Vec::new();
+        for (index, group) in groups.iter().enumerate() {
+            if group.iter().any(|candidate| spans_overlap(candidate, span)) {
+                overlapping.push(index);
+            }
+        }
+        if overlapping.is_empty() {
+            groups.push(vec![span.clone()]);
+            continue;
+        }
+        let mut merged = vec![span.clone()];
+        for index in overlapping.into_iter().rev() {
+            merged.extend(groups.swap_remove(index));
+        }
+        merged.sort_by(|lhs, rhs| {
+            lhs.span
+                .token_start
+                .cmp(&rhs.span.token_start)
+                .then_with(|| lhs.span.token_end.cmp(&rhs.span.token_end))
+        });
+        groups.push(merged);
+    }
+    groups
+}
+
+fn spans_overlap(a: &SpanDebugTrace, b: &SpanDebugTrace) -> bool {
+    a.span.token_start < b.span.token_end && b.span.token_start < a.span.token_end
+}
+
+fn normalize_comparable_text(text: &str) -> String {
+    let mut normalized = String::with_capacity(text.len());
+    let mut last_was_space = false;
+    for ch in text.chars().flat_map(|ch| ch.to_lowercase()) {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            normalized.push(ch);
+            last_was_space = false;
+        } else if !last_was_space {
+            normalized.push(' ');
+            last_was_space = true;
+        }
+    }
+    normalized.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 struct CaseJudgeChoice {

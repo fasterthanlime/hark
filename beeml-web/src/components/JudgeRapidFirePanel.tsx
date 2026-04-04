@@ -1,17 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { connectBeeMl } from "../beeml.generated";
 import type {
+  RapidFireChoice,
   RetrievalPrototypeProbeResult,
   RetrievalPrototypeTeachingCase,
 } from "../beeml.generated";
-import {
-  buildOverlapGroups,
-  buildTeachingChoices,
-  dedupeJudgeOptions,
-  makeApproximateWords,
-  pickFocusSpan,
-  type TeachingChoiceRow,
-} from "./retrievalPrototypeUtils";
+import { makeApproximateWords } from "./retrievalPrototypeUtils";
+
 
 export function JudgeRapidFirePanel({
   wsUrl,
@@ -63,6 +58,7 @@ export function JudgeRapidFirePanel({
         max_span_words: maxSpanWords,
         shortlist_limit: shortlistLimit,
         verify_limit: verifyLimit,
+        expected_source_text: currentCase.source_text,
       });
       if (!result.ok) throw new Error(result.error);
       setProbeResult(result.value);
@@ -78,53 +74,13 @@ export function JudgeRapidFirePanel({
     void probeCurrentCase();
   }, [caseIndex, cases.length, probeCurrentCase]);
 
-  const focusSpan = useMemo(() => {
-    if (!probeResult || !currentCase) return null;
-    const normalizedSpans = probeResult.spans.map((span) => ({
-      ...span,
-      judge_options: dedupeJudgeOptions(span.judge_options),
-    }));
-    return pickFocusSpan(normalizedSpans, currentCase);
-  }, [currentCase, probeResult]);
-
-  const focusGroup = useMemo(() => {
-    if (!probeResult || !currentCase || !focusSpan) return [];
-    const normalizedSpans = probeResult.spans.map((span) => ({
-      ...span,
-      judge_options: dedupeJudgeOptions(span.judge_options),
-    }));
-    const groups = buildOverlapGroups(normalizedSpans);
-    return (
-      groups.find((group) =>
-        group.some(
-          (span) =>
-            span.span.token_start === focusSpan.span.token_start &&
-            span.span.token_end === focusSpan.span.token_end,
-        ),
-      ) ?? [focusSpan]
-    );
-  }, [currentCase, focusSpan, probeResult]);
-
-  const choiceRows = useMemo(() => {
-    if (!currentCase || focusGroup.length === 0) return [];
-    return buildTeachingChoices(currentCase.transcript, focusGroup, currentCase);
-  }, [currentCase, focusGroup]);
-
-  const hasExactChoice = choiceRows.some((row) => row.isGold);
-
-  // After merging overlapping spans into sentence-level rows, the judge pick
-  // should be the top visible row, not any stale per-span `chosen` flag.
-  const judgePickId = useMemo(() => {
-    if (choiceRows.length === 0) return null;
-    return choiceRows[0].id;
-  }, [choiceRows]);
+  const rapidFire = probeResult?.rapid_fire ?? null;
 
   const teach = useCallback(
-    async (row: TeachingChoiceRow) => {
+    async (choice: RapidFireChoice) => {
       if (!currentCase) return;
       try {
-        const { span, option } = row;
-        const key = `${currentCase.case_id}:${span.span.token_start}:${span.span.token_end}:${option.alias_id ?? "keep"}`;
+        const key = `${currentCase.case_id}:${choice.option_id}`;
         setTeachingKey(key);
         setStatus("Teaching...");
         setError(null);
@@ -136,11 +92,12 @@ export function JudgeRapidFirePanel({
             max_span_words: maxSpanWords,
             shortlist_limit: shortlistLimit,
             verify_limit: verifyLimit,
+            expected_source_text: currentCase.source_text,
           },
-          span_token_start: span.span.token_start,
-          span_token_end: span.span.token_end,
-          choose_keep_original: option.is_keep_original,
-          chosen_alias_id: option.is_keep_original ? null : option.alias_id,
+          span_token_start: choice.span_token_start,
+          span_token_end: choice.span_token_end,
+          choose_keep_original: choice.choose_keep_original,
+          chosen_alias_id: choice.choose_keep_original ? null : choice.chosen_alias_id,
           reject_group: false,
           rejected_group_spans: [],
         });
@@ -158,9 +115,40 @@ export function JudgeRapidFirePanel({
     [cases.length, currentCase, maxSpanWords, shortlistLimit, verifyLimit, wsUrl],
   );
 
-  const skipCase = useCallback(() => {
-    setCaseIndex((i) => Math.min(i + 1, Math.max(cases.length - 1, 0)));
-  }, [cases.length]);
+  const rejectGroup = useCallback(async () => {
+    if (!currentCase || !rapidFire) return;
+    try {
+      setTeachingKey(`${currentCase.case_id}:reject-group`);
+      setStatus("Teaching...");
+      setError(null);
+      const client = await connectBeeMl(wsUrl);
+      const result = await client.teachRetrievalPrototypeJudge({
+        probe: {
+          transcript: currentCase.transcript,
+          words: makeApproximateWords(currentCase.transcript),
+          max_span_words: maxSpanWords,
+          shortlist_limit: shortlistLimit,
+          verify_limit: verifyLimit,
+          expected_source_text: currentCase.source_text,
+        },
+        span_token_start: 0,
+        span_token_end: 0,
+        choose_keep_original: true,
+        chosen_alias_id: null,
+        reject_group: true,
+        rejected_group_spans: rapidFire.rejected_group_spans,
+      });
+      if (!result.ok) throw new Error(result.error);
+      setProbeResult(result.value);
+      setCaseIndex((index) => Math.min(index + 1, Math.max(cases.length - 1, 0)));
+      setStatus(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setStatus(null);
+    } finally {
+      setTeachingKey(null);
+    }
+  }, [cases.length, currentCase, maxSpanWords, rapidFire, shortlistLimit, verifyLimit, wsUrl]);
 
   // Pre-load: config form
   if (cases.length === 0) {
@@ -234,102 +222,64 @@ export function JudgeRapidFirePanel({
 
       {currentCase && (
           <div className="choice-list">
-            {/* Row: transcript (what we got) */}
-            <div className="choice-row choice-row-context">
-              <div className="choice-row-main">
-                <div className="sentence-preview-line">{currentCase.transcript}</div>
-              </div>
-              <div className="choice-row-meta">
-                <span className="choice-flags">transcript</span>
-                <span className="badge">{currentCase.suite}</span>
-              </div>
-            </div>
-
-            {/* Row: expected correct sentence */}
+            {/* Row: expected correct sentence (gold) */}
             <div className="choice-row choice-row-context choice-row-expected">
               <div className="choice-row-main">
                 <div className="sentence-preview-line">{currentCase.source_text}</div>
               </div>
               <div className="choice-row-meta">
                 <span className="choice-flags">expected</span>
+                <span className="badge">{currentCase.suite}</span>
               </div>
             </div>
 
-            {/* Separator + instruction */}
-            {focusSpan ? (
-              <>
-                <div className="choice-row-divider">
-                  <span>{choiceRows.length} candidates — scores are relative judge weights</span>
-                  {!hasExactChoice && (
-                    <span className="choice-row-divider-warn">no exact match</span>
-                  )}
-                </div>
+            {/* Row: transcript (clickable — "keep as-is" / reject all corrections) */}
+            <button className="choice-button choice-button-keep"
+              aria-label="Keep transcript"
+              disabled={teachingKey === `${currentCase.case_id}:reject-group`}
+              onClick={() => void rejectGroup()}>
+              <div className="choice-row-main">
+                <div className="sentence-preview-line">{currentCase.transcript}</div>
+              </div>
+              <div className="choice-row-meta">
+                <span className="choice-flags">transcript</span>
+              </div>
+            </button>
 
-                {choiceRows.map((row) => {
-                  const { span, option, preview, isGold, candidateFeatures } = row;
-                  const isJudgePick = row.id === judgePickId;
-                  const key = `${currentCase.case_id}:${row.id}`;
+            {rapidFire ? (
+              <>
+                {rapidFire.choices.map((choice) => {
+                  const key = `${currentCase.case_id}:${choice.option_id}`;
                   const classes = ["choice-button"];
-                  if (option.is_keep_original) classes.push("choice-button-keep");
-                  if (isJudgePick) classes.push("choice-button-current");
-                  if (isGold) classes.push("choice-button-gold");
+                  if (choice.choose_keep_original) classes.push("choice-button-keep");
+                  if (choice.is_judge_pick) classes.push("choice-button-current");
+                  if (choice.is_gold) classes.push("choice-button-gold");
                   return (
                     <button key={key} className={classes.join(" ")}
                       disabled={teachingKey === key}
-                      onClick={() => void teach(row)}>
+                      onClick={() => void teach(choice)}>
                       <div className="choice-row-main">
-                        <div className="sentence-preview-line">
-                          {preview.before ? <span>{preview.before} </span> : null}
-                          {option.is_keep_original ? (
-                            <span>{span.span.text}</span>
-                          ) : (
-                            <>
-                              <span className="edit-from">{span.span.text}</span>
-                              <span className="edit-arrow">{" => "}</span>
-                              <span className="edit-to">{preview.focus}</span>
-                            </>
-                          )}
-                          {preview.after ? <span> {preview.after}</span> : null}
-                        </div>
-                        {candidateFeatures && (
-                          <div className="choice-detail">
-                            {candidateFeatures.verified
-                              ? <span className="choice-detail-verified">verified</span>
-                              : <span className="choice-detail-unverified">unverified</span>}
-                          </div>
-                        )}
+                        <div className="sentence-preview-line">{choice.sentence}</div>
                       </div>
                       <div className="choice-row-meta">
                         <span className="choice-flags">
-                          {isJudgePick ? "judge" : ""}
-                          {isJudgePick && isGold ? " · " : ""}
-                          {isGold ? "gold" : ""}
+                          {choice.is_judge_pick ? "judge" : ""}
+                          {choice.is_judge_pick && choice.is_gold ? " · " : ""}
+                          {choice.is_gold ? "gold" : ""}
+                          {!choice.choose_keep_original ? ` · ${choice.replaced_text} -> ${choice.replacement_text}` : " · keep original"}
                         </span>
-                        <span className="choice-score">{option.probability.toFixed(3)}</span>
+                        <span className="choice-score">{choice.probability.toFixed(3)}</span>
                       </div>
                     </button>
                   );
                 })}
-
-                <button className="choice-button choice-button-skip"
-                  aria-label="None of these"
-                  onClick={skipCase}>
-                  <div className="choice-row-main">
-                    <div className="sentence-preview-line" style={{ color: "var(--text-muted)" }}>
-                      None of these
-                    </div>
-                  </div>
-                  <div className="choice-row-meta">
-                    <span className="choice-flags">skip</span>
-                  </div>
-                </button>
               </>
             ) : (
-              <div className="choice-row choice-row-context">
-                <div className="choice-row-main">
-                  <span style={{ color: "var(--text-muted)" }}>No usable focus span for this case.</span>
+                <div className="choice-row choice-row-context">
+                  <div className="choice-row-main">
+                  <span style={{ color: "var(--text-muted)" }}>No usable decision set for this case.</span>
+                  </div>
                 </div>
-              </div>
             )}
           </div>
       )}

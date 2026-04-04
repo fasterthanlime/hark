@@ -523,7 +523,7 @@ button.compact-nav {
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 0.6rem;
-  border-left: 3px solid transparent;
+  border-left: 3px solid var(--border);
 }
 
 .choice-row-context {
@@ -535,22 +535,6 @@ button.compact-nav {
   background: light-dark(#fdf8e8, #2a2210);
 }
 
-.choice-row-divider {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.35rem 0.6rem;
-  font-size: 11px;
-  color: var(--text-dim);
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-  margin: 0.25rem 0;
-}
-
-.choice-row-divider-warn {
-  color: var(--warning);
-  font-weight: 500;
-}
 
 .sentence-preview-line {
   font-size: 13px;
@@ -581,7 +565,7 @@ button.choice-button {
   width: 100%;
   border: none;
   border-radius: 0;
-  border-left: 3px solid transparent;
+  border-left: 3px solid var(--border);
   padding: 0.5rem 0.6rem;
   background: var(--bg);
   text-align: left;
@@ -611,29 +595,6 @@ button.choice-button.choice-button-gold:not(.choice-button-current) {
 
 button.choice-button.choice-button-keep {
   background: var(--bg-surface);
-}
-
-.choice-detail {
-  display: flex;
-  gap: 0.4rem;
-  font-size: 11px;
-  margin-top: 0.1rem;
-}
-
-.choice-detail-verified {
-  color: var(--success);
-}
-
-.choice-detail-unverified {
-  color: var(--text-dim);
-}
-
-button.choice-button-skip {
-  background: var(--bg-surface-alt);
-}
-
-button.choice-button-skip:hover {
-  background: var(--bg-surface-hover);
 }
 
 .choice-score {

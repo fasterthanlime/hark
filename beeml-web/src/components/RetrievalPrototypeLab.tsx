@@ -171,6 +171,7 @@ export function RetrievalPrototypeLab({
         max_span_words: maxSpanWords,
         shortlist_limit: shortlistLimit,
         verify_limit: verifyLimit,
+        expected_source_text: null,
       });
       if (!result.ok) throw new Error(result.error);
       setProbeResult(result.value);
@@ -201,6 +202,7 @@ export function RetrievalPrototypeLab({
             max_span_words: maxSpanWords,
             shortlist_limit: shortlistLimit,
             verify_limit: verifyLimit,
+            expected_source_text: null,
           },
           span_token_start: spanTokenStart,
           span_token_end: spanTokenEnd,
