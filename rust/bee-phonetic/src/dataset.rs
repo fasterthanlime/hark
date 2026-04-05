@@ -10,7 +10,7 @@ use crate::phonetic_index::{build_index, PhoneticIndex};
 use crate::phonetic_lexicon::{build_phonetic_lexicon, LexiconAlias};
 use crate::types::VocabRow;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SeedDataset {
     pub root: PathBuf,
     pub terms: Vec<SeedTermRow>,
@@ -127,13 +127,33 @@ pub struct SentenceExampleRow {
     pub surface_form: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RecordingExampleRow {
     pub term: String,
     pub text: String,
     pub take: i64,
     pub audio_path: String,
     pub transcript: String,
+    /// Per-word alignment with ASR confidence data.
+    /// Populated by regen-corpus from audio files.
+    #[serde(default)]
+    pub words: Vec<RecordingWordAlignment>,
+}
+
+/// Per-word alignment data from ASR, stored alongside recording examples.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecordingWordAlignment {
+    pub word: String,
+    pub start: f64,
+    pub end: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean_logprob: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_logprob: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean_margin: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_margin: Option<f32>,
 }
 
 #[derive(Debug)]

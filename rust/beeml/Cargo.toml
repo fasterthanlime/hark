@@ -17,8 +17,13 @@ required-features = ["server"]
 name = "gen-ts-api"
 path = "src/bin/gen-ts-api.rs"
 
+[[bin]]
+name = "regen-corpus"
+path = "src/bin/regen-corpus.rs"
+
 [dependencies]
 bee-phonetic = { path = "../bee-phonetic" }
+bee-qwen3-asr = { path = "../bee-qwen3-asr" }
 bee-transcribe = { path = "../bee-transcribe" }
 anyhow = { workspace = true }
 dirs = "5"

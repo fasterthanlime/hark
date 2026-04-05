@@ -10,7 +10,7 @@ use bee_phonetic::{
     enumerate_transcript_spans_with, query_index, score_shortlist, PhoneticIndex, RetrievalQuery,
     SeedDataset, TranscriptAlignmentToken, TranscriptSpan,
 };
-use bee_transcribe::{Engine, EngineConfig, SessionOptions};
+use bee_transcribe::{AlignedWord, Engine, EngineConfig, SessionOptions};
 use beeml::g2p::CachedEspeakG2p;
 use beeml::judge::{OnlineJudge, extract_span_context};
 use beeml::rpc::{
@@ -72,6 +72,7 @@ struct EvalCase {
     take: Option<i64>,
     audio_path: Option<String>,
     surface_form: Option<String>,
+    words: Vec<AlignedWord>,
 }
 
 fn init_tracing() -> Result<WorkerGuard> {
@@ -393,6 +394,15 @@ impl BeeMlService {
                 take: Some(row.take),
                 audio_path: Some(row.audio_path.clone()),
                 surface_form: None,
+                words: row.words.iter().map(|w| AlignedWord {
+                    word: w.word.clone(),
+                    start: w.start,
+                    end: w.end,
+                    mean_logprob: w.mean_logprob,
+                    min_logprob: w.min_logprob,
+                    mean_margin: w.mean_margin,
+                    min_margin: w.min_margin,
+                }).collect(),
             })
             .collect::<Vec<_>>();
 
@@ -412,6 +422,7 @@ impl BeeMlService {
                         take: Some(row.take),
                         audio_path: Some(row.audio_path.clone()),
                         surface_form: Some(row.surface_form.clone()),
+                        words: Vec::new(),
                     }),
             );
         }
@@ -439,7 +450,7 @@ impl BeeMlService {
         let probe_result = self.run_probe(
             RetrievalPrototypeProbeRequest {
                 transcript: case.transcript.clone(),
-                words: Vec::new(),
+                words: case.words.clone(),
                 max_span_words: request.max_span_words,
                 shortlist_limit: request.shortlist_limit,
                 verify_limit: request.verify_limit,

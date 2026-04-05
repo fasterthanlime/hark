@@ -291,6 +291,118 @@ fn load_audio_wav_impl(path: &str, target_sr: u32) -> anyhow::Result<Vec<f32>> {
     Ok(output.into_iter().next().unwrap_or_default())
 }
 
+/// Load audio from any supported format (WAV, OGG/Vorbis, MP3) via symphonia,
+/// convert to 16kHz mono f32 samples.
+pub fn load_audio(path: &str, target_sr: u32) -> crate::Result<Vec<f32>> {
+    // For WAV files, use the existing hound-based loader (faster, simpler)
+    if path.ends_with(".wav") {
+        return load_audio_wav(path, target_sr);
+    }
+    load_audio_symphonia(path, target_sr).map_err(crate::error::AsrError::AudioDecode)
+}
+
+fn load_audio_symphonia(path: &str, target_sr: u32) -> anyhow::Result<Vec<f32>> {
+    use symphonia_core::audio::SampleBuffer;
+    use symphonia_core::io::MediaSourceStream;
+    use symphonia_core::probe::Hint;
+
+    let file = std::fs::File::open(path)?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = std::path::Path::new(path).extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let mut probe = symphonia_core::probe::Probe::default();
+    probe.register_all::<symphonia_format_ogg::OggReader>();
+    probe.register_all::<symphonia_bundle_mp3::MpaReader>();
+
+    let probed = probe.format(
+        &hint,
+        mss,
+        &Default::default(),
+        &Default::default(),
+    )?;
+
+    let mut format = probed.format;
+    let track = format
+        .default_track()
+        .ok_or_else(|| anyhow::anyhow!("no audio track found in {path}"))?;
+    let sr = track
+        .codec_params
+        .sample_rate
+        .ok_or_else(|| anyhow::anyhow!("no sample rate in {path}"))?;
+    let channels = track
+        .codec_params
+        .channels
+        .map(|c| c.count())
+        .unwrap_or(1);
+    let track_id = track.id;
+
+    let mut codec_registry = symphonia_core::codecs::CodecRegistry::default();
+    codec_registry.register_all::<symphonia_codec_vorbis::VorbisDecoder>();
+    codec_registry.register_all::<symphonia_bundle_mp3::MpaDecoder>();
+
+    let mut decoder = codec_registry.make(&track.codec_params, &Default::default())?;
+
+    let mut all_samples: Vec<f32> = Vec::new();
+
+    loop {
+        let packet = match format.next_packet() {
+            Ok(p) => p,
+            Err(symphonia_core::errors::Error::IoError(ref e))
+                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break;
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+        let decoded = decoder.decode(&packet)?;
+        let spec = *decoded.spec();
+        let duration = decoded.capacity();
+        let mut sample_buf = SampleBuffer::<f32>::new(duration as u64, spec);
+        sample_buf.copy_interleaved_ref(decoded);
+        all_samples.extend_from_slice(sample_buf.samples());
+    }
+
+    // Convert to mono
+    let mono: Vec<f32> = if channels <= 1 {
+        all_samples
+    } else {
+        all_samples
+            .chunks(channels)
+            .map(|chunk| chunk.iter().sum::<f32>() / channels as f32)
+            .collect()
+    };
+
+    // Resample to target_sr if needed
+    if sr == target_sr {
+        return Ok(mono);
+    }
+
+    use rubato::{
+        Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+    };
+
+    let params = SincInterpolationParameters {
+        sinc_len: 256,
+        f_cutoff: 0.95,
+        interpolation: SincInterpolationType::Linear,
+        oversampling_factor: 256,
+        window: WindowFunction::BlackmanHarris2,
+    };
+
+    let mut resampler =
+        SincFixedIn::<f32>::new(target_sr as f64 / sr as f64, 2.0, params, mono.len(), 1)?;
+
+    let output = resampler.process(&[mono], None)?;
+    Ok(output.into_iter().next().unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
