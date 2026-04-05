@@ -11,6 +11,10 @@ function alignedWordsToTimedTokens(words: AlignedWord[]): TimedToken[] {
     w: word.word,
     s: word.start,
     e: word.end,
+    meanLogprob: word.mean_logprob,
+    minLogprob: word.min_logprob,
+    meanMargin: word.mean_margin,
+    minMargin: word.min_margin,
   }));
 }
 

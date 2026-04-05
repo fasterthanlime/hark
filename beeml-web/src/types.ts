@@ -4,6 +4,14 @@ export type TimedToken = {
   s: number;
   e: number;
   c?: number | null;
+  /** Mean log-probability from ASR decoder (per-word aggregate) */
+  meanLogprob?: number | null;
+  /** Minimum log-probability from ASR decoder */
+  minLogprob?: number | null;
+  /** Mean top1−top2 margin from ASR decoder */
+  meanMargin?: number | null;
+  /** Minimum top1−top2 margin from ASR decoder */
+  minMargin?: number | null;
 };
 
 export type EvalTranscriptSource = "qwen" | "transcript" | "unknown";

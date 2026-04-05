@@ -117,6 +117,20 @@ function buildLanes(
   return lanes;
 }
 
+/** Map a logprob value to a CSS background tint.
+ *  High confidence (logprob > -0.3) → transparent.
+ *  Low confidence (logprob < -3.0) → saturated red.
+ */
+function logprobBg(token: TimedToken): string | undefined {
+  const lp = token.meanLogprob;
+  if (lp == null) return undefined;
+  // Clamp to [-4, 0] range, map to 0..1 where 0 = confident, 1 = uncertain
+  const t = Math.min(1, Math.max(0, (-lp - 0.3) / 3.7));
+  if (t < 0.05) return undefined;
+  // Red channel with increasing opacity
+  return `rgba(220, 50, 50, ${(t * 0.45).toFixed(2)})`;
+}
+
 const LABEL_WIDTH = 90;
 const LANE_HEIGHT = 36;
 const RULER_HEIGHT = 24;
@@ -314,11 +328,12 @@ export function EvalTimeline({
                 const borderColor = isSelected || isPlaying
                   ? (isSelected ? lane.color : lane.color + "80")
                   : lane.color + "60";
+                const lpBg = logprobBg(token);
                 const bg = isSelected
                   ? lane.color + "60"
                   : isPlaying
                     ? lane.color + "40"
-                    : isDim ? "transparent" : lane.bg;
+                    : lpBg ?? (isDim ? "transparent" : lane.bg);
 
                 return (
                   <div
@@ -369,6 +384,28 @@ export function EvalTimeline({
             </div>
             {token.c != null && (
               <div style={{ color: "var(--text-muted)" }}>conf {token.c.toFixed(3)}</div>
+            )}
+            {token.meanLogprob != null && (
+              <div className="logprob-detail">
+                <table>
+                  <tbody>
+                    <tr>
+                      <td className="label">logprob</td>
+                      <td className="tabular">
+                        mean {token.meanLogprob.toFixed(3)}
+                        {token.minLogprob != null && <> / min {token.minLogprob.toFixed(3)}</>}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="label">margin</td>
+                      <td className="tabular">
+                        {token.meanMargin != null && <>mean {token.meanMargin.toFixed(3)}</>}
+                        {token.minMargin != null && <> / min {token.minMargin.toFixed(3)}</>}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             )}
             {token.editFrom && (
               <div className="edit-detail">

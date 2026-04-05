@@ -170,6 +170,10 @@ export function makeApproximateWords(transcript: string): AlignedWord[] {
     word,
     start: index * 0.4,
     end: index * 0.4 + 0.35,
+    mean_logprob: null,
+    min_logprob: null,
+    mean_margin: null,
+    min_margin: null,
   }));
 }
 

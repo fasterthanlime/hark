@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
+import { channel } from "@bearcove/vox-core";
 import { connectBeeMl } from "../beeml.generated";
-import type { RetrievalPrototypeEvalResult } from "../beeml.generated";
+import type { RetrievalPrototypeEvalResult, RetrievalPrototypeEvalProgress } from "../beeml.generated";
 
 function formatPercent(value: number) {
   return `${Math.round(value)}%`;
@@ -24,12 +25,13 @@ export function JudgeEvalPanel({
       setStatus("Running eval...");
       setError(null);
       const client = await connectBeeMl(wsUrl);
+      const [progressTx] = channel<RetrievalPrototypeEvalProgress>();
       const response = await client.runRetrievalPrototypeEval({
         limit,
         max_span_words: maxSpanWords,
         shortlist_limit: shortlistLimit,
         verify_limit: verifyLimit,
-      });
+      }, progressTx);
       if (!response.ok) throw new Error(response.error);
       setResult(response.value);
       setStatus(null);
