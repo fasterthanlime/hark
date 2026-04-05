@@ -441,6 +441,35 @@ pub struct RetrievalPrototypeEvalResult {
     pub per_term: Vec<RetrievalEvalTermSummary>,
 }
 
+#[derive(Clone, Debug, Facet)]
+pub struct OfflineJudgeEvalRequest {
+    pub folds: u32,
+    pub max_span_words: u8,
+    pub shortlist_limit: u16,
+    pub verify_limit: u16,
+    pub train_epochs: u32,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct OfflineJudgeFoldResult {
+    pub fold: u32,
+    pub train_cases: u32,
+    pub test_cases: u32,
+    pub canonical_correct: u32,
+    pub canonical_total: u32,
+    pub counterexample_correct: u32,
+    pub counterexample_total: u32,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct OfflineJudgeEvalResult {
+    pub canonical_correct: u32,
+    pub canonical_total: u32,
+    pub counterexample_correct: u32,
+    pub counterexample_total: u32,
+    pub fold_results: Vec<OfflineJudgeFoldResult>,
+}
+
 #[vox::service]
 pub trait BeeMl {
     async fn transcribe_wav(&self, wav_bytes: Vec<u8>) -> Result<TranscribeWavResult, String>;
@@ -487,4 +516,9 @@ pub trait BeeMl {
         request: RetrievalPrototypeEvalRequest,
         progress: Tx<RetrievalPrototypeEvalProgress>,
     ) -> Result<RetrievalPrototypeEvalResult, String>;
+
+    async fn run_offline_judge_eval(
+        &self,
+        request: OfflineJudgeEvalRequest,
+    ) -> Result<OfflineJudgeEvalResult, String>;
 }

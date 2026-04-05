@@ -411,6 +411,32 @@ export interface RetrievalPrototypeEvalResult {
   per_term: RetrievalEvalTermSummary[];
 }
 
+export interface OfflineJudgeEvalRequest {
+  folds: number;
+  max_span_words: number;
+  shortlist_limit: number;
+  verify_limit: number;
+  train_epochs: number;
+}
+
+export interface OfflineJudgeFoldResult {
+  fold: number;
+  train_cases: number;
+  test_cases: number;
+  canonical_correct: number;
+  canonical_total: number;
+  counterexample_correct: number;
+  counterexample_total: number;
+}
+
+export interface OfflineJudgeEvalResult {
+  canonical_correct: number;
+  canonical_total: number;
+  counterexample_correct: number;
+  counterexample_total: number;
+  fold_results: OfflineJudgeFoldResult[];
+}
+
 // Request/Response type aliases
 export type TranscribeWavRequest = [Uint8Array];
 export type TranscribeWavResponse = { ok: true; value: TranscribeWavResult } | { ok: false; error: string };
@@ -444,6 +470,9 @@ export type RunRetrievalPrototypeEvalRequest = [
 ];
 export type RunRetrievalPrototypeEvalResponse = { ok: true; value: RetrievalPrototypeEvalResult } | { ok: false; error: string };
 
+export type RunOfflineJudgeEvalRequest = [OfflineJudgeEvalRequest];
+export type RunOfflineJudgeEvalResponse = { ok: true; value: OfflineJudgeEvalResult } | { ok: false; error: string };
+
 // Caller interface for BeeMl
 export interface BeeMlCaller {
   transcribeWav(wavBytes: Uint8Array): Promise<{ ok: true; value: TranscribeWavResult } | { ok: false; error: string }>;
@@ -456,6 +485,7 @@ export interface BeeMlCaller {
   loadRetrievalPrototypeTeachingDeck(request: RetrievalPrototypeTeachingDeckRequest): Promise<{ ok: true; value: RetrievalPrototypeTeachingDeckResult } | { ok: false; error: string }>;
   inspectTerm(request: TermInspectionRequest): Promise<{ ok: true; value: TermInspectionResult } | { ok: false; error: string }>;
   runRetrievalPrototypeEval(request: RetrievalPrototypeEvalRequest, progress: Tx<RetrievalPrototypeEvalProgress>): Promise<{ ok: true; value: RetrievalPrototypeEvalResult } | { ok: false; error: string }>;
+  runOfflineJudgeEval(request: OfflineJudgeEvalRequest): Promise<{ ok: true; value: OfflineJudgeEvalResult } | { ok: false; error: string }>;
 }
 
 // Client implementation for BeeMl
@@ -670,6 +700,25 @@ export class BeeMlClient implements BeeMlCaller {
       }
   }
 
+  async runOfflineJudgeEval(request: OfflineJudgeEvalRequest): Promise<{ ok: true; value: OfflineJudgeEvalResult } | { ok: false; error: string }> {
+    const descriptor = beeMl_runOfflineJudgeEval_method;
+    const sendSchemas = beeMl_descriptor.send_schemas;
+      try {
+        const value = await this.caller.call({
+          method: "BeeMl.runOfflineJudgeEval",
+          args: { request },
+          descriptor,
+          sendSchemas,
+        });
+        return { ok: true, value } as { ok: true; value: OfflineJudgeEvalResult } | { ok: false; error: string };
+      } catch (e: any) {
+        if (e instanceof RpcError && e.isUserError()) {
+          return { ok: false, error: e.userError } as { ok: true; value: OfflineJudgeEvalResult } | { ok: false; error: string };
+        }
+        throw e;
+      }
+  }
+
 }
 
 /**
@@ -696,6 +745,7 @@ export interface BeeMlHandler {
   loadRetrievalPrototypeTeachingDeck(request: RetrievalPrototypeTeachingDeckRequest): Promise<{ ok: true; value: RetrievalPrototypeTeachingDeckResult } | { ok: false; error: string }> | { ok: true; value: RetrievalPrototypeTeachingDeckResult } | { ok: false; error: string };
   inspectTerm(request: TermInspectionRequest): Promise<{ ok: true; value: TermInspectionResult } | { ok: false; error: string }> | { ok: true; value: TermInspectionResult } | { ok: false; error: string };
   runRetrievalPrototypeEval(request: RetrievalPrototypeEvalRequest, progress: Tx<RetrievalPrototypeEvalProgress>): Promise<{ ok: true; value: RetrievalPrototypeEvalResult } | { ok: false; error: string }> | { ok: true; value: RetrievalPrototypeEvalResult } | { ok: false; error: string };
+  runOfflineJudgeEval(request: OfflineJudgeEvalRequest): Promise<{ ok: true; value: OfflineJudgeEvalResult } | { ok: false; error: string }> | { ok: true; value: OfflineJudgeEvalResult } | { ok: false; error: string };
 }
 
 // Dispatcher for BeeMl
@@ -776,6 +826,13 @@ export class BeeMlDispatcher implements Dispatcher {
       } catch (error) {
         call.replyInternalError(error instanceof Error ? error.message : String(error));
       }
+    } else if (method.id === 0xa73afa861228e1c7n) {
+      try {
+        const result = await this.handler.runOfflineJudgeEval(args[0] as OfflineJudgeEvalRequest);
+        if (result.ok) call.reply(result.value); else call.replyErr(result.error);
+      } catch (error) {
+        call.replyInternalError(error instanceof Error ? error.message : String(error));
+      }
     }
   }
 }
@@ -847,6 +904,9 @@ export const beeMl_send_schemas: import("@bearcove/vox-core").ServiceSendSchemas
     [0x26b367651aeaeb01n, { id: 0x26b367651aeaeb01n, type_params: [], kind: { tag: 'struct', name: 'JudgeEvalFailure', fields: [{ name: 'case_id', type_ref: { tag: 'concrete', type_id: 0x6d7dce914ee150e8n, args: [] }, required: true }, { name: 'suite', type_ref: { tag: 'concrete', type_id: 0x6d7dce914ee150e8n, args: [] }, required: true }, { name: 'target_term', type_ref: { tag: 'concrete', type_id: 0x6d7dce914ee150e8n, args: [] }, required: true }, { name: 'transcript', type_ref: { tag: 'concrete', type_id: 0x6d7dce914ee150e8n, args: [] }, required: true }, { name: 'expected_action', type_ref: { tag: 'concrete', type_id: 0x6d7dce914ee150e8n, args: [] }, required: true }, { name: 'chosen_action', type_ref: { tag: 'concrete', type_id: 0x6d7dce914ee150e8n, args: [] }, required: true }, { name: 'chosen_span_text', type_ref: { tag: 'concrete', type_id: 0x6d7dce914ee150e8n, args: [] }, required: true }, { name: 'chosen_probability', type_ref: { tag: 'concrete', type_id: 0x8e02f623d1b2310cn, args: [] }, required: true }] } }],
     [0xeafb2138aac2425en, { id: 0xeafb2138aac2425en, type_params: [], kind: { tag: 'struct', name: 'RetrievalEvalTermSummary', fields: [{ name: 'term', type_ref: { tag: 'concrete', type_id: 0x6d7dce914ee150e8n, args: [] }, required: true }, { name: 'cases', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'top1_hits', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'top3_hits', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'top10_hits', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }] } }],
     [0x92a4c59f7d9286b0n, { id: 0x92a4c59f7d9286b0n, type_params: [], kind: { tag: 'struct', name: 'RetrievalPrototypeEvalResult', fields: [{ name: 'evaluated_cases', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'canonical_cases', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'canonical_shortlist_found', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'canonical_gold_reachable', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'canonical_judge_correct', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'counterexample_cases', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'counterexample_replacement_built', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'counterexample_judge_correct', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'failures_at_retrieval', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'failures_at_composition', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'failures_at_judge', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'unreachable_not_retrieved', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'unreachable_missing_edits', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'unreachable_composition', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'unreachable_surface_mismatch', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'top1_hits', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'top3_hits', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'top10_hits', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'judge_correct', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'judge_replace_correct', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'judge_abstain_correct', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'misses', type_ref: { tag: 'concrete', type_id: 0x0a96b404b4d79d67n, args: [{ tag: 'concrete', type_id: 0xb9034846259905aen, args: [] }] }, required: true }, { name: 'judge_failures', type_ref: { tag: 'concrete', type_id: 0x0a96b404b4d79d67n, args: [{ tag: 'concrete', type_id: 0x26b367651aeaeb01n, args: [] }] }, required: true }, { name: 'per_term', type_ref: { tag: 'concrete', type_id: 0x0a96b404b4d79d67n, args: [{ tag: 'concrete', type_id: 0xeafb2138aac2425en, args: [] }] }, required: true }] } }],
+    [0x3bcaceec38f64464n, { id: 0x3bcaceec38f64464n, type_params: [], kind: { tag: 'struct', name: 'OfflineJudgeEvalRequest', fields: [{ name: 'folds', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'max_span_words', type_ref: { tag: 'concrete', type_id: 0x2c8d54f2314d0f20n, args: [] }, required: true }, { name: 'shortlist_limit', type_ref: { tag: 'concrete', type_id: 0x1be6c8d0625ea876n, args: [] }, required: true }, { name: 'verify_limit', type_ref: { tag: 'concrete', type_id: 0x1be6c8d0625ea876n, args: [] }, required: true }, { name: 'train_epochs', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }] } }],
+    [0xfd1ab7c16e7505b6n, { id: 0xfd1ab7c16e7505b6n, type_params: [], kind: { tag: 'struct', name: 'OfflineJudgeFoldResult', fields: [{ name: 'fold', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'train_cases', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'test_cases', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'canonical_correct', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'canonical_total', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'counterexample_correct', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'counterexample_total', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }] } }],
+    [0xb9e41d3de8ef8231n, { id: 0xb9e41d3de8ef8231n, type_params: [], kind: { tag: 'struct', name: 'OfflineJudgeEvalResult', fields: [{ name: 'canonical_correct', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'canonical_total', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'counterexample_correct', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'counterexample_total', type_ref: { tag: 'concrete', type_id: 0x281c5be4f2ee63b4n, args: [] }, required: true }, { name: 'fold_results', type_ref: { tag: 'concrete', type_id: 0x0a96b404b4d79d67n, args: [{ tag: 'concrete', type_id: 0xfd1ab7c16e7505b6n, args: [] }] }, required: true }] } }],
   ]),
   methods: new Map<bigint, import("@bearcove/vox-core").MethodSendSchemas>([
     [0x5769301e350ea60bn, { argsRootRef: { tag: 'concrete', type_id: 0x6847ab90feda71c1n, args: [{ tag: 'concrete', type_id: 0xba8125876d6388b4n, args: [] }] }, responseRootRef: { tag: 'concrete', type_id: 0x42046de663beeef0n, args: [{ tag: 'concrete', type_id: 0xbde973945e866f28n, args: [] }, { tag: 'concrete', type_id: 0x4cf4b2aeb98a1939n, args: [{ tag: 'concrete', type_id: 0x6d7dce914ee150e8n, args: [] }] }] } }],
@@ -858,6 +918,7 @@ export const beeMl_send_schemas: import("@bearcove/vox-core").ServiceSendSchemas
     [0x87d50612ab4e972an, { argsRootRef: { tag: 'concrete', type_id: 0x6847ab90feda71c1n, args: [{ tag: 'concrete', type_id: 0x955b64510f778889n, args: [] }] }, responseRootRef: { tag: 'concrete', type_id: 0x42046de663beeef0n, args: [{ tag: 'concrete', type_id: 0xca2ce6ea389d9bcbn, args: [] }, { tag: 'concrete', type_id: 0x4cf4b2aeb98a1939n, args: [{ tag: 'concrete', type_id: 0x6d7dce914ee150e8n, args: [] }] }] } }],
     [0x9b8e8592673c696an, { argsRootRef: { tag: 'concrete', type_id: 0x6847ab90feda71c1n, args: [{ tag: 'concrete', type_id: 0x9875a7e9df5cfe4en, args: [] }] }, responseRootRef: { tag: 'concrete', type_id: 0x42046de663beeef0n, args: [{ tag: 'concrete', type_id: 0x1584ce53f45edf00n, args: [] }, { tag: 'concrete', type_id: 0x4cf4b2aeb98a1939n, args: [{ tag: 'concrete', type_id: 0x6d7dce914ee150e8n, args: [] }] }] } }],
     [0x7c4338a1cfc670d5n, { argsRootRef: { tag: 'concrete', type_id: 0xba0496aa8cee7a4cn, args: [{ tag: 'concrete', type_id: 0x0499f4e57d8267ecn, args: [] }, { tag: 'concrete', type_id: 0xc886545a493d06ebn, args: [{ tag: 'concrete', type_id: 0x1086c03fce9d4f24n, args: [] }] }] }, responseRootRef: { tag: 'concrete', type_id: 0x42046de663beeef0n, args: [{ tag: 'concrete', type_id: 0x92a4c59f7d9286b0n, args: [] }, { tag: 'concrete', type_id: 0x4cf4b2aeb98a1939n, args: [{ tag: 'concrete', type_id: 0x6d7dce914ee150e8n, args: [] }] }] } }],
+    [0xa73afa861228e1c7n, { argsRootRef: { tag: 'concrete', type_id: 0x6847ab90feda71c1n, args: [{ tag: 'concrete', type_id: 0x3bcaceec38f64464n, args: [] }] }, responseRootRef: { tag: 'concrete', type_id: 0x42046de663beeef0n, args: [{ tag: 'concrete', type_id: 0xb9e41d3de8ef8231n, args: [] }, { tag: 'concrete', type_id: 0x4cf4b2aeb98a1939n, args: [{ tag: 'concrete', type_id: 0x6d7dce914ee150e8n, args: [] }] }] } }],
   ]),
 };
 
@@ -915,6 +976,12 @@ export const beeMl_runRetrievalPrototypeEval_method: MethodDescriptor = {
   retry: { persist: false, idem: false },
 };
 
+export const beeMl_runOfflineJudgeEval_method: MethodDescriptor = {
+  name: 'runOfflineJudgeEval',
+  id: 0xa73afa861228e1c7n,
+  retry: { persist: false, idem: false },
+};
+
 // Service descriptor for runtime dispatch metadata
 export const beeMl_descriptor: ServiceDescriptor = {
   service_name: 'BeeMl',
@@ -929,6 +996,7 @@ export const beeMl_descriptor: ServiceDescriptor = {
     [beeMl_loadRetrievalPrototypeTeachingDeck_method.id, beeMl_loadRetrievalPrototypeTeachingDeck_method],
     [beeMl_inspectTerm_method.id, beeMl_inspectTerm_method],
     [beeMl_runRetrievalPrototypeEval_method.id, beeMl_runRetrievalPrototypeEval_method],
+    [beeMl_runOfflineJudgeEval_method.id, beeMl_runOfflineJudgeEval_method],
   ]),
 };
 

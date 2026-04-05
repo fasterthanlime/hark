@@ -16,7 +16,8 @@ use beeml::judge::{OnlineJudge, extract_span_context};
 use beeml::rpc::{
     AcceptedEdit, AliasSource, BeeMl, CandidateFeatureDebug, CorrectionDebugResult,
     CorrectionRequest, CorrectionResult, FilterDecision, IdentifierFlags, RerankerDebugTrace,
-    JudgeEvalFailure, JudgeOptionDebug, JudgeStateDebug, RapidFireChoice, RapidFireComponent,
+    JudgeEvalFailure, JudgeOptionDebug, JudgeStateDebug, OfflineJudgeEvalRequest,
+    OfflineJudgeEvalResult, OfflineJudgeFoldResult, RapidFireChoice, RapidFireComponent,
     RapidFireComponentChoice, RapidFireDecisionSet, RapidFireEdit,
     RejectedGroupSpan,
     RetrievalEvalMiss, RetrievalEvalTermSummary, RetrievalPrototypeEvalProgress,
@@ -438,6 +439,95 @@ impl BeeMlService {
         } else {
             cases.into_iter().take(limit).collect()
         }
+    }
+
+    /// Extract spans + candidates for a case without involving the judge.
+    /// Used by offline eval to separate feature extraction from judge training.
+    fn probe_case_spans(
+        &self,
+        case: &EvalCase,
+        max_span_words: u8,
+        shortlist_limit: u16,
+    ) -> Result<ProbedCase, String> {
+        let alignments = if case.words.is_empty() {
+            None
+        } else {
+            Some(
+                case.words
+                    .iter()
+                    .map(|word| TranscriptAlignmentToken {
+                        start_time: word.start,
+                        end_time: word.end,
+                        mean_logprob: word.mean_logprob,
+                        min_logprob: word.min_logprob,
+                        mean_margin: word.mean_margin,
+                        min_margin: word.min_margin,
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+
+        let spans = {
+            let mut g2p = self
+                .inner
+                .g2p
+                .lock()
+                .map_err(|_| "g2p cache mutex poisoned".to_string())?;
+            enumerate_transcript_spans_with(
+                &case.transcript,
+                max_span_words as usize,
+                alignments.as_deref(),
+                |text| g2p.ipa_tokens(text).ok().flatten(),
+            )
+        };
+
+        let probed_spans: Vec<ProbedSpan> = spans
+            .into_iter()
+            .map(|span| {
+                let shortlist = query_index(
+                    &self.inner.index,
+                    &RetrievalQuery {
+                        text: span.text.clone(),
+                        ipa_tokens: span.ipa_tokens.clone(),
+                        reduced_ipa_tokens: span.reduced_ipa_tokens.clone(),
+                        feature_tokens: bee_phonetic::feature_tokens_for_ipa(&span.ipa_tokens),
+                        token_count: (span.token_end - span.token_start) as u8,
+                    },
+                    shortlist_limit as usize,
+                );
+                let scored_rows = score_shortlist(&span, &shortlist, &self.inner.index);
+                let candidates: Vec<_> = scored_rows
+                    .iter()
+                    .map(|row| {
+                        let alias = &self.inner.index.aliases[row.alias_id as usize];
+                        (row.clone(), alias.identifier_flags.clone())
+                    })
+                    .collect();
+                let ctx = extract_span_context(&case.transcript, span.char_start, span.char_end);
+
+                // Find gold alias_id: the best-scoring alias for the target term
+                let gold_alias_id = if !case.should_abstain {
+                    candidates
+                        .iter()
+                        .find(|(c, _)| c.term.eq_ignore_ascii_case(&case.target_term))
+                        .map(|(c, _)| c.alias_id)
+                } else {
+                    None
+                };
+
+                ProbedSpan {
+                    span,
+                    candidates,
+                    ctx,
+                    gold_alias_id,
+                }
+            })
+            .collect();
+
+        Ok(ProbedCase {
+            case: case.clone(),
+            spans: probed_spans,
+        })
     }
 
     fn evaluate_case(
@@ -1348,6 +1438,22 @@ fn normalize_comparable_text(text: &str) -> String {
     normalized.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Per-span data extracted from a probe, ready for judge training/evaluation.
+/// Does not include judge scores — those are computed separately per fold.
+struct ProbedSpan {
+    span: TranscriptSpan,
+    candidates: Vec<(bee_phonetic::CandidateFeatureRow, bee_phonetic::IdentifierFlags)>,
+    ctx: beeml::judge::SpanContext,
+    /// For canonical cases: the alias_id of the target term (if retrieved).
+    gold_alias_id: Option<u32>,
+}
+
+/// All probed spans for one eval case, plus metadata for the offline judge eval.
+struct ProbedCase {
+    case: EvalCase,
+    spans: Vec<ProbedSpan>,
+}
+
 #[derive(Clone, Debug)]
 enum EvalFailureStage {
     RetrievalShortlist,
@@ -1731,6 +1837,182 @@ impl BeeMl for BeeMlService {
             misses,
             judge_failures,
             per_term,
+        })
+    }
+
+    async fn run_offline_judge_eval(
+        &self,
+        request: OfflineJudgeEvalRequest,
+    ) -> Result<OfflineJudgeEvalResult, String> {
+        let folds = request.folds.max(2) as usize;
+        let train_epochs = request.train_epochs.max(1) as usize;
+        let max_span_words = if request.max_span_words == 0 { 3 } else { request.max_span_words };
+        let shortlist_limit = if request.shortlist_limit == 0 { 100 } else { request.shortlist_limit };
+
+        // Step 1: Load all cases and probe spans (no judge involved).
+        let cases = self.teaching_cases(0, true); // 0 = no limit, true = include counterexamples
+        info!(cases = cases.len(), folds, train_epochs, "starting offline judge eval");
+
+        let service = self.clone();
+        let probed_cases: Vec<ProbedCase> = tokio::task::block_in_place(|| {
+            use rayon::prelude::*;
+            cases
+                .into_par_iter()
+                .filter_map(|case| {
+                    match service.probe_case_spans(&case, max_span_words, shortlist_limit) {
+                        Ok(pc) => Some(pc),
+                        Err(e) => {
+                            tracing::warn!(case_id = %case.case_id, error = %e, "probe failed");
+                            None
+                        }
+                    }
+                })
+                .collect()
+        });
+
+        info!(probed = probed_cases.len(), "probed all cases");
+
+        // Step 2: Term-stratified k-fold split.
+        // Group unique terms, sort alphabetically, assign to folds round-robin.
+        let mut terms: Vec<String> = probed_cases
+            .iter()
+            .map(|pc| pc.case.target_term.to_ascii_lowercase())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        terms.sort();
+
+        let term_to_fold: HashMap<String, usize> = terms
+            .iter()
+            .enumerate()
+            .map(|(i, term)| (term.clone(), i % folds))
+            .collect();
+
+        // Assign each case to a fold based on its term.
+        let case_folds: Vec<usize> = probed_cases
+            .iter()
+            .map(|pc| {
+                *term_to_fold
+                    .get(&pc.case.target_term.to_ascii_lowercase())
+                    .unwrap_or(&0)
+            })
+            .collect();
+
+        // Step 3: Run k-fold cross-validation.
+        let mut fold_results = Vec::with_capacity(folds);
+        let mut total_canonical_correct = 0u32;
+        let mut total_canonical_total = 0u32;
+        let mut total_cx_correct = 0u32;
+        let mut total_cx_total = 0u32;
+
+        for fold_k in 0..folds {
+            let mut judge = OnlineJudge::default();
+
+            // Train on all folds except fold_k.
+            let mut train_count = 0u32;
+            for epoch in 0..train_epochs {
+                for (i, pc) in probed_cases.iter().enumerate() {
+                    if case_folds[i] == fold_k {
+                        continue; // skip test fold
+                    }
+                    for ps in &pc.spans {
+                        if ps.candidates.is_empty() {
+                            continue;
+                        }
+                        let chosen = if pc.case.should_abstain {
+                            None // counterexample: teach keep_original
+                        } else {
+                            ps.gold_alias_id // canonical: teach the gold alias (or None if not retrieved)
+                        };
+                        // Only teach if we have a meaningful signal
+                        if chosen.is_some() || pc.case.should_abstain {
+                            judge.teach_choice(&ps.span, &ps.candidates, chosen, &ps.ctx);
+                            if epoch == 0 {
+                                train_count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Evaluate on fold_k.
+            let mut canonical_correct = 0u32;
+            let mut canonical_total = 0u32;
+            let mut cx_correct = 0u32;
+            let mut cx_total = 0u32;
+
+            for (i, pc) in probed_cases.iter().enumerate() {
+                if case_folds[i] != fold_k {
+                    continue; // skip train folds
+                }
+                if pc.case.should_abstain {
+                    // Counterexample: judge should keep original for all spans.
+                    cx_total += 1;
+                    let any_edit_chosen = pc.spans.iter().any(|ps| {
+                        if ps.candidates.is_empty() {
+                            return false;
+                        }
+                        let options = judge.score_candidates(&ps.span, &ps.candidates, &ps.ctx);
+                        options.iter().any(|o| o.chosen && !o.is_keep_original)
+                    });
+                    if !any_edit_chosen {
+                        cx_correct += 1;
+                    }
+                } else {
+                    // Canonical: judge should pick the gold alias for the target span.
+                    // Find the span that has the gold alias_id.
+                    let gold_span = pc.spans.iter().find(|ps| ps.gold_alias_id.is_some());
+                    if let Some(gs) = gold_span {
+                        canonical_total += 1;
+                        let options = judge.score_candidates(&gs.span, &gs.candidates, &gs.ctx);
+                        let chosen = options.iter().find(|o| o.chosen);
+                        if let Some(c) = chosen {
+                            if c.alias_id == gs.gold_alias_id {
+                                canonical_correct += 1;
+                            }
+                        }
+                    }
+                    // If no gold span found (target not retrieved), skip — not judgeable
+                }
+            }
+
+            info!(
+                fold = fold_k,
+                train = train_count,
+                canonical = %format!("{canonical_correct}/{canonical_total}"),
+                counterexample = %format!("{cx_correct}/{cx_total}"),
+                "fold complete"
+            );
+
+            fold_results.push(OfflineJudgeFoldResult {
+                fold: fold_k as u32,
+                train_cases: train_count,
+                test_cases: canonical_total + cx_total,
+                canonical_correct,
+                canonical_total,
+                counterexample_correct: cx_correct,
+                counterexample_total: cx_total,
+            });
+
+            total_canonical_correct += canonical_correct;
+            total_canonical_total += canonical_total;
+            total_cx_correct += cx_correct;
+            total_cx_total += cx_total;
+        }
+
+        info!(
+            canonical = %format!("{total_canonical_correct}/{total_canonical_total}"),
+            counterexample = %format!("{total_cx_correct}/{total_cx_total}"),
+            folds,
+            "offline judge eval complete"
+        );
+
+        Ok(OfflineJudgeEvalResult {
+            canonical_correct: total_canonical_correct,
+            canonical_total: total_canonical_total,
+            counterexample_correct: total_cx_correct,
+            counterexample_total: total_cx_total,
+            fold_results,
         })
     }
 }
