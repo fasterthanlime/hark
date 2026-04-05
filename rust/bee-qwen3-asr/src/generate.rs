@@ -1,13 +1,25 @@
 //! Autoregressive text generation for Qwen3-ASR.
 
 use mlx_rs::error::Exception;
+use mlx_rs::nn;
 use mlx_rs::ops;
-use mlx_rs::ops::indexing::{self};
+use mlx_rs::ops::indexing::{self, IndexOp};
 use mlx_rs::Array;
 
 use crate::decoder::KVCache;
 use crate::model::{Qwen3ASRModel, EOS_TOKEN_IDS};
 use crate::model::{AUDIO_END_TOKEN_ID, AUDIO_PAD_TOKEN_ID, AUDIO_START_TOKEN_ID};
+
+/// Per-token confidence information extracted during decoding.
+#[derive(Debug, Clone, Copy)]
+pub struct TokenLogprob {
+    /// The chosen token ID.
+    pub token_id: i32,
+    /// Log-probability of the chosen token.
+    pub logprob: f32,
+    /// Gap between the top-1 and top-2 log-probabilities (always >= 0).
+    pub margin: f32,
+}
 
 const REPETITION_THRESHOLD: usize = 20;
 
@@ -136,10 +148,10 @@ pub fn build_followup_prompt(
 /// Prefill a prompt (initial or followup) into an existing cache, then
 /// autoregressively decode up to max_new_tokens.
 ///
-/// Returns generated token IDs and the updated next_position.
-/// Position tracking: the cache contains exactly the prompt tokens plus
-/// each non-EOS generated token that was stepped through. EOS tokens are
-/// NOT added to the cache (matching the Python reference).
+/// Returns generated token IDs, per-token logprob info, and the updated
+/// next_position. Position tracking: the cache contains exactly the prompt
+/// tokens plus each non-EOS generated token that was stepped through. EOS
+/// tokens are NOT added to the cache (matching the Python reference).
 pub fn prefill_and_decode(
     model: &Qwen3ASRModel,
     prompt_tokens: &[i32],
@@ -147,7 +159,7 @@ pub fn prefill_and_decode(
     cache: &mut Option<KVCache>,
     start_position: usize,
     max_new_tokens: usize,
-) -> Result<(Vec<i32>, usize), Exception> {
+) -> Result<(Vec<i32>, Vec<TokenLogprob>, usize), Exception> {
     let seq_len = prompt_tokens.len();
     let input_ids = Array::from_slice(prompt_tokens, &[1, seq_len as i32]);
 
@@ -165,18 +177,22 @@ pub fn prefill_and_decode(
     // Position after prefill: prompt tokens are in the cache
     let mut position = start_position + seq_len;
 
-    let mut token = argmax(&logits)?;
+    let tlp = argmax_with_logprob(&logits)?;
+    let mut token = tlp.token_id;
     let mut generated = Vec::new();
+    let mut logprobs = Vec::new();
 
     if is_eos(token) || max_new_tokens <= 1 {
         // EOS on first token — nothing added to cache beyond prompt
         if !is_eos(token) {
             generated.push(token);
+            logprobs.push(tlp);
         }
-        return Ok((generated, position));
+        return Ok((generated, logprobs, position));
     }
 
     generated.push(token);
+    logprobs.push(tlp);
 
     // Autoregressive decode — each step adds the token to the cache
     for _ in 1..max_new_tokens {
@@ -189,13 +205,15 @@ pub fn prefill_and_decode(
         let logits = model.step(&next_ids, &pos_arr, cache)?;
         position += 1; // token was fed into cache
 
-        token = argmax(&logits)?;
+        let tlp = argmax_with_logprob(&logits)?;
+        token = tlp.token_id;
 
         if is_eos(token) {
             break; // EOS not fed into cache
         }
 
         generated.push(token);
+        logprobs.push(tlp);
 
         if detect_repetition(&generated) {
             break;
@@ -206,13 +224,35 @@ pub fn prefill_and_decode(
         }
     }
 
-    Ok((generated, position))
+    Ok((generated, logprobs, position))
 }
 
 fn argmax(logits: &Array) -> Result<i32, Exception> {
     let flat = logits.reshape(&[-1])?;
     let idx = indexing::argmax(&flat, None)?;
     Ok(idx.item::<i32>())
+}
+
+/// Extract the argmax token along with its logprob and top1-top2 margin.
+fn argmax_with_logprob(logits: &Array) -> Result<TokenLogprob, Exception> {
+    let flat = logits.reshape(&[-1])?;
+
+    // Top-2 values from log_softmax
+    let log_probs = nn::log_softmax(&flat, None)?;
+    let top2 = indexing::topk(&log_probs, 2)?;
+    top2.eval()?;
+
+    let top1_lp = top2.index(0).item::<f32>();
+    let top2_lp = top2.index(1).item::<f32>();
+
+    let idx = indexing::argmax(&flat, None)?;
+    let token_id = idx.item::<i32>();
+
+    Ok(TokenLogprob {
+        token_id,
+        logprob: top1_lp,
+        margin: top1_lp - top2_lp,
+    })
 }
 
 fn is_eos(token: i32) -> bool {

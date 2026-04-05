@@ -382,7 +382,7 @@ impl<'a> Session<'a> {
 
         // Generate
         let mut cache = None;
-        let (generated, _) = generate::prefill_and_decode(
+        let (generated, _logprobs, _) = generate::prefill_and_decode(
             &self.engine.model,
             &prompt,
             &audio_features,
